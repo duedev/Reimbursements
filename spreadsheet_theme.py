@@ -358,11 +358,21 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
         # Embed image if the file path is available
         if img_path_str and Path(img_path_str).exists():
             try:
+                from io import BytesIO
                 from openpyxl.drawing.image import Image as XLImage
                 from PIL import Image as PILImage
 
                 with PILImage.open(img_path_str) as pil_img:
                     orig_w, orig_h = pil_img.size
+                    # MPO (dual-camera JPEG) has no openpyxl content-type entry;
+                    # convert to plain JPEG so the workbook writer doesn't raise KeyError
+                    if getattr(pil_img, "format", None) == "MPO":
+                        buf = BytesIO()
+                        pil_img.convert("RGB").save(buf, "JPEG", quality=92)
+                        buf.seek(0)
+                        img_source = buf
+                    else:
+                        img_source = img_path_str
 
                 scale = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
                 img_w = int(orig_w * scale)
@@ -371,7 +381,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
                 # rows needed: px → pt (×0.75) ÷ row_height_pt
                 rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
 
-                xl_img        = XLImage(img_path_str)
+                xl_img        = XLImage(img_source)
                 xl_img.width  = img_w
                 xl_img.height = img_h
                 ws.add_image(xl_img, f"A{current_row}")
@@ -458,7 +468,7 @@ def build_themed_workbook(
         (
             "misc",
             ["Receipt\nNo.", "Date", "Store / Job Name", "", "Expense Description", "Amount", "Filename"],
-            "MISCELLENEOUS",
+            "MISCELLANEOUS",
         ),
     ]
 

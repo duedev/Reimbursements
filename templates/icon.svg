@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#1e293b"/>
+  <!-- Receipt body -->
+  <rect x="14" y="8" width="36" height="44" rx="3" fill="#f8fafc"/>
+  <!-- Zigzag bottom edge -->
+  <polygon points="14,52 18,48 22,52 26,48 30,52 34,48 38,52 42,48 46,52 50,48 50,56 14,56" fill="#f8fafc"/>
+  <!-- Lines on receipt -->
+  <rect x="19" y="15" width="26" height="2.5" rx="1" fill="#3b82f6"/>
+  <rect x="19" y="21" width="18" height="2" rx="1" fill="#94a3b8"/>
+  <rect x="19" y="26" width="22" height="2" rx="1" fill="#94a3b8"/>
+  <rect x="19" y="31" width="16" height="2" rx="1" fill="#94a3b8"/>
+  <!-- Amount line -->
+  <rect x="19" y="38" width="26" height="2.5" rx="1" fill="#22c55e"/>
+</svg>
