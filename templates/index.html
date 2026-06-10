@@ -194,6 +194,29 @@
     }
     .copy-btn:hover { color: var(--text); border-color: var(--accent); }
 
+    /* Model status */
+    .model-strip {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .model-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .model-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+    .model-dot.loaded { background: var(--success); }
+    .model-name { color: var(--text); font-family: ui-monospace, monospace; font-size: 11px; }
+
     /* Watch card */
     .watch-count { font-size: 28px; font-weight: 700; color: var(--accent); }
     .watch-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -303,7 +326,16 @@
     <div class="folder-strip" style="margin-bottom:16px">
       <span>Output folder:</span>
       <code id="folder-path">loading…</code>
-      <button class="copy-btn" id="copy-folder-btn" title="Copy path">Copy</button>
+      <button class="copy-btn" id="open-folder-btn" title="Open in file manager">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:inline;vertical-align:middle;margin-right:3px">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+        </svg>Open Folder
+      </button>
+    </div>
+    <!-- LM Studio model status -->
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Loaded Models</div>
+    <div class="model-strip" id="model-strip">
+      <div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">Querying LM Studio…</span></div>
     </div>
     <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div>
@@ -493,10 +525,11 @@
 
   // ── Output folder + watch status ─────────────────────────────────────────────
   const folderPath    = document.getElementById('folder-path');
-  const copyFolderBtn = document.getElementById('copy-folder-btn');
+  const openFolderBtn = document.getElementById('open-folder-btn');
   const watchCount    = document.getElementById('watch-count');
   const sendEmailBtn  = document.getElementById('send-email-btn');
   const toast         = document.getElementById('toast');
+  const modelStrip    = document.getElementById('model-strip');
 
   function showToast(msg, ok) {
     toast.textContent = msg;
@@ -522,11 +555,35 @@
     } catch (_) {}
   }
 
-  copyFolderBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(folderPath.textContent).then(() => {
-      copyFolderBtn.textContent = 'Copied!';
-      setTimeout(() => copyFolderBtn.textContent = 'Copy', 1500);
-    });
+  async function loadLMStudioModels() {
+    try {
+      const res = await fetch('/models/lmstudio');
+      const data = await res.json();
+      if (data.ok && data.loaded.length > 0) {
+        modelStrip.innerHTML = data.loaded.map(id =>
+          `<div class="model-row">
+            <div class="model-dot loaded"></div>
+            <span class="model-name">${esc(id)}</span>
+          </div>`
+        ).join('');
+      } else if (data.ok) {
+        modelStrip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded in LM Studio</span></div>';
+      } else {
+        modelStrip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>`;
+      }
+    } catch (_) {
+      modelStrip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>';
+    }
+  }
+
+  openFolderBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/open-folder', { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) showToast(`Could not open folder: ${data.error}`, false);
+    } catch (err) {
+      showToast(`Error: ${err.message}`, false);
+    }
   });
 
   sendEmailBtn.addEventListener('click', async () => {
@@ -550,6 +607,7 @@
   });
 
   loadWatchStatus();
+  loadLMStudioModels();
 </script>
 </body>
 </html>

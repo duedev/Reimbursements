@@ -420,8 +420,11 @@ def sanitize_filename_part(s: str) -> str:
 def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
     raw_date = (data.get("date") or "unknown").strip()
     date_str = raw_date if re.match(r"\d{4}-\d{2}-\d{2}", raw_date) else sanitize_filename_part(raw_date)
-    desc_str = sanitize_filename_part(data.get("expense_description") or data.get("vendor") or "receipt")
-    stem     = f"{category}_{date_str}_{desc_str}"
+    if category == "fuel":
+        stem = f"{category}_{date_str}"
+    else:
+        desc_str = sanitize_filename_part(data.get("expense_description") or data.get("vendor") or "receipt")
+        stem = f"{category}_{date_str}_{desc_str}"
     ext      = img_path.suffix.lower()
     new_path = img_path.parent / f"{stem}{ext}"
 
@@ -557,6 +560,7 @@ def process_receipts_batch(
         new_path = rename_receipt_image(img_path, data, category)
         data["_new_filename"] = new_path.name
         data["_file"]         = new_path.name
+        data["_image_path"]   = str(new_path)
 
         log(f"    [{category.upper():9}] {data.get('vendor','?')} — ${data.get('amount',0):.2f}  →  {new_path.name}")
         results.append(data)
