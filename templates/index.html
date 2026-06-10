@@ -210,6 +210,12 @@
       </svg>
       Process Receipts
     </button>
+    <button class="btn hidden" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+      </svg>
+      Stop
+    </button>
     <span id="status-badge" class="status-badge hidden"></span>
   </div>
 
@@ -247,6 +253,7 @@
   const fileInput   = document.getElementById('file-input');
   const fileList    = document.getElementById('file-list');
   const processBtn  = document.getElementById('process-btn');
+  const stopBtn     = document.getElementById('stop-btn');
   const statusBadge = document.getElementById('status-badge');
   const progressCard= document.getElementById('progress-card');
   const progressBar = document.getElementById('progress-bar');
@@ -258,6 +265,7 @@
   const resetBtn    = document.getElementById('reset-btn');
 
   let selectedFiles = [];
+  let currentJobId  = null;
 
   // ── Drag and drop ────────────────────────────────────────────────────────────
   dropZone.addEventListener('click', () => fileInput.click());
@@ -317,6 +325,11 @@
       return;
     }
 
+    currentJobId = jobId;
+    stopBtn.classList.remove('hidden');
+    stopBtn.disabled = false;
+    stopBtn.textContent = '⏹ Stop';
+
     // SSE progress stream
     const es = new EventSource(`/events/${jobId}`);
     es.onmessage = (e) => {
@@ -332,9 +345,7 @@
         es.close();
         progressBar.style.width = '100%';
         setStatus('done', 'Complete');
-        if (msg.filename) {
-          showDownload(jobId);
-        }
+        if (msg.filename) showDownload(jobId);
         setProcessing(false);
       } else if (msg.type === 'error') {
         es.close();
@@ -343,16 +354,21 @@
         setProcessing(false);
       }
     };
-    es.onerror = () => {
-      es.close();
-      setStatus('error', 'Connection lost');
-      setProcessing(false);
-    };
+    es.onerror = () => { es.close(); setProcessing(false); };
+  });
+
+  // ── Stop button ──────────────────────────────────────────────────────────────
+  stopBtn.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping…';
+    await fetch(`/cancel/${currentJobId}`, { method: 'POST' });
   });
 
   function setProcessing(on) {
     processBtn.disabled = on;
     processBtn.textContent = on ? 'Processing…' : 'Process Receipts';
+    if (!on) stopBtn.classList.add('hidden');
     if (on) {
       progressCard.classList.remove('hidden');
       downloadCard.classList.add('hidden');
@@ -387,11 +403,13 @@
   // ── Reset ────────────────────────────────────────────────────────────────────
   resetBtn.addEventListener('click', () => {
     selectedFiles = [];
+    currentJobId  = null;
     fileInput.value = '';
     renderFileList();
     progressCard.classList.add('hidden');
     downloadCard.classList.add('hidden');
     statusBadge.classList.add('hidden');
+    stopBtn.classList.add('hidden');
     processBtn.textContent = 'Process Receipts';
     processBtn.disabled = true;
   });

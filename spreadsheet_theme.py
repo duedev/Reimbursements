@@ -236,9 +236,13 @@ def _write_subtotal(ws, row: int, first_data: int, last_data: int):
     ws.cell(row=row, column=COL_JOB_NUMBER).alignment = _align(h="right")
     ws.cell(row=row, column=COL_JOB_NUMBER).value = "Subtotal"
 
-    # SUM over the data range (reversed range = 0 in Excel, safe for empty section)
-    cell_f = ws.cell(row=row, column=COL_AMOUNT,
-                     value=f"=SUM(F{first_data}:F{last_data})")
+    cell_f = ws.cell(row=row, column=COL_AMOUNT)
+    # When last_data < first_data the category is empty; a SUM formula would
+    # include the subtotal row itself and produce a circular-reference error.
+    if last_data >= first_data:
+        cell_f.value = f"=SUM(F{first_data}:F{last_data})"
+    else:
+        cell_f.value = 0
     cell_f.number_format = ACCT_FORMAT
     cell_f.alignment = _align(h="right")
     ws.row_dimensions[row].height = 20
