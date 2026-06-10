@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import threading
 import uuid
@@ -31,6 +32,28 @@ from process_receipts import (
 
 INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
 OUT_FOLDER    = Path(OUTPUT_FOLDER)
+
+CONFIG_FILE = OUT_FOLDER / ".app_config.json"
+
+def _load_config() -> dict:
+    try:
+        if CONFIG_FILE.exists():
+            return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def _save_config(data: dict) -> None:
+    OUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
+def _host_intake() -> str:
+    cfg = _load_config()
+    return cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", "")
+
+def _host_output() -> str:
+    cfg = _load_config()
+    return cfg.get("host_output_path") or HOST_OUTPUT_PATH or ""
 
 # job_id → {queue, done, output_path, results, cancel, receipt_file_map}
 _jobs: dict[str, dict] = {}
@@ -218,7 +241,6 @@ async def make_spreadsheet(job_id: str):
             results=results,
             output_dir=Path(str(out_dir)),
             employee_name=employee,
-            host_output_path=HOST_OUTPUT_PATH,
         )
 
     try:
@@ -424,9 +446,34 @@ async def get_folders():
 
 
 
+class SettingsRequest(BaseModel):
+    host_intake_path: str = ""
+    host_output_path: str = ""
+
+@app.get("/settings")
+async def get_settings():
+    cfg = _load_config()
+    return JSONResponse({
+        "host_intake_path": cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", ""),
+        "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
+    })
+
+@app.post("/settings")
+async def save_settings(body: SettingsRequest):
+    try:
+        cfg = _load_config()
+        cfg["host_intake_path"] = body.host_intake_path.strip()
+        cfg["host_output_path"] = body.host_output_path.strip()
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/open-output-folder")
 async def open_output_folder():
-    return JSONResponse({"path": str(OUTPUT_FOLDER)})
+    host = _host_output()
+    return JSONResponse({"path": str(OUTPUT_FOLDER), "host_path": host})
 
 
 def _is_docker() -> bool:
@@ -449,7 +496,8 @@ async def open_folder_in_manager():
     folder = Path(OUTPUT_FOLDER).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     if _is_docker():
-        return JSONResponse({"ok": True, "path": str(folder), "docker": True})
+        host = _host_output() or str(folder)
+        return JSONResponse({"ok": True, "path": str(folder), "host_path": host, "docker": True})
     try:
         _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
@@ -479,7 +527,7 @@ async def open_folder_by_path(body: OpenFolderRequest):
 async def watch_folder_path():
     try:
         from watch_mode import WATCH_INBOX
-        host = HOST_INTAKE_PATH or ""
+        host = _host_intake() or ""
         return JSONResponse({"path": str(WATCH_INBOX), "host_path": host, "ok": True})
     except Exception as exc:
         return JSONResponse({"path": "", "host_path": "", "ok": False, "error": str(exc)})
@@ -492,7 +540,7 @@ async def open_watch_folder():
         folder = Path(WATCH_INBOX).resolve()
         folder.mkdir(parents=True, exist_ok=True)
         if _is_docker():
-            host = HOST_INTAKE_PATH or str(folder)
+            host = _host_intake() or str(folder)
             return JSONResponse({"ok": True, "path": str(folder), "host_path": host, "docker": True})
         _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
