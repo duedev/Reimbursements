@@ -10,14 +10,12 @@ import uuid
 from pathlib import Path
 from queue import Empty, Queue
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from process_receipts import process_receipts_batch
 
 app = FastAPI(title="Receipt Processor")
-templates = Jinja2Templates(directory="templates")
 
 TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(exist_ok=True)
@@ -26,9 +24,9 @@ TMP_ROOT.mkdir(exist_ok=True)
 _jobs: dict[str, dict] = {}
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/", response_class=FileResponse)
+async def index():
+    return FileResponse("templates/index.html", media_type="text/html")
 
 
 @app.post("/process")
