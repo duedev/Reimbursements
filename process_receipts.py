@@ -545,13 +545,9 @@ def generate_spreadsheet(
     if not results:
         return None
 
-    host_base = (host_output_path or HOST_OUTPUT_PATH).rstrip("/")
-    resolved  = []
-    for r in results:
-        r2 = dict(r)
-        if host_base and r2.get("_image_path"):
-            r2["_image_path"] = str(Path(host_base) / Path(r2["_image_path"]).name)
-        resolved.append(r2)
+    # Use _image_path as-is — images live in the temp/staged folder where they
+    # were written during processing. Host path remapping belongs in UI only.
+    resolved = list(results)
 
     by_category: dict[str, list] = defaultdict(list)
     for r in resolved:
