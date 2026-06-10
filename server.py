@@ -697,10 +697,10 @@ class RetryRequest(BaseModel):
 
 @app.post("/retry-receipt")
 async def retry_receipt(body: RetryRequest):
-    """Re-process a single receipt by filename."""
+    """Re-queue a failed receipt for reprocessing (sends it back to the front of the queue)."""
     filename = body.filename
 
-    # 1. Try _results first
+    # 1. Try _results first (image was already renamed/moved to IMAGES_FOLDER)
     img_path_str: str | None = None
     with _results_lock:
         for r in _results:
@@ -727,90 +727,50 @@ async def retry_receipt(body: RetryRequest):
             status_code=404,
         )
 
-    img_path = Path(img_path_str)
+    # Re-queue at the front so it processes next
+    item = {
+        "filename":   filename,
+        "path":       img_path_str,
+        "employee":   _last_context.get("employee", "Employee"),
+        "job_name":   _last_context.get("job_name", ""),
+        "job_number": _last_context.get("job_number", ""),
+    }
+    with _work_lock:
+        _work_queue.appendleft(item)
 
-    # Broadcast that we are distilling
-    _update_kanban(filename, "distilling", None)
+    _update_kanban(filename, "queued", None)
     _broadcast({
         "type": "kanban_update", "filename": filename,
-        "status": "distilling", "data": {}, "model": "",
+        "status": "queued", "data": {}, "model": "",
     })
+    return JSONResponse({"ok": True, "queued": filename})
 
-    def _retry():
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
 
-        def status_cb(status: str, data=None, model: str = "") -> None:
-            _update_kanban(filename, status, data, model)
-            _broadcast({
-                "type":     "kanban_update",
-                "filename": filename,
-                "status":   status,
-                "data":     _safe_receipt_data(data),
-                "model":    model,
-            })
+@app.post("/queue/clear-all")
+async def queue_clear_all():
+    """Full board reset: drain queue, clear kanban, clear results."""
+    _worker_cancel.set()
+    with _work_lock:
+        cleared = len(_work_queue)
+        _work_queue.clear()
+    _worker_cancel.clear()
 
-        return _extract_receipt_with_status(client, img_path, status_cb)
+    with _kanban_lock:
+        _kanban.clear()
+    with _results_lock:
+        _results.clear()
 
-    try:
-        new_data = await asyncio.get_event_loop().run_in_executor(None, _retry)
-    except Exception as exc:
-        _update_kanban(filename, "failed", None)
-        _broadcast({
-            "type": "kanban_update", "filename": filename,
-            "status": "failed", "data": {}, "model": "",
-        })
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    _broadcast({"type": "kanban_cleared"})
+    return JSONResponse({"ok": True, "cleared": cleared})
 
-    if new_data and not _is_low_confidence(new_data):
-        category = classify_category(new_data)
-        new_data["_category"] = category
-        if category == "fuel":
-            new_data["expense_description"] = None
 
-        new_data["job_name"]   = _last_context.get("job_name") or None
-        new_data["job_number"] = _last_context.get("job_number") or None
-
-        flags_list = new_data.get("flags") or []
-        if flags_list and not new_data.get("_flag"):
-            new_data["_flag"] = flags_list[0].get("flag", "")
-
-        # Rename/move the file
-        IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
-        final_path = rename_receipt_image(img_path, new_data, category, IMAGES_FOLDER)
-        new_data["_new_filename"] = final_path.name
-        new_data["_file"]         = filename
-        new_data["_image_path"]   = str(final_path)
-
-        # Update _results in-place or append
-        with _results_lock:
-            matched = False
-            for r in _results:
-                if r.get("_file") == filename or r.get("_new_filename") == filename:
-                    r.update(new_data)
-                    matched = True
-                    break
-            if not matched:
-                _results.append(new_data)
-
-        _update_kanban(filename, "done", new_data)
-        _broadcast({
-            "type":     "kanban_update",
-            "filename": filename,
-            "status":   "done",
-            "data":     _safe_receipt_data(new_data),
-            "model":    "",
-        })
-        return JSONResponse({"ok": True, "data": _safe_receipt_data(new_data)})
-
-    _update_kanban(filename, "failed", None)
-    _broadcast({
-        "type": "kanban_update", "filename": filename,
-        "status": "failed", "data": {}, "model": "",
-    })
-    return JSONResponse(
-        {"ok": False, "error": "Retry extraction failed or still low confidence"},
-        status_code=422,
-    )
+@app.post("/kanban/remove")
+async def kanban_remove(body: RetryRequest):
+    """Remove a single item from the kanban (client-initiated dismiss)."""
+    filename = body.filename
+    with _kanban_lock:
+        _kanban.pop(filename, None)
+    return JSONResponse({"ok": True})
 
 
 # ── Model management ───────────────────────────────────────────────────────────
