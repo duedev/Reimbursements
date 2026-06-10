@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, date
 from pathlib import Path
+from typing import Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -166,7 +167,8 @@ def _write_col_headers(ws, row: int, headers: list[str], show_flags: bool = Fals
 
 
 def _write_data_row(ws, row: int, receipt_no: int, data: dict,
-                    category: str, fill_color: str, show_flags: bool = False):
+                    category: str, fill_color: str, show_flags: bool = False,
+                    hyperlink_target: Optional[str] = None):
     row_fill   = _fill(fill_color)
     row_font   = _font(size=11)
     row_border = _border()
@@ -229,9 +231,13 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         cell_f.number_format = ACCT_FORMAT
     cell_f.alignment = _align(h="right")
 
-    # G — Filename
+    # G — Filename (hyperlink to the image sheet cell when available)
     filename = data.get("_new_filename") or data.get("_file") or ""
     cell_g = ws.cell(row=row, column=COL_FILENAME, value=filename)
+    if hyperlink_target and filename:
+        cell_g.hyperlink = hyperlink_target
+        cell_g.font = Font(bold=False, color="1155CC", underline="single",
+                           name="Calibri", size=11)
     cell_g.alignment = _align(h="left", wrap=False)
 
     # H — Review Notes (only when flags column is active)
@@ -299,8 +305,14 @@ _IMG_MAX_H_PX      = 480    # max image height in pixels
 _IMG_ROWS          = 27     # rows reserved per image (≈27×14pt×1.33px/pt ≈ 504px)
 
 
-def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
-    """Add a new sheet with embedded receipt images for a single category."""
+def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> list[str]:
+    """
+    Add a new sheet with embedded receipt images for a single category.
+    Returns a list of cell references (e.g. ["A3", "A32"]) — one per receipt —
+    pointing to the metadata row for that receipt so the Summary sheet can
+    hyperlink directly to it.
+    Receipts are written oldest-first (caller is responsible for sort order).
+    """
     ws = wb.create_sheet(title=sheet_name)
 
     ws.column_dimensions["A"].width = 8
@@ -310,6 +322,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
     ws.column_dimensions["E"].width = 38
 
     current_row = 1
+    anchors: list[str] = []  # cell refs returned to caller for hyperlinks
 
     # Title row
     ws.merge_cells(f"A{current_row}:E{current_row}")
@@ -322,7 +335,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
 
     if not receipts:
         ws.cell(row=current_row, column=1, value="No receipts in this category.")
-        return
+        return anchors
 
     # Column header row
     col_headers = ["#", "Date", "Vendor / Name", "Amount", "Filename"]
@@ -344,6 +357,9 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
         amount       = data.get("amount") or 0
         filename     = data.get("_new_filename") or data.get("_file") or ""
 
+        # Record this row as the anchor for Summary-sheet hyperlinks
+        anchors.append(f"A{current_row}")
+
         row_fill = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
         row_values = [i + 1, date_val, vendor, f"${float(amount):.2f}", filename]
         for col_idx, val in enumerate(row_values, 1):
@@ -355,7 +371,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
         ws.row_dimensions[current_row].height = 16
         current_row += 1
 
-        # Embed image if the file path is available
+        # Embed image below the metadata row
         if img_path_str and Path(img_path_str).exists():
             try:
                 from io import BytesIO
@@ -405,6 +421,8 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
         ws.row_dimensions[current_row].height = 8
         current_row += 1
 
+    return anchors
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -417,12 +435,18 @@ def build_themed_workbook(
     Build a fresh themed workbook from receipt data.
 
     sections: {
-        "fuel":      [data_dicts, ...],
+        "fuel":      [data_dicts, ...],   # pre-sorted oldest → newest
         "materials": [data_dicts, ...],
         "misc":      [data_dicts, ...],
     }
     Each data_dict may include _image_path (full path to receipt image) so that
     per-category image sheets are generated as additional tabs.
+
+    Build order:
+      1. Reserve "Summary" as the first sheet (tab position 0).
+      2. Build per-category image sheets — this tracks each receipt's anchor cell.
+      3. Fill in the Summary sheet with hyperlinks in the Filename column (G)
+         pointing to the corresponding anchor cell in the image sheet.
 
     Returns a Workbook ready to be saved.
     """
@@ -434,14 +458,31 @@ def build_themed_workbook(
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Summary"
+    ws.title = "Summary"  # Reserve position 0; filled in after image sheets are built
 
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
     if has_flags:
         ws.column_dimensions["H"].width = 40.0
 
-    # ── Rows 1–4: form header ─────────────────────────────────────────────────
+    # ── Build image sheets FIRST so we know each receipt's anchor cell ────────
+    IMAGE_SHEET_DEFS = [
+        ("fuel",      "Fuel Receipts"),
+        ("materials", "Materials Receipts"),
+        ("misc",      "Misc Receipts"),
+    ]
+    # image_links[(category, receipt_idx)] = "#'SheetName'!A{row}"
+    image_links: dict[tuple, str] = {}
+    for category, sheet_name in IMAGE_SHEET_DEFS:
+        receipts = sections.get(category, [])
+        anchors  = _build_image_sheet(wb, sheet_name, receipts)
+        safe_name = sheet_name.replace("'", "''")
+        for i, cell_ref in enumerate(anchors):
+            image_links[(category, i)] = f"#'{safe_name}'!{cell_ref}"
+
+    # ── Now fill in the Summary sheet ─────────────────────────────────────────
+
+    # Rows 1–4: form header
     _write_title(ws, 1)
     _write_meta_field(ws, 2, "Employee:", employee_name)
     _write_meta_field(ws, 3, "Expense Period:", expense_period)
@@ -485,8 +526,11 @@ def build_themed_workbook(
 
         for i, data in enumerate(receipts):
             fill_color = COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT
-            _write_data_row(ws, current_row, i + 1, data, category, fill_color,
-                            show_flags=has_flags)
+            _write_data_row(
+                ws, current_row, i + 1, data, category, fill_color,
+                show_flags=has_flags,
+                hyperlink_target=image_links.get((category, i)),
+            )
             current_row += 1
 
         last_data_row = current_row - 1  # may equal first_data_row - 1 if empty
@@ -501,15 +545,5 @@ def build_themed_workbook(
         subtotal_rows["materials"],
         subtotal_rows["misc"],
     )
-
-    # ── Per-category image sheets ─────────────────────────────────────────────
-    IMAGE_SHEET_DEFS = [
-        ("fuel",      "Fuel Receipts"),
-        ("materials", "Materials Receipts"),
-        ("misc",      "Misc Receipts"),
-    ]
-    for category, sheet_name in IMAGE_SHEET_DEFS:
-        receipts = sections.get(category, [])
-        _build_image_sheet(wb, sheet_name, receipts)
 
     return wb
