@@ -383,8 +383,8 @@ async def queue_add(
     job_number: str = Form(""),
 ):
     """Upload receipts and enqueue them for processing."""
-    INTAKE_FOLDER.mkdir(parents=True, exist_ok=True)
-    tmp_dir = INTAKE_FOLDER / f"_upload_{uuid4().hex[:8]}"
+    IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+    tmp_dir = IMAGES_FOLDER / f"_upload_{uuid4().hex[:8]}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     queued: list[str] = []

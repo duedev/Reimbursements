@@ -605,8 +605,9 @@ def generate_spreadsheet(
         employee_name=employee_name,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp   = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    output_path = output_dir / f"Reimbursements_{timestamp}.xlsx"
+    safe_name   = re.sub(r'[^\w\s-]', '', employee_name or '').strip().replace(' ', '_') or 'Employee'
+    datestamp   = datetime.now().strftime("%Y-%m-%d")
+    output_path = output_dir / f"Reimbursements_{safe_name}_{datestamp}.xlsx"
     wb.save(output_path)
     return output_path
 
