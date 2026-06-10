@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import concurrent.futures
 import threading
@@ -25,6 +26,12 @@ from collections import defaultdict
 from datetime import datetime, date
 from pathlib import Path
 from typing import Callable, Optional
+
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
 
 from openai import OpenAI
 from PIL import Image
@@ -42,6 +49,8 @@ RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
 HOST_OUTPUT_PATH     = os.getenv("HOST_OUTPUT_PATH", "")
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+PDF_EXTENSIONS       = {".pdf"}
+SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
 IMAGE_MAX_PX         = 1568
 
 # Runtime state — both selectable from the UI
@@ -236,6 +245,28 @@ def encode_image(path: Path) -> tuple[str, str]:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
     return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+
+
+def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
+    """Convert each PDF page to a JPEG in dest_dir. Returns list of image paths."""
+    if not HAS_PYMUPDF:
+        print(f"[pdf] PyMuPDF not installed — skipping {pdf_path.name}")
+        return []
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out: list[Path] = []
+    try:
+        doc = fitz.open(str(pdf_path))
+        for i, page in enumerate(doc):
+            mat = fitz.Matrix(2.0, 2.0)
+            pix = page.get_pixmap(matrix=mat)
+            suffix = f"_p{i + 1}" if len(doc) > 1 else ""
+            img_path = dest_dir / f"{pdf_path.stem}{suffix}.jpg"
+            pix.save(str(img_path))
+            out.append(img_path)
+        doc.close()
+    except Exception as exc:
+        print(f"[pdf] Failed to convert {pdf_path.name}: {exc}")
+    return out
 
 
 # ── AI extraction ──────────────────────────────────────────────────────────────
@@ -475,28 +506,39 @@ def _format_date_mmddyy(raw_date: str) -> str:
     return sanitize_filename_part(raw_date) or "unknown"
 
 
-def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
-    """New naming: MM-DD-YY_VendorDescription.ext  e.g. 12-30-24_Shell.jpg"""
+def rename_receipt_image(
+    img_path: Path,
+    data: dict,
+    category: str,
+    dest_dir: Optional[Path] = None,
+) -> Path:
+    """Rename to {category}_{MM-DD-YY}_{Vendor}.ext and optionally move to dest_dir.
+
+    Example: fuel_12-30-24_chevron.jpg
+    """
     raw_date   = (data.get("date") or "unknown").strip()
     date_str   = _format_date_mmddyy(raw_date)
     vendor_str = sanitize_filename_part(
         data.get("vendor") or data.get("expense_description") or "receipt"
     )
-    stem     = f"{date_str}_{vendor_str}" if vendor_str else date_str
+    cat_str  = category.lower()
+    stem     = f"{cat_str}_{date_str}_{vendor_str}" if vendor_str else f"{cat_str}_{date_str}"
     ext      = img_path.suffix.lower()
-    new_path = img_path.parent / f"{stem}{ext}"
+    out_dir  = dest_dir if dest_dir is not None else img_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    new_path = out_dir / f"{stem}{ext}"
 
     if new_path.exists() and new_path.resolve() != img_path.resolve():
         counter = 2
         while True:
-            candidate = img_path.parent / f"{stem}_{counter}{ext}"
+            candidate = out_dir / f"{stem}_{counter}{ext}"
             if not candidate.exists():
                 new_path = candidate
                 break
             counter += 1
 
     if new_path.resolve() != img_path.resolve():
-        img_path.rename(new_path)
+        shutil.move(str(img_path), str(new_path))
     return new_path
 
 
@@ -585,6 +627,8 @@ def process_receipts_batch(
     log_callback:            Optional[Callable] = None,
     cancel_event:            Optional[threading.Event] = None,
     receipt_status_callback: Optional[Callable] = None,
+    openai_client=None,
+    output_images_dir:       Optional[Path] = None,
 ) -> dict:
     """
     2-stage pipeline: OCR (optional) → Unified Distillation.
@@ -618,6 +662,19 @@ def process_receipts_batch(
     else:
         scan_dir = receipts_folder
 
+    # Expand any PDFs in the scan directory to JPEG images before processing
+    _pdf_tmp_dirs: list[Path] = []
+    for pdf_path in sorted(scan_dir.glob("*.pdf")):
+        tmp = scan_dir / f"_pdf_{pdf_path.stem}"
+        pages = pdf_to_images(pdf_path, tmp)
+        if pages:
+            log(f"[pdf] Expanded {pdf_path.name} → {len(pages)} page(s)")
+            _pdf_tmp_dirs.append(tmp)
+            # Move original PDF to output so it won't be picked up again
+            pdf_dest = (output_images_dir or output_dir) / pdf_path.name
+            (output_images_dir or output_dir).mkdir(parents=True, exist_ok=True)
+            shutil.move(str(pdf_path), str(pdf_dest))
+
     images = sorted(
         [p for p in scan_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS],
         key=lambda p: p.name,
@@ -631,7 +688,7 @@ def process_receipts_batch(
     log(f"Found {total} receipt image(s).")
     log(f"  OCR model:    {_active_ocr_model or '(none — direct vision)'}")
     log(f"  Distill model: {_active_distill_model}")
-    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
+    client = openai_client if openai_client is not None else OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
 
     results: list[dict] = []
     skipped: list[str]  = []
@@ -709,16 +766,17 @@ def process_receipts_batch(
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 
-        dest_dir = (completed_dir if use_folder_structure else img_path.parent)
         if use_folder_structure:
+            dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)
             final_path = dest_dir / renamed.name
             try:
-                renamed.rename(final_path)
+                shutil.move(str(renamed), str(final_path))
             except Exception:
                 final_path = renamed
         else:
-            final_path = rename_receipt_image(img_path, data, category)
+            dest = output_images_dir if output_images_dir is not None else None
+            final_path = rename_receipt_image(img_path, data, category, dest)
 
         data["_new_filename"] = final_path.name
         data["_file"]         = final_path.name

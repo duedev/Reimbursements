@@ -1,40 +1,79 @@
 #!/usr/bin/env python3
-"""server.py — FastAPI web frontend for the receipt processor."""
+"""server.py — FastAPI web frontend for the receipt processor (queue-based architecture)."""
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import threading
+import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from queue import Empty, Queue
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from openai import OpenAI
 
 import process_receipts as _pr
 from process_receipts import (
     initialize_models,
-    process_receipts_batch,
+    _extract_receipt_with_status,
+    _is_low_confidence,
+    classify_category,
+    rename_receipt_image,
+    _detect_duplicates,
     generate_spreadsheet,
     list_available_models,
     _try_load_model,
+    pdf_to_images,
     GEMMA_SMALL_MODEL_ID,
     GEMMA_LARGE_MODEL_ID,
     IMAGE_EXTENSIONS,
+    PDF_EXTENSIONS,
+    SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
     HOST_OUTPUT_PATH,
     RECEIPTS_FOLDER,
 )
 
+# ── Folder / config paths ──────────────────────────────────────────────────────
+
 INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
 OUT_FOLDER    = Path(OUTPUT_FOLDER)
+IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
+CONFIG_FILE   = OUT_FOLDER / ".app_config.json"
 
-CONFIG_FILE = OUT_FOLDER / ".app_config.json"
+# ── Global state ───────────────────────────────────────────────────────────────
+
+_work_queue: deque = deque()
+_work_lock   = threading.Lock()
+
+_kanban: dict[str, dict] = {}
+_kanban_lock = threading.Lock()
+
+_results: list[dict] = []
+_results_lock = threading.Lock()
+
+_last_context: dict = {"employee": "Employee", "job_name": "", "job_number": ""}
+
+_seen_intake: set[str] = set()
+_seen_lock   = threading.Lock()
+
+_worker_cancel = threading.Event()
+
+_subscribers: list[Queue] = []
+_sub_lock = threading.Lock()
+
+
+# ── Config helpers ─────────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
     try:
@@ -44,30 +83,280 @@ def _load_config() -> dict:
         pass
     return {}
 
+
 def _save_config(data: dict) -> None:
     OUT_FOLDER.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
 
 def _host_intake() -> str:
     cfg = _load_config()
     return cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", "")
 
+
 def _host_output() -> str:
     cfg = _load_config()
     return cfg.get("host_output_path") or HOST_OUTPUT_PATH or ""
 
-# job_id → {queue, done, output_path, results, cancel, receipt_file_map}
-_jobs: dict[str, dict] = {}
 
+def _save_field(cfg: dict, list_key: str, value: str) -> None:
+    if not value.strip():
+        return
+    lst = cfg.get(list_key, [])
+    if value not in lst:
+        lst.insert(0, value)
+    cfg[list_key] = lst[:20]
+
+
+# ── SSE broadcast helpers ──────────────────────────────────────────────────────
+
+def _broadcast(event: dict) -> None:
+    with _sub_lock:
+        for q in list(_subscribers):
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+
+
+def _add_subscriber() -> Queue:
+    q: Queue = Queue()
+    with _sub_lock:
+        _subscribers.append(q)
+    return q
+
+
+def _remove_subscriber(q: Queue) -> None:
+    with _sub_lock:
+        try:
+            _subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+# ── Kanban helpers ─────────────────────────────────────────────────────────────
+
+def _update_kanban(filename: str, status: str, data, model: str = "") -> None:
+    with _kanban_lock:
+        _kanban[filename] = {"status": status, "data": _safe_receipt_data(data), "model": model}
+
+
+def _safe_receipt_data(data) -> dict:
+    """Serialize receipt data for SSE — strip non-serialisable internal fields."""
+    if not data:
+        return {}
+    out = {}
+    for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
+              "expense_description", "summary", "ai_summary", "_flag", "_category",
+              "_new_filename", "_file", "flags"):
+        if k in data:
+            out[k] = data[k]
+    return out
+
+
+# ── Background worker ──────────────────────────────────────────────────────────
+
+def _run_worker() -> None:
+    while not _worker_cancel.is_set():
+        with _work_lock:
+            batch = list(_work_queue) if _work_queue else []
+            if batch:
+                _work_queue.clear()
+
+        if not batch:
+            time.sleep(0.4)
+            continue
+
+        _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+
+        futures_map: dict = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS) as ex:
+            for item in batch:
+                if _worker_cancel.is_set():
+                    break
+                fname = item["filename"]
+                path  = Path(item["path"])
+
+                def make_cb(fn: str):
+                    def cb(status: str, data=None, model: str = "") -> None:
+                        _update_kanban(fn, status, data, model)
+                        _broadcast({
+                            "type":     "kanban_update",
+                            "filename": fn,
+                            "status":   status,
+                            "data":     _safe_receipt_data(data),
+                            "model":    model,
+                        })
+                    return cb
+
+                future = ex.submit(_extract_receipt_with_status, client, path, make_cb(fname))
+                futures_map[future] = item
+
+            for future in concurrent.futures.as_completed(futures_map):
+                if _worker_cancel.is_set():
+                    break
+                item  = futures_map[future]
+                fname = item["filename"]
+                path  = Path(item["path"])
+                try:
+                    data = future.result()
+                except Exception as exc:
+                    data = None
+                    _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
+
+                if data is None or _is_low_confidence(data):
+                    _update_kanban(fname, "failed", None)
+                    _broadcast({
+                        "type":     "kanban_update",
+                        "filename": fname,
+                        "status":   "failed",
+                        "data":     {},
+                        "model":    "",
+                    })
+                    continue
+
+                category = classify_category(data)
+                data["_category"]  = category
+                data["job_name"]   = item.get("job_name") or None
+                data["job_number"] = item.get("job_number") or None
+                if category == "fuel":
+                    data["expense_description"] = None
+                flags = data.get("flags") or []
+                if flags and not data.get("_flag"):
+                    data["_flag"] = flags[0].get("flag", "")
+
+                IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
+                data["_new_filename"] = final_path.name
+                data["_file"]         = fname
+                data["_image_path"]   = str(final_path)
+
+                with _results_lock:
+                    _results.append(data)
+                    _last_context.update({
+                        "employee":   item.get("employee", "Employee"),
+                        "job_name":   item.get("job_name", ""),
+                        "job_number": item.get("job_number", ""),
+                    })
+
+                _update_kanban(fname, "done", data)
+                _broadcast({
+                    "type":     "kanban_update",
+                    "filename": fname,
+                    "status":   "done",
+                    "data":     _safe_receipt_data(data),
+                    "model":    "",
+                })
+                _broadcast({
+                    "type":    "log",
+                    "message": f"[{category.upper()}] {data.get('vendor','?')} — ${data.get('amount', 0):.2f}",
+                })
+
+        with _results_lock:
+            _detect_duplicates(_results)
+            n_done = len(_results)
+        with _work_lock:
+            n_pending = len(_work_queue)
+        _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending})
+
+
+# ── Background watcher ─────────────────────────────────────────────────────────
+
+def _run_watcher() -> None:
+    """Poll INTAKE_FOLDER every 5 seconds and auto-queue new image/PDF files."""
+    while not _worker_cancel.is_set():
+        try:
+            if INTAKE_FOLDER.exists():
+                for p in sorted(INTAKE_FOLDER.iterdir()):
+                    if not p.is_file():
+                        continue
+                    suffix = p.suffix.lower()
+                    if suffix not in SUPPORTED_EXTENSIONS:
+                        continue
+
+                    with _seen_lock:
+                        if p.name in _seen_intake:
+                            continue
+                        _seen_intake.add(p.name)
+
+                    if suffix in IMAGE_EXTENSIONS:
+                        item = {
+                            "filename":   p.name,
+                            "path":       str(p),
+                            "employee":   _last_context.get("employee", "Employee"),
+                            "job_name":   _last_context.get("job_name", ""),
+                            "job_number": _last_context.get("job_number", ""),
+                        }
+                        with _work_lock:
+                            _work_queue.append(item)
+                        _update_kanban(p.name, "queued", None)
+                        _broadcast({
+                            "type":     "kanban_update",
+                            "filename": p.name,
+                            "status":   "queued",
+                            "data":     {},
+                            "model":    "",
+                        })
+                        _broadcast({"type": "log", "message": f"[watcher] Queued {p.name}"})
+
+                    elif suffix in PDF_EXTENSIONS:
+                        try:
+                            dest_dir = INTAKE_FOLDER / f"_pdf_{p.stem}"
+                            pages    = pdf_to_images(p, dest_dir)
+                            for page_path in pages:
+                                with _seen_lock:
+                                    _seen_intake.add(page_path.name)
+                                item = {
+                                    "filename":   page_path.name,
+                                    "path":       str(page_path),
+                                    "employee":   _last_context.get("employee", "Employee"),
+                                    "job_name":   _last_context.get("job_name", ""),
+                                    "job_number": _last_context.get("job_number", ""),
+                                }
+                                with _work_lock:
+                                    _work_queue.append(item)
+                                _update_kanban(page_path.name, "queued", None)
+                                _broadcast({
+                                    "type":     "kanban_update",
+                                    "filename": page_path.name,
+                                    "status":   "queued",
+                                    "data":     {},
+                                    "model":    "",
+                                })
+                            # Move the original PDF out of the intake folder
+                            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(p), str(IMAGES_FOLDER / p.name))
+                            _broadcast({
+                                "type":    "log",
+                                "message": f"[watcher] PDF {p.name} → {len(pages)} page(s) queued",
+                            })
+                        except Exception as exc:
+                            _broadcast({
+                                "type":    "log",
+                                "message": f"[watcher] PDF error {p.name}: {exc}",
+                            })
+        except Exception as exc:
+            _broadcast({"type": "log", "message": f"[watcher] scan error: {exc}"})
+
+        time.sleep(5)
+
+
+# ── Lifespan ───────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=initialize_models, daemon=True).start()
+    threading.Thread(target=_run_worker,       daemon=True).start()
+    threading.Thread(target=_run_watcher,      daemon=True).start()
     yield
+    _worker_cancel.set()
 
 
 app = FastAPI(title="Receipt Processor", lifespan=lifespan)
 
+
+# ── Static / template routes ───────────────────────────────────────────────────
 
 @app.get("/", response_class=FileResponse)
 async def index():
@@ -84,247 +373,236 @@ async def icon():
     return FileResponse("templates/icon.svg", media_type="image/svg+xml")
 
 
-@app.post("/process")
-async def process(
+# ── Queue endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/queue/add")
+async def queue_add(
     files: list[UploadFile] = File(...),
-    employee: str = Form("Employee"),
-    job_name: str = Form(""),
+    employee:   str = Form("Employee"),
+    job_name:   str = Form(""),
     job_number: str = Form(""),
 ):
-    """
-    Upload receipts and start the pipeline (OCR + Unified Distillation).
-    Returns job_id immediately; stream progress via GET /events/{job_id}.
-    Spreadsheet is NOT generated automatically — use POST /generate-spreadsheet/{job_id}.
-    """
-    # Reject if any job is still running — walk each item to completion first.
-    active = [jid for jid, j in _jobs.items() if not j.get("done")]
-    if active:
-        return JSONResponse(
-            {"error": "A processing job is already in progress. Wait for it to complete before starting another."},
-            status_code=409,
-        )
+    """Upload receipts and enqueue them for processing."""
+    INTAKE_FOLDER.mkdir(parents=True, exist_ok=True)
+    tmp_dir = INTAKE_FOLDER / f"_upload_{uuid4().hex[:8]}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    job_id = str(uuid.uuid4())
-    receipts_dir = INTAKE_FOLDER / job_id
-    receipts_dir.mkdir(parents=True, exist_ok=True)
-    out_dir = OUT_FOLDER
-    out_dir.mkdir(parents=True, exist_ok=True)
+    queued: list[str] = []
 
-    # Store original filename → tmp path mapping for retry support
-    receipt_file_map: dict[str, str] = {}
     for f in files:
         fname = f.filename or "receipt"
-        dest = receipts_dir / fname
+        dest  = tmp_dir / fname
         with open(dest, "wb") as fh:
             fh.write(await f.read())
-        receipt_file_map[fname] = str(dest)
 
-    cancel = threading.Event()
-    q: Queue = Queue()
-    _jobs[job_id] = {
-        "queue":            q,
-        "done":             False,
-        "output_path":      None,
-        "results":          None,
-        "employee":         employee or "Employee",
-        "job_name_default": job_name,
-        "job_number_default": job_number,
-        "cancel":           cancel,
-        "out_dir":          out_dir,
-        "receipts_dir":     receipts_dir,
-        "receipt_file_map": receipt_file_map,
-    }
+        suffix = dest.suffix.lower()
 
-    def run():
-        def log_cb(msg: str):
-            q.put({"type": "log", "message": msg})
+        if suffix in PDF_EXTENSIONS:
+            try:
+                pages = pdf_to_images(dest, tmp_dir / f"_pdf_{dest.stem}")
+                dest.unlink(missing_ok=True)
+                for page_path in pages:
+                    with _seen_lock:
+                        _seen_intake.add(page_path.name)
+                    item = {
+                        "filename":   page_path.name,
+                        "path":       str(page_path),
+                        "employee":   employee or "Employee",
+                        "job_name":   job_name,
+                        "job_number": job_number,
+                    }
+                    with _work_lock:
+                        _work_queue.append(item)
+                    _update_kanban(page_path.name, "queued", None)
+                    _broadcast({
+                        "type": "kanban_update", "filename": page_path.name,
+                        "status": "queued", "data": {}, "model": "",
+                    })
+                    queued.append(page_path.name)
+            except Exception as exc:
+                _broadcast({"type": "log", "message": f"[upload] PDF error {fname}: {exc}"})
 
-        def progress_cb(cur: int, tot: int, fname: str):
-            q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
-
-        def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data, model: str = ""):
-            q.put({
-                "type":     "receipt_update",
-                "index":    idx,
-                "total":    tot,
-                "filename": fname,
-                "status":   status,
-                "model":    model,
-                "data":     _safe_receipt_data(data),
+        elif suffix in IMAGE_EXTENSIONS:
+            with _seen_lock:
+                _seen_intake.add(dest.name)
+            item = {
+                "filename":   dest.name,
+                "path":       str(dest),
+                "employee":   employee or "Employee",
+                "job_name":   job_name,
+                "job_number": job_number,
+            }
+            with _work_lock:
+                _work_queue.append(item)
+            _update_kanban(dest.name, "queued", None)
+            _broadcast({
+                "type": "kanban_update", "filename": dest.name,
+                "status": "queued", "data": {}, "model": "",
             })
+            queued.append(dest.name)
 
-        try:
-            result = process_receipts_batch(
-                template_path=Path("Reimbursement_sheet_1.xlsx"),
-                receipts_folder=receipts_dir,
-                output_dir=out_dir,
-                employee_name=employee or "Employee",
-                job_name_default=job_name,
-                job_number_default=job_number,
-                auto_generate=False,
-                log_callback=log_cb,
-                progress_callback=progress_cb,
-                cancel_event=cancel,
-                receipt_status_callback=receipt_status_cb,
-            )
-            _jobs[job_id]["results"] = result.get("results", [])
-            q.put({
-                "type":           "done",
-                "processed":      result.get("processed", 0),
-                "skipped":        result.get("skipped", []),
-                "total":          result.get("total", 0),
-                "expense_period": result.get("expense_period", ""),
-            })
-        except Exception as exc:
-            q.put({"type": "error", "message": str(exc)})
-        finally:
-            _jobs[job_id]["done"] = True
+    # Persist defaults
+    cfg = _load_config()
+    if employee:
+        cfg["default_employee"] = employee
+        _save_field(cfg, "saved_employees", employee)
+    if job_name:
+        cfg["default_job_name"] = job_name
+        _save_field(cfg, "saved_job_names", job_name)
+    if job_number:
+        cfg["default_job_number"] = job_number
+        _save_field(cfg, "saved_job_numbers", job_number)
+    _save_config(cfg)
 
-    threading.Thread(target=run, daemon=True).start()
-    return {"job_id": job_id}
+    with _work_lock:
+        n_pending = len(_work_queue)
+
+    return JSONResponse({"queued": queued, "pending": n_pending})
 
 
-def _safe_receipt_data(data) -> dict:
-    """Serialize receipt data for SSE — strip non-serialisable internal fields."""
-    if not data:
-        return {}
-    out = {}
-    for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
-              "expense_description", "summary", "ai_summary", "_flag", "_category",
-              "_new_filename", "_file", "flags"):
-        if k in data:
-            out[k] = data[k]
-    return out
-
-
-@app.get("/intake/files")
-async def list_intake_files():
-    """List image files currently visible in the intake folder."""
-    try:
-        files = sorted(
-            p.name for p in INTAKE_FOLDER.iterdir()
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-        return JSONResponse({"files": files, "count": len(files)})
-    except Exception as exc:
-        return JSONResponse({"files": [], "count": 0, "error": str(exc)})
-
-
-@app.post("/process-intake")
-async def process_intake(
-    employee: str = Form("Employee"),
-    job_name: str = Form(""),
+@app.post("/queue/add-intake")
+async def queue_add_intake(
+    employee:   str = Form("Employee"),
+    job_name:   str = Form(""),
     job_number: str = Form(""),
 ):
-    """Process all image files currently in the intake folder (no upload needed)."""
-    # Reject if any job is still running — walk each item to completion first.
-    active = [jid for jid, j in _jobs.items() if not j.get("done")]
-    if active:
-        return JSONResponse(
-            {"error": "A processing job is already in progress. Wait for it to complete before starting another."},
-            status_code=409,
+    """Enqueue all unprocessed files currently in the intake folder."""
+    queued: list[str] = []
+
+    try:
+        files_in_intake = sorted(
+            p for p in INTAKE_FOLDER.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
         )
+    except Exception:
+        files_in_intake = []
 
-    image_files = sorted(
-        p for p in INTAKE_FOLDER.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-    )
-    if not image_files:
-        return JSONResponse({"error": "No image files found in intake folder"}, status_code=400)
+    for p in files_in_intake:
+        with _seen_lock:
+            if p.name in _seen_intake:
+                continue
+            _seen_intake.add(p.name)
 
-    job_id = str(uuid.uuid4())
-    receipt_file_map = {p.name: str(p) for p in image_files}
-    cancel = threading.Event()
-    q: Queue = Queue()
-    _jobs[job_id] = {
-        "queue":              q,
-        "done":               False,
-        "output_path":        None,
-        "results":            None,
-        "employee":           employee or "Employee",
-        "job_name_default":   job_name,
-        "job_number_default": job_number,
-        "cancel":             cancel,
-        "out_dir":            OUT_FOLDER,
-        "receipts_dir":       INTAKE_FOLDER,
-        "receipt_file_map":   receipt_file_map,
+        suffix = p.suffix.lower()
+
+        if suffix in IMAGE_EXTENSIONS:
+            item = {
+                "filename":   p.name,
+                "path":       str(p),
+                "employee":   employee or "Employee",
+                "job_name":   job_name,
+                "job_number": job_number,
+            }
+            with _work_lock:
+                _work_queue.append(item)
+            _update_kanban(p.name, "queued", None)
+            _broadcast({
+                "type": "kanban_update", "filename": p.name,
+                "status": "queued", "data": {}, "model": "",
+            })
+            queued.append(p.name)
+
+        elif suffix in PDF_EXTENSIONS:
+            try:
+                dest_dir = INTAKE_FOLDER / f"_pdf_{p.stem}"
+                pages    = pdf_to_images(p, dest_dir)
+                for page_path in pages:
+                    with _seen_lock:
+                        _seen_intake.add(page_path.name)
+                    item = {
+                        "filename":   page_path.name,
+                        "path":       str(page_path),
+                        "employee":   employee or "Employee",
+                        "job_name":   job_name,
+                        "job_number": job_number,
+                    }
+                    with _work_lock:
+                        _work_queue.append(item)
+                    _update_kanban(page_path.name, "queued", None)
+                    _broadcast({
+                        "type": "kanban_update", "filename": page_path.name,
+                        "status": "queued", "data": {}, "model": "",
+                    })
+                    queued.append(page_path.name)
+                IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(p), str(IMAGES_FOLDER / p.name))
+            except Exception as exc:
+                _broadcast({"type": "log", "message": f"[intake] PDF error {p.name}: {exc}"})
+
+    # Persist defaults
+    cfg = _load_config()
+    if employee:
+        cfg["default_employee"] = employee
+        _save_field(cfg, "saved_employees", employee)
+    if job_name:
+        cfg["default_job_name"] = job_name
+        _save_field(cfg, "saved_job_names", job_name)
+    if job_number:
+        cfg["default_job_number"] = job_number
+        _save_field(cfg, "saved_job_numbers", job_number)
+    _save_config(cfg)
+
+    with _work_lock:
+        n_pending = len(_work_queue)
+
+    return JSONResponse({"queued": queued, "pending": n_pending})
+
+
+@app.post("/queue/cancel")
+async def queue_cancel():
+    """Signal cancellation, drain the pending queue, then re-arm for future jobs."""
+    _worker_cancel.set()
+    with _work_lock:
+        cleared = len(_work_queue)
+        _work_queue.clear()
+    _worker_cancel.clear()   # allow future processing
+    return JSONResponse({"ok": True, "cleared": cleared})
+
+
+@app.get("/queue/status")
+async def queue_status():
+    with _work_lock:
+        n_pending = len(_work_queue)
+    with _results_lock:
+        n_completed = len(_results)
+    with _kanban_lock:
+        kanban_snapshot = {fn: {"status": v["status"]} for fn, v in _kanban.items()}
+    return JSONResponse({"pending": n_pending, "completed": n_completed, "kanban": kanban_snapshot})
+
+
+# ── Global SSE stream ──────────────────────────────────────────────────────────
+
+@app.get("/events")
+async def events_global():
+    """Global SSE stream — all connected clients receive all events."""
+    q = _add_subscriber()
+
+    # Send full state snapshot on connect
+    with _kanban_lock:
+        kanban_snapshot = {fn: dict(v) for fn, v in _kanban.items()}
+    with _work_lock:
+        n_pending = len(_work_queue)
+    with _results_lock:
+        n_completed = len(_results)
+    full_state = {
+        "type":      "full_state",
+        "kanban":    kanban_snapshot,
+        "pending":   n_pending,
+        "completed": n_completed,
     }
 
-    def run():
-        def log_cb(msg: str):
-            q.put({"type": "log", "message": msg})
-
-        def progress_cb(cur: int, tot: int, fname: str):
-            q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
-
-        def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data, model: str = ""):
-            q.put({
-                "type":     "receipt_update",
-                "index":    idx,
-                "total":    tot,
-                "filename": fname,
-                "status":   status,
-                "model":    model,
-                "data":     _safe_receipt_data(data),
-            })
-
-        try:
-            result = process_receipts_batch(
-                template_path=Path("Reimbursement_sheet_1.xlsx"),
-                receipts_folder=INTAKE_FOLDER,
-                output_dir=OUT_FOLDER,
-                employee_name=employee or "Employee",
-                job_name_default=job_name,
-                job_number_default=job_number,
-                auto_generate=False,
-                log_callback=log_cb,
-                progress_callback=progress_cb,
-                cancel_event=cancel,
-                receipt_status_callback=receipt_status_cb,
-            )
-            _jobs[job_id]["results"] = result.get("results", [])
-            q.put({
-                "type":           "done",
-                "processed":      result.get("processed", 0),
-                "skipped":        result.get("skipped", []),
-                "total":          result.get("total", 0),
-                "expense_period": result.get("expense_period", ""),
-            })
-        except Exception as exc:
-            q.put({"type": "error", "message": str(exc)})
-        finally:
-            _jobs[job_id]["done"] = True
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"job_id": job_id}
-
-
-@app.post("/cancel/{job_id}")
-async def cancel_job(job_id: str):
-    if job_id in _jobs:
-        _jobs[job_id]["cancel"].set()
-        return {"ok": True}
-    return {"ok": False}
-
-
-@app.get("/events/{job_id}")
-async def events(job_id: str):
-    if job_id not in _jobs:
-        return HTMLResponse("Job not found", status_code=404)
-
     async def generate():
-        job = _jobs[job_id]
-        q = job["queue"]
-        while True:
-            try:
-                msg = q.get(timeout=0.1)
-                yield f"data: {json.dumps(msg)}\n\n"
-                if msg["type"] in ("done", "error"):
-                    break
-            except Empty:
-                if job["done"]:
-                    break
-                await asyncio.sleep(0.05)
+        try:
+            yield f"data: {json.dumps(full_state)}\n\n"
+            while True:
+                try:
+                    msg = q.get_nowait()
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except Empty:
+                    yield ": heartbeat\n\n"
+                    await asyncio.sleep(1)
+        finally:
+            _remove_subscriber(q)
 
     return StreamingResponse(
         generate(),
@@ -333,24 +611,38 @@ async def events(job_id: str):
     )
 
 
-@app.post("/generate-spreadsheet/{job_id}")
-async def make_spreadsheet(job_id: str):
-    """Generate the Excel workbook from stored processing results."""
-    if job_id not in _jobs:
-        return HTMLResponse("Job not found", status_code=404)
+# ── Intake listing ─────────────────────────────────────────────────────────────
 
-    job = _jobs[job_id]
-    results = job.get("results")
-    if not results:
+@app.get("/intake/files")
+async def list_intake_files():
+    """List image/PDF files currently in the intake folder."""
+    try:
+        files = sorted(
+            p.name for p in INTAKE_FOLDER.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+        )
+        return JSONResponse({"files": files, "count": len(files)})
+    except Exception as exc:
+        return JSONResponse({"files": [], "count": 0, "error": str(exc)})
+
+
+# ── Spreadsheet generation ─────────────────────────────────────────────────────
+
+@app.post("/generate-spreadsheet")
+async def make_spreadsheet():
+    """Generate an Excel workbook from all completed results."""
+    with _results_lock:
+        results_copy = list(_results)
+
+    if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
 
-    out_dir = job.get("out_dir", OUT_FOLDER)
-    employee = job.get("employee", "Employee")
+    employee = _last_context.get("employee", "Employee")
 
     def _build():
         return generate_spreadsheet(
-            results=results,
-            output_dir=Path(str(out_dir)),
+            results=results_copy,
+            output_dir=OUT_FOLDER,
             employee_name=employee,
         )
 
@@ -362,14 +654,12 @@ async def make_spreadsheet(job_id: str):
     if not output_path or not Path(output_path).exists():
         return HTMLResponse("Spreadsheet generation failed", status_code=500)
 
-    job["output_path"] = output_path
     filename = Path(output_path).name
 
     async def file_stream():
         with open(output_path, "rb") as f:
             while chunk := f.read(65536):
                 yield chunk
-        _jobs.pop(job_id, None)
 
     return StreamingResponse(
         file_stream(),
@@ -378,119 +668,156 @@ async def make_spreadsheet(job_id: str):
     )
 
 
+# Legacy alias — same behaviour as global endpoint
+@app.post("/generate-spreadsheet/{job_id}")
+async def make_spreadsheet_legacy(job_id: str):
+    return await make_spreadsheet()
+
+
+# ── Results management ─────────────────────────────────────────────────────────
+
+@app.post("/results/clear")
+async def clear_results():
+    """Clear completed results and remove done/failed entries from the kanban."""
+    with _results_lock:
+        _results.clear()
+    with _kanban_lock:
+        to_remove = [fn for fn, v in _kanban.items() if v["status"] in ("done", "failed")]
+        for fn in to_remove:
+            del _kanban[fn]
+    _broadcast({"type": "results_cleared"})
+    return JSONResponse({"ok": True})
+
+
+# ── Retry endpoint ─────────────────────────────────────────────────────────────
+
 class RetryRequest(BaseModel):
     filename: str
 
 
-@app.post("/retry-receipt/{job_id}")
-async def retry_receipt(job_id: str, body: RetryRequest):
-    """
-    Re-process a single failed receipt by original filename.
-    Updates the job results in-place and emits an SSE receipt_update via the job queue.
-    """
-    if job_id not in _jobs:
-        return JSONResponse({"ok": False, "error": "Job not found"}, status_code=404)
-
-    job = _jobs[job_id]
+@app.post("/retry-receipt")
+async def retry_receipt(body: RetryRequest):
+    """Re-process a single receipt by filename."""
     filename = body.filename
 
-    # Look up the image path from the upload map
-    file_map: dict = job.get("receipt_file_map", {})
-    img_path_str = file_map.get(filename)
-
-    # Also check if there's already a processed result with a renamed path
-    if not img_path_str:
-        results = job.get("results") or []
-        for r in results:
+    # 1. Try _results first
+    img_path_str: str | None = None
+    with _results_lock:
+        for r in _results:
             if r.get("_file") == filename or r.get("_new_filename") == filename:
                 img_path_str = r.get("_image_path")
                 break
 
+    # 2. Try kanban data
+    if not img_path_str:
+        with _kanban_lock:
+            entry = _kanban.get(filename, {})
+        kdata = entry.get("data") or {}
+        img_path_str = kdata.get("_image_path")
+
+    # 3. Try intake folder directly
     if not img_path_str or not Path(img_path_str).exists():
-        # Try finding it in the receipts directory
-        receipts_dir: Path = job.get("receipts_dir", INTAKE_FOLDER / job_id)
-        candidate = receipts_dir / filename
+        candidate = INTAKE_FOLDER / filename
         if candidate.exists():
             img_path_str = str(candidate)
-        else:
-            return JSONResponse(
-                {"ok": False, "error": f"Image file not found for retry: {filename}"},
-                status_code=404,
-            )
+
+    if not img_path_str or not Path(img_path_str).exists():
+        return JSONResponse(
+            {"ok": False, "error": f"Image file not found for retry: {filename}"},
+            status_code=404,
+        )
 
     img_path = Path(img_path_str)
 
+    # Broadcast that we are distilling
+    _update_kanban(filename, "distilling", None)
+    _broadcast({
+        "type": "kanban_update", "filename": filename,
+        "status": "distilling", "data": {}, "model": "",
+    })
+
     def _retry():
-        from openai import OpenAI
         client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
 
-        def status_cb(status, data=None, model=""):
-            q = job.get("queue")
-            if q:
-                q.put({
-                    "type":     "receipt_update",
-                    "index":    0,
-                    "total":    0,
-                    "filename": filename,
-                    "status":   status,
-                    "model":    model,
-                    "data":     _safe_receipt_data(data),
-                })
+        def status_cb(status: str, data=None, model: str = "") -> None:
+            _update_kanban(filename, status, data, model)
+            _broadcast({
+                "type":     "kanban_update",
+                "filename": filename,
+                "status":   status,
+                "data":     _safe_receipt_data(data),
+                "model":    model,
+            })
 
-        return _pr._extract_receipt_with_status(client, Path(img_path_str), status_cb)
+        return _extract_receipt_with_status(client, img_path, status_cb)
 
     try:
         new_data = await asyncio.get_event_loop().run_in_executor(None, _retry)
     except Exception as exc:
+        _update_kanban(filename, "failed", None)
+        _broadcast({
+            "type": "kanban_update", "filename": filename,
+            "status": "failed", "data": {}, "model": "",
+        })
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
-    if new_data and not _pr._is_low_confidence(new_data):
-        from process_receipts import classify_category
+    if new_data and not _is_low_confidence(new_data):
         category = classify_category(new_data)
         new_data["_category"] = category
         if category == "fuel":
             new_data["expense_description"] = None
 
-        jn = job.get("job_name_default", "")
-        jnum = job.get("job_number_default", "")
-        new_data["job_name"]   = jn or None
-        new_data["job_number"] = jnum or None
+        new_data["job_name"]   = _last_context.get("job_name") or None
+        new_data["job_number"] = _last_context.get("job_number") or None
 
         flags_list = new_data.get("flags") or []
         if flags_list and not new_data.get("_flag"):
             new_data["_flag"] = flags_list[0].get("flag", "")
 
-        results = job.get("results") or []
-        matched = False
-        for r in results:
-            if r.get("_file") == filename or r.get("_new_filename") == filename:
-                r.update(new_data)
-                matched = True
-                break
-        if not matched:
-            new_data["_file"] = filename
-            new_data["_image_path"] = img_path_str
-            results.append(new_data)
-            job["results"] = results
+        # Rename/move the file
+        IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+        final_path = rename_receipt_image(img_path, new_data, category, IMAGES_FOLDER)
+        new_data["_new_filename"] = final_path.name
+        new_data["_file"]         = filename
+        new_data["_image_path"]   = str(final_path)
 
-        q = job.get("queue")
-        if q:
-            q.put({
-                "type": "receipt_update", "index": 0, "total": 0,
-                "filename": filename, "status": "done", "model": "",
-                "data": _safe_receipt_data(new_data),
-            })
+        # Update _results in-place or append
+        with _results_lock:
+            matched = False
+            for r in _results:
+                if r.get("_file") == filename or r.get("_new_filename") == filename:
+                    r.update(new_data)
+                    matched = True
+                    break
+            if not matched:
+                _results.append(new_data)
+
+        _update_kanban(filename, "done", new_data)
+        _broadcast({
+            "type":     "kanban_update",
+            "filename": filename,
+            "status":   "done",
+            "data":     _safe_receipt_data(new_data),
+            "model":    "",
+        })
         return JSONResponse({"ok": True, "data": _safe_receipt_data(new_data)})
 
+    _update_kanban(filename, "failed", None)
+    _broadcast({
+        "type": "kanban_update", "filename": filename,
+        "status": "failed", "data": {}, "model": "",
+    })
     return JSONResponse(
         {"ok": False, "error": "Retry extraction failed or still low confidence"},
         status_code=422,
     )
 
 
+# ── Model management ───────────────────────────────────────────────────────────
+
 @app.get("/models/available")
 async def get_available_models():
-    """List all models currently loaded in LM Studio — for the model selector UI."""
+    """List all models loaded in LM Studio — for the model selector UI."""
     def _fetch():
         return list_available_models()
 
@@ -542,6 +869,36 @@ async def swap_ocr_model(body: ModelSwapRequest):
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
 
 
+@app.get("/models/lmstudio")
+async def get_lmstudio_models():
+    def _fetch():
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        response = client.models.list()
+        return [m.id for m in response.data]
+
+    try:
+        models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        return JSONResponse({"loaded": models, "ok": True})
+    except Exception as exc:
+        return JSONResponse({"loaded": [], "ok": False, "error": str(exc)})
+
+
+# ── Folder / file-manager helpers ──────────────────────────────────────────────
+
+def _is_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _open_folder_native(folder: Path) -> None:
+    import sys
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)])
+    elif sys.platform == "win32":
+        os.startfile(str(folder))
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+
+
 @app.get("/folders")
 async def get_folders():
     """Return configured folder paths for the UI."""
@@ -556,50 +913,10 @@ async def get_folders():
     return JSONResponse(paths)
 
 
-
-class SettingsRequest(BaseModel):
-    host_intake_path: str = ""
-    host_output_path: str = ""
-
-@app.get("/settings")
-async def get_settings():
-    cfg = _load_config()
-    return JSONResponse({
-        "host_intake_path": cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", ""),
-        "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
-    })
-
-@app.post("/settings")
-async def save_settings(body: SettingsRequest):
-    try:
-        cfg = _load_config()
-        cfg["host_intake_path"] = body.host_intake_path.strip()
-        cfg["host_output_path"] = body.host_output_path.strip()
-        _save_config(cfg)
-        return JSONResponse({"ok": True})
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-
-
 @app.get("/open-output-folder")
 async def open_output_folder():
     host = _host_output()
     return JSONResponse({"path": str(OUTPUT_FOLDER), "host_path": host})
-
-
-def _is_docker() -> bool:
-    return Path("/.dockerenv").exists()
-
-
-def _open_folder_native(folder: Path) -> None:
-    import sys
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", str(folder)])
-    elif sys.platform == "win32":
-        import os as _os
-        _os.startfile(str(folder))
-    else:
-        subprocess.Popen(["xdg-open", str(folder)])
 
 
 @app.post("/open-folder")
@@ -659,34 +976,63 @@ async def open_watch_folder():
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@app.get("/models/lmstudio")
-async def get_lmstudio_models():
-    def _fetch():
-        from openai import OpenAI
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
-        response = client.models.list()
-        return [m.id for m in response.data]
+# ── Settings ───────────────────────────────────────────────────────────────────
 
+class SettingsRequest(BaseModel):
+    host_intake_path: str = ""
+    host_output_path: str = ""
+
+
+@app.get("/settings")
+async def get_settings():
+    cfg = _load_config()
+    return JSONResponse({
+        "host_intake_path": cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", ""),
+        "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
+    })
+
+
+@app.post("/settings")
+async def save_settings(body: SettingsRequest):
     try:
-        models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return JSONResponse({"loaded": models, "ok": True})
-    except Exception as exc:
-        return JSONResponse({"loaded": [], "ok": False, "error": str(exc)})
-
-
-@app.post("/watch/send-email")
-async def watch_send_email():
-    try:
-        from watch_mode import load_state, send_report
-        from openai import OpenAI
-        state  = load_state()
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
-        result = send_report(state, client=client)
-        status = 200 if result.get("ok") else 503
-        return JSONResponse(result, status_code=status)
+        cfg = _load_config()
+        cfg["host_intake_path"] = body.host_intake_path.strip()
+        cfg["host_output_path"] = body.host_output_path.strip()
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
+
+# ── Saved fields ───────────────────────────────────────────────────────────────
+
+class SaveFieldsRequest(BaseModel):
+    employee:   str = ""
+    job_name:   str = ""
+    job_number: str = ""
+
+
+@app.get("/saved-fields")
+async def get_saved_fields():
+    cfg = _load_config()
+    return JSONResponse({
+        "employees":   cfg.get("saved_employees",   []),
+        "job_names":   cfg.get("saved_job_names",   []),
+        "job_numbers": cfg.get("saved_job_numbers", []),
+    })
+
+
+@app.post("/saved-fields")
+async def save_fields(body: SaveFieldsRequest):
+    cfg = _load_config()
+    _save_field(cfg, "saved_employees",   body.employee)
+    _save_field(cfg, "saved_job_names",   body.job_name)
+    _save_field(cfg, "saved_job_numbers", body.job_number)
+    _save_config(cfg)
+    return JSONResponse({"ok": True})
+
+
+# ── Watch-mode / email ─────────────────────────────────────────────────────────
 
 @app.get("/watch/status")
 async def watch_status():
@@ -699,30 +1045,20 @@ async def watch_status():
             "smtp_configured": bool(SMTP_HOST and EMAIL_TO),
         })
     except Exception as exc:
-        return JSONResponse({"receipts": 0, "last_emailed": None, "smtp_configured": False,
-                             "error": str(exc)})
+        return JSONResponse({
+            "receipts": 0, "last_emailed": None, "smtp_configured": False,
+            "error": str(exc),
+        })
 
 
-@app.get("/download/{job_id}")
-async def download(job_id: str):
-    """Legacy download endpoint — serves an already-generated spreadsheet."""
-    if job_id not in _jobs:
-        return HTMLResponse("Job not found", status_code=404)
-
-    output_path = _jobs[job_id].get("output_path")
-    if not output_path or not Path(output_path).exists():
-        return HTMLResponse("Output file not ready — use POST /generate-spreadsheet/{job_id}", status_code=404)
-
-    filename = Path(output_path).name
-
-    async def file_stream():
-        with open(output_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-        _jobs.pop(job_id, None)
-
-    return StreamingResponse(
-        file_stream(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+@app.post("/watch/send-email")
+async def watch_send_email():
+    try:
+        from watch_mode import load_state, send_report
+        state  = load_state()
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        result = send_report(state, client=client)
+        status = 200 if result.get("ok") else 503
+        return JSONResponse(result, status_code=status)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
