@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -169,6 +170,32 @@ async def swap_gemma_model(body: GemmaSwapRequest):
 @app.get("/open-output-folder")
 async def open_output_folder():
     return JSONResponse({"path": str(OUTPUT_FOLDER)})
+
+
+@app.post("/open-folder")
+async def open_folder_in_manager():
+    folder = Path(OUTPUT_FOLDER).resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.Popen(["xdg-open", str(folder)])
+        return JSONResponse({"ok": True, "path": str(folder)})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/models/lmstudio")
+async def get_lmstudio_models():
+    def _fetch():
+        from openai import OpenAI
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        response = client.models.list()
+        return [m.id for m in response.data]
+
+    try:
+        models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        return JSONResponse({"loaded": models, "ok": True})
+    except Exception as exc:
+        return JSONResponse({"loaded": [], "ok": False, "error": str(exc)})
 
 
 @app.post("/watch/send-email")

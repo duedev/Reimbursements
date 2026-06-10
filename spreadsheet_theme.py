@@ -6,6 +6,7 @@ All sections are written in a single pass — no row-insertion hacks needed.
 from __future__ import annotations
 
 from datetime import datetime, date
+from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -13,7 +14,7 @@ from openpyxl.utils import get_column_letter
 # ── Color palette ──────────────────────────────────────────────────────────────
 COLOR_TITLE_BG    = "2C3E50"   # dark charcoal — title + TOTAL rows
 COLOR_TITLE_FG    = "FFFFFF"
-COLOR_SECTION_BG  = "D97706"   # amber — section banners
+COLOR_SECTION_BG  = "1E40AF"   # dark blue — section banners
 COLOR_SECTION_FG  = "FFFFFF"
 COLOR_HEADER_BG   = "3B82F6"   # steel blue — column header rows
 COLOR_HEADER_FG   = "FFFFFF"
@@ -290,6 +291,111 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
     ws.row_dimensions[row].height = 24
 
 
+# ── Image sheet builder ────────────────────────────────────────────────────────
+
+_IMG_ROW_HEIGHT_PT = 14     # points per image-area row
+_IMG_MAX_W_PX      = 720    # max image width in pixels
+_IMG_MAX_H_PX      = 480    # max image height in pixels
+_IMG_ROWS          = 27     # rows reserved per image (≈27×14pt×1.33px/pt ≈ 504px)
+
+
+def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]):
+    """Add a new sheet with embedded receipt images for a single category."""
+    ws = wb.create_sheet(title=sheet_name)
+
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 38
+
+    current_row = 1
+
+    # Title row
+    ws.merge_cells(f"A{current_row}:E{current_row}")
+    title_cell = ws.cell(row=current_row, column=1, value=f"{sheet_name} — Receipt Images")
+    title_cell.font      = _font(bold=True, color=COLOR_TITLE_FG, size=14)
+    title_cell.fill      = _fill(COLOR_TITLE_BG)
+    title_cell.alignment = _align(h="center")
+    ws.row_dimensions[current_row].height = 28
+    current_row += 1
+
+    if not receipts:
+        ws.cell(row=current_row, column=1, value="No receipts in this category.")
+        return
+
+    # Column header row
+    col_headers = ["#", "Date", "Vendor / Name", "Amount", "Filename"]
+    hdr_fill = _fill(COLOR_HEADER_BG)
+    hdr_font = _font(bold=True, color=COLOR_HEADER_FG, size=10)
+    for col_idx, hdr_text in enumerate(col_headers, 1):
+        cell = ws.cell(row=current_row, column=col_idx, value=hdr_text)
+        cell.font      = hdr_font
+        cell.fill      = hdr_fill
+        cell.alignment = _align(h="center")
+        cell.border    = _border("2E75B6")
+    ws.row_dimensions[current_row].height = 18
+    current_row += 1
+
+    for i, data in enumerate(receipts):
+        img_path_str = data.get("_image_path", "")
+        date_val     = data.get("date") or ""
+        vendor       = data.get("vendor") or data.get("job_name") or ""
+        amount       = data.get("amount") or 0
+        filename     = data.get("_new_filename") or data.get("_file") or ""
+
+        row_fill = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
+        row_values = [i + 1, date_val, vendor, f"${float(amount):.2f}", filename]
+        for col_idx, val in enumerate(row_values, 1):
+            cell = ws.cell(row=current_row, column=col_idx, value=val)
+            cell.font      = _font(bold=(col_idx == 1), size=10)
+            cell.fill      = row_fill
+            cell.alignment = _align(h="center" if col_idx in (1, 4) else "left", wrap=False)
+            cell.border    = _border()
+        ws.row_dimensions[current_row].height = 16
+        current_row += 1
+
+        # Embed image if the file path is available
+        if img_path_str and Path(img_path_str).exists():
+            try:
+                from openpyxl.drawing.image import Image as XLImage
+                from PIL import Image as PILImage
+
+                with PILImage.open(img_path_str) as pil_img:
+                    orig_w, orig_h = pil_img.size
+
+                scale = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
+                img_w = int(orig_w * scale)
+                img_h = int(orig_h * scale)
+
+                # rows needed: px → pt (×0.75) ÷ row_height_pt
+                rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
+
+                xl_img        = XLImage(img_path_str)
+                xl_img.width  = img_w
+                xl_img.height = img_h
+                ws.add_image(xl_img, f"A{current_row}")
+
+                for r in range(current_row, current_row + rows_needed):
+                    ws.row_dimensions[r].height = _IMG_ROW_HEIGHT_PT
+                current_row += rows_needed
+            except Exception as exc:
+                err_cell = ws.cell(row=current_row, column=1, value=f"[Image error: {exc}]")
+                err_cell.font = _font(size=9, color="991B1B")
+                ws.row_dimensions[current_row].height = 14
+                current_row += 1
+        else:
+            placeholder = ws.cell(row=current_row, column=1,
+                                  value=f"[Image not available: {filename}]")
+            placeholder.font = _font(size=9, color="6B7280")
+            ws.row_dimensions[current_row].height = 14
+            current_row += 1
+
+        # Spacer between receipts
+        ws.row_dimensions[current_row].height = 8
+        current_row += 1
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def build_themed_workbook(
@@ -305,8 +411,8 @@ def build_themed_workbook(
         "materials": [data_dicts, ...],
         "misc":      [data_dicts, ...],
     }
-    Each data_dict must have keys: date, vendor, amount, job_name, job_number,
-    expense_description, _new_filename (or _file).
+    Each data_dict may include _image_path (full path to receipt image) so that
+    per-category image sheets are generated as additional tabs.
 
     Returns a Workbook ready to be saved.
     """
@@ -318,7 +424,7 @@ def build_themed_workbook(
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Sheet1"
+    ws.title = "Summary"
 
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
@@ -327,7 +433,7 @@ def build_themed_workbook(
 
     # ── Rows 1–4: form header ─────────────────────────────────────────────────
     _write_title(ws, 1)
-    _write_meta_field(ws, 2, "Employee Name:", employee_name)
+    _write_meta_field(ws, 2, "Employee:", employee_name)
     _write_meta_field(ws, 3, "Expense Period:", expense_period)
     _write_note_row(ws, 4, "**Due Thursday by 12 p.m.**")
 
@@ -385,5 +491,15 @@ def build_themed_workbook(
         subtotal_rows["materials"],
         subtotal_rows["misc"],
     )
+
+    # ── Per-category image sheets ─────────────────────────────────────────────
+    IMAGE_SHEET_DEFS = [
+        ("fuel",      "Fuel Receipts"),
+        ("materials", "Materials Receipts"),
+        ("misc",      "Misc Receipts"),
+    ]
+    for category, sheet_name in IMAGE_SHEET_DEFS:
+        receipts = sections.get(category, [])
+        _build_image_sheet(wb, sheet_name, receipts)
 
     return wb
