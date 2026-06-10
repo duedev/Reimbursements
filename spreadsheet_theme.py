@@ -206,7 +206,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
 
     # D — Job Name
     cell_d = ws.cell(row=row, column=COL_JOB_NAME, value=data.get("job_name") or "")
-    cell_d.alignment = _align(h="left", wrap=True)
+    cell_d.alignment = _align(h="center", wrap=True)
 
     # E — Job Number or Expense Description
     if category == "misc":
@@ -228,7 +228,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     ai_summary = (data.get("ai_summary") or "").strip()
     cell_g = ws.cell(row=row, column=COL_SUMMARY, value=ai_summary or None)
     cell_g.font      = _font(size=10, color="4B5563")
-    cell_g.alignment = _align(h="left", wrap=True)
+    cell_g.alignment = _align(h="center", wrap=True)
 
     # H — Notes (always written)
     flag_text = data.get("_flag") or ""
