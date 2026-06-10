@@ -96,6 +96,14 @@ async def process(
     Returns job_id immediately; stream progress via GET /events/{job_id}.
     Spreadsheet is NOT generated automatically — use POST /generate-spreadsheet/{job_id}.
     """
+    # Reject if any job is still running — walk each item to completion first.
+    active = [jid for jid, j in _jobs.items() if not j.get("done")]
+    if active:
+        return JSONResponse(
+            {"error": "A processing job is already in progress. Wait for it to complete before starting another."},
+            status_code=409,
+        )
+
     job_id = str(uuid.uuid4())
     receipts_dir = INTAKE_FOLDER / job_id
     receipts_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +217,14 @@ async def process_intake(
     job_number: str = Form(""),
 ):
     """Process all image files currently in the intake folder (no upload needed)."""
+    # Reject if any job is still running — walk each item to completion first.
+    active = [jid for jid, j in _jobs.items() if not j.get("done")]
+    if active:
+        return JSONResponse(
+            {"error": "A processing job is already in progress. Wait for it to complete before starting another."},
+            status_code=409,
+        )
+
     image_files = sorted(
         p for p in INTAKE_FOLDER.iterdir()
         if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
@@ -220,7 +236,6 @@ async def process_intake(
     receipt_file_map = {p.name: str(p) for p in image_files}
     cancel = threading.Event()
     q: Queue = Queue()
-    job_client = _OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
     _jobs[job_id] = {
         "queue":              q,
         "done":               False,
@@ -230,7 +245,6 @@ async def process_intake(
         "job_name_default":   job_name,
         "job_number_default": job_number,
         "cancel":             cancel,
-        "client":             job_client,
         "out_dir":            OUT_FOLDER,
         "receipts_dir":       INTAKE_FOLDER,
         "receipt_file_map":   receipt_file_map,
@@ -267,7 +281,6 @@ async def process_intake(
                 progress_callback=progress_cb,
                 cancel_event=cancel,
                 receipt_status_callback=receipt_status_cb,
-                openai_client=job_client,
             )
             _jobs[job_id]["results"] = result.get("results", [])
             q.put({
