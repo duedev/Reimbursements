@@ -23,6 +23,46 @@ TMP_ROOT.mkdir(exist_ok=True)
 _jobs: dict[str, dict] = {}
 
 
+def _make_job(q: Queue, cancel: threading.Event) -> dict:
+    return {"queue": q, "done": False, "output_path": None, "cancel": cancel}
+
+
+def _run_batch(job_id: str, receipts_dir: Path, out_dir: Path,
+               employee: str, job_name: str, job_number: str,
+               rename_in_place: bool = False):
+    """Background worker shared by upload and folder modes."""
+    job = _jobs[job_id]
+    q   = job["queue"]
+
+    def log_cb(msg: str):
+        q.put({"type": "log", "message": msg})
+
+    def progress_cb(cur: int, tot: int, fname: str):
+        q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
+
+    try:
+        result = process_receipts_batch(
+            template_path=Path("Reimbursement_sheet_1.xlsx"),
+            receipts_folder=receipts_dir,
+            output_dir=out_dir,
+            employee_name=employee or "Employee",
+            job_name_default=job_name,
+            job_number_default=job_number,
+            rename_in_place=rename_in_place,
+            log_callback=log_cb,
+            progress_callback=progress_cb,
+            cancel_event=job["cancel"],
+        )
+        out_path = result.get("output_path")
+        job["output_path"] = out_path
+        q.put({"type": "done", "filename": out_path.name if out_path else "",
+               "review_count": result.get("review_count", 0)})
+    except Exception as exc:
+        q.put({"type": "error", "message": str(exc)})
+    finally:
+        job["done"] = True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load olmOCR-2 (or fall back to Gemma) in a background thread so the
@@ -59,36 +99,36 @@ async def process(
 
     cancel = threading.Event()
     q: Queue = Queue()
-    _jobs[job_id] = {"queue": q, "done": False, "output_path": None, "cancel": cancel}
+    _jobs[job_id] = _make_job(q, cancel)
+    threading.Thread(
+        target=_run_batch,
+        args=(job_id, receipts_dir, out_dir, employee, job_name, job_number),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id}
 
-    def run():
-        def log_cb(msg: str):
-            q.put({"type": "log", "message": msg})
 
-        def progress_cb(cur: int, tot: int, fname: str):
-            q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
+@app.post("/process-folder")
+async def process_folder(
+    folder_path: str = Form("/mnt/input"),
+    employee:    str = Form("Employee"),
+    job_name:    str = Form(""),
+    job_number:  str = Form(""),
+):
+    """Process images from a mounted folder path (rename in-place, save Excel there)."""
+    src = Path(folder_path)
+    if not src.exists() or not src.is_dir():
+        return {"error": f"Folder not found: {folder_path}"}
 
-        try:
-            result = process_receipts_batch(
-                template_path=Path("Reimbursement_sheet_1.xlsx"),
-                receipts_folder=receipts_dir,
-                output_dir=out_dir,
-                employee_name=employee or "Employee",
-                job_name_default=job_name,
-                job_number_default=job_number,
-                log_callback=log_cb,
-                progress_callback=progress_cb,
-                cancel_event=cancel,
-            )
-            out_path = result.get("output_path")
-            _jobs[job_id]["output_path"] = out_path
-            q.put({"type": "done", "filename": out_path.name if out_path else ""})
-        except Exception as exc:
-            q.put({"type": "error", "message": str(exc)})
-        finally:
-            _jobs[job_id]["done"] = True
-
-    threading.Thread(target=run, daemon=True).start()
+    job_id = str(uuid.uuid4())
+    cancel = threading.Event()
+    q: Queue = Queue()
+    _jobs[job_id] = _make_job(q, cancel)
+    threading.Thread(
+        target=_run_batch,
+        args=(job_id, src, src, employee, job_name, job_number, True),
+        daemon=True,
+    ).start()
     return {"job_id": job_id}
 
 

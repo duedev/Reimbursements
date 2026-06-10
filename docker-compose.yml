@@ -7,3 +7,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+    volumes:
+      # Set RECEIPTS_PATH in a .env file (e.g. RECEIPTS_PATH=/Users/you/receipts)
+      # or just drop receipts/ next to docker-compose.yml and leave this as-is.
+      - ${RECEIPTS_PATH:-./receipts}:/mnt/input:rw

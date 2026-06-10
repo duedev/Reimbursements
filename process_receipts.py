@@ -25,10 +25,6 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Callable, Optional
 
-import openpyxl
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 from openai import OpenAI
 from PIL import Image
 
@@ -40,19 +36,10 @@ OLMOCR_MODEL_ID   = os.getenv("OLMOCR_MODEL_ID",   "allenai/olmOCR-2-7B")
 GEMMA_MODEL_ID    = os.getenv("GEMMA_MODEL_ID",     "google/gemma-4-12b-qat")
 RECEIPTS_FOLDER   = "receipts"
 IMAGE_EXTENSIONS  = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
-# Qwen2-VL (olmOCR-2 base) recommends ≤1568 px per side
-IMAGE_MAX_PX      = 1568
+IMAGE_MAX_PX      = 1568   # Qwen2-VL / olmOCR-2 hard limit per side
 
 # Runtime state — updated by initialize_models()
 _active_model: str = GEMMA_MODEL_ID
-
-# Column positions (shared with spreadsheet_theme)
-COL_RECEIPT_NO = 1
-COL_DATE       = 2
-COL_NAME       = 3
-COL_JOB_NUMBER = 5
-COL_AMOUNT     = 6
-COL_FILENAME   = 7
 
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
@@ -76,10 +63,9 @@ MONTH_MAP: dict[str, int] = {
     "oct": 10,    "nov": 11,    "dec": 12,
 }
 
-
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
-# olmOCR-2 is a Qwen2-VL fine-tune: terse prompt, temp=0, higher max_tokens
+# olmOCR-2 (Qwen2-VL fine-tune): terse, temp=0, higher max_tokens
 OLMOCR_EXTRACTION_PROMPT = (
     'Extract receipt data as JSON with these exact keys: '
     '{"date":"YYYY-MM-DD","vendor":"store name","amount":0.00,'
@@ -88,26 +74,65 @@ OLMOCR_EXTRACTION_PROMPT = (
     'Use the transaction TOTAL for amount. Return ONLY valid JSON, no markdown.'
 )
 
-GEMMA_EXTRACTION_PROMPT = """You are a receipt data extractor. Analyze this receipt image and return ONLY a JSON object:
+# Gemma: explicitly disable chain-of-thought / thinking steps to save time
+GEMMA_EXTRACTION_PROMPT = (
+    "No reasoning steps. Respond immediately with JSON only.\n\n"
+    "Analyze this receipt image and return ONLY this JSON object:\n\n"
+    '{\n'
+    '  "date": "YYYY-MM-DD (or month name if no day visible)",\n'
+    '  "vendor": "store or vendor name",\n'
+    '  "amount": 0.00,\n'
+    '  "category": "fuel | materials | misc",\n'
+    '  "job_name": null,\n'
+    '  "job_number": null,\n'
+    '  "expense_description": "brief description"\n'
+    '}\n\n'
+    'Category rules — fuel: gas stations; materials: hardware/supply stores; misc: everything else.\n'
+    'Amount: use TOTAL or GRAND TOTAL. Return ONLY valid JSON, no markdown fences.'
+)
 
-{
-  "date": "YYYY-MM-DD or month name if no specific date (e.g. 'January')",
-  "vendor": "store or vendor name",
-  "amount": 0.00,
-  "category": "fuel | materials | misc",
-  "job_name": "job name or project if visible, else null",
-  "job_number": "job/project number if visible, else null",
-  "expense_description": "brief description (e.g. 'Gasoline', 'Building Materials', 'Cell Phone', 'Hotel Stay')"
-}
 
-Category rules:
-- "fuel": gas stations, fuel purchases (Shell, Chevron, Arco, Mobil, 76, etc.)
-- "materials": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
-- "misc": everything else (phone bills, hotel, meals, WiFi, restaurants, coffee, etc.)
+# ── Date parsing ───────────────────────────────────────────────────────────────
 
-For amount: use the TOTAL or GRAND TOTAL. Return as a number only.
-For date: use the transaction date. Month name only if no day is visible.
-Return ONLY valid JSON, no markdown fences, no explanation."""
+def parse_date(raw: str) -> Optional[date]:
+    """
+    Try multiple common date formats; return a date or None.
+    Handles YYYY-MM-DD, MM/DD/YY, MM/DD/YYYY, and month-name-only strings.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y",
+                "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            pass
+
+    # Non-zero-padded: split on / or - and infer order
+    for sep in ('/', '-'):
+        parts = raw.split(sep)
+        if len(parts) == 3:
+            try:
+                a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+                if a > 1000:                      # YYYY-MM-DD
+                    return date(a, b, c)
+                if c > 1000:                      # MM/DD/YYYY
+                    return date(c, a, b)
+                if c < 100:                       # MM/DD/YY
+                    yr = 2000 + c if c < 50 else 1900 + c
+                    return date(yr, a, b)
+            except (ValueError, TypeError):
+                pass
+
+    month_num = MONTH_MAP.get(raw.lower())
+    if month_num:
+        today = date.today()
+        year  = today.year if month_num <= today.month else today.year - 1
+        return date(year, month_num, 1)
+
+    return None
 
 
 # ── Model management ───────────────────────────────────────────────────────────
@@ -117,37 +142,23 @@ def _api_base() -> str:
 
 
 def _fuzzy_match(model_id: str, loaded_ids: list[str]) -> bool:
-    """Return True if model_id loosely matches any entry in loaded_ids."""
     key = re.sub(r"[-_/]", "", model_id.lower())
-    for mid in loaded_ids:
-        if key in re.sub(r"[-_/]", "", mid.lower()):
-            return True
-    return False
+    return any(key in re.sub(r"[-_/]", "", mid.lower()) for mid in loaded_ids)
 
 
 def _try_load_model(model_id: str) -> bool:
-    """
-    Check whether model_id is already loaded in LM Studio; if not, request
-    it via the LM Studio REST API (/api/v0/models/load).
-    Returns True when the model is confirmed available.
-    """
     base = _api_base()
-
-    # 1. Check /v1/models for already-loaded models
     try:
         req = urllib.request.Request(
             f"{base}/v1/models",
             headers={"Authorization": "Bearer lmstudio"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            loaded = [m["id"] for m in data.get("data", [])]
+            loaded = [m["id"] for m in json.loads(resp.read()).get("data", [])]
             if _fuzzy_match(model_id, loaded):
                 return True
     except Exception:
         pass
-
-    # 2. Ask LM Studio to load the model (LM Studio ≥0.3.x REST API)
     try:
         payload = json.dumps({"identifier": model_id}).encode()
         req = urllib.request.Request(
@@ -163,11 +174,7 @@ def _try_load_model(model_id: str) -> bool:
 
 
 def initialize_models() -> str:
-    """
-    Try to load olmOCR-2 via LM Studio API.
-    Falls back to Gemma 4 12B QAT if olmOCR-2 is unavailable.
-    Returns the active model ID.
-    """
+    """Try olmOCR-2; fall back to Gemma. Returns the active model ID."""
     global _active_model
     print(f"[models] Checking for olmOCR-2 ({OLMOCR_MODEL_ID}) …")
     if _try_load_model(OLMOCR_MODEL_ID):
@@ -182,10 +189,7 @@ def initialize_models() -> str:
 # ── Image encoding ─────────────────────────────────────────────────────────────
 
 def encode_image(path: Path) -> tuple[str, str]:
-    """
-    Open, resize to ≤IMAGE_MAX_PX on longest side (Qwen2-VL / olmOCR-2 limit),
-    and return (base64_jpeg, 'image/jpeg').
-    """
+    """Resize to ≤IMAGE_MAX_PX on longest side and return (base64_jpeg, mime)."""
     img = Image.open(path).convert("RGB")
     if max(img.size) > IMAGE_MAX_PX:
         ratio = IMAGE_MAX_PX / max(img.size)
@@ -200,24 +204,31 @@ def encode_image(path: Path) -> tuple[str, str]:
 
 # ── AI extraction ──────────────────────────────────────────────────────────────
 
-def _is_low_confidence(data: Optional[dict]) -> bool:
-    """True when the extraction is missing critical fields."""
+def _check_review_needed(data: Optional[dict]) -> list[str]:
+    """Return list of field names that are missing and need human review."""
     if data is None:
-        return True
+        return ["all fields"]
+    missing = []
     if not data.get("amount"):
-        return True
+        missing.append("amount")
     if not (data.get("vendor") or "").strip():
-        return True
-    return False
+        missing.append("vendor")
+    if not (data.get("date") or "").strip():
+        missing.append("date")
+    return missing
+
+
+def _is_low_confidence(data: Optional[dict]) -> bool:
+    return bool(_check_review_needed(data))
 
 
 def _extract_with_model(client: OpenAI, image_path: Path, model_id: str) -> Optional[dict]:
-    """Send receipt image to a specific model; return parsed dict or None."""
     try:
-        b64, mime = encode_image(image_path)
-        is_olmocr  = OLMOCR_MODEL_ID.lower().split("/")[-1] in model_id.lower().replace("-", "").replace("_", "")
-        prompt     = OLMOCR_EXTRACTION_PROMPT if is_olmocr else GEMMA_EXTRACTION_PROMPT
-        max_tokens = 2048 if is_olmocr else 512
+        b64, mime    = encode_image(image_path)
+        is_olmocr    = re.sub(r"[-_/]", "", OLMOCR_MODEL_ID.split("/")[-1].lower()) in \
+                       re.sub(r"[-_/]", "", model_id.lower())
+        prompt       = OLMOCR_EXTRACTION_PROMPT if is_olmocr else GEMMA_EXTRACTION_PROMPT
+        max_tokens   = 2048 if is_olmocr else 512
 
         response = client.chat.completions.create(
             model=model_id,
@@ -232,33 +243,27 @@ def _extract_with_model(client: OpenAI, image_path: Path, model_id: str) -> Opti
             max_tokens=max_tokens,
         )
         raw = response.choices[0].message.content.strip()
-        # Strip markdown fences
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-        # Grab the first {...} block in case the model added surrounding text
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            raw = match.group(0)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
         return json.loads(raw)
     except (json.JSONDecodeError, Exception):
         return None
 
 
 def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
-    """
-    Extract receipt data using the primary model (olmOCR-2 when available).
-    Automatically falls back to Gemma 4 12B QAT on low-confidence results.
-    """
+    """Use olmOCR-2 when loaded; auto-retry with Gemma on low-confidence result."""
     data = _extract_with_model(client, image_path, _active_model)
-
     if _is_low_confidence(data) and _active_model != GEMMA_MODEL_ID:
         data = _extract_with_model(client, image_path, GEMMA_MODEL_ID)
-
     return data
 
 
+# ── Category classification ────────────────────────────────────────────────────
+
 def classify_category(data: dict) -> str:
-    """Confirm AI category or fall back to vendor-keyword matching."""
     cat = (data.get("category") or "misc").lower().strip()
     if cat in ("fuel", "materials", "misc"):
         return cat
@@ -282,9 +287,18 @@ def sanitize_filename_part(s: str) -> str:
 
 def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
     raw_date = (data.get("date") or "unknown").strip()
-    date_str = raw_date if re.match(r"\d{4}-\d{2}-\d{2}", raw_date) else sanitize_filename_part(raw_date)
-    desc_str = sanitize_filename_part(data.get("expense_description") or data.get("vendor") or "receipt")
-    stem     = f"{category}_{date_str}_{desc_str}"
+    date_str = raw_date if re.match(r"\d{4}-\d{2}-\d{2}", raw_date) \
+               else sanitize_filename_part(raw_date)
+
+    if category == "fuel":
+        # Drop description for fuel — category tag is self-explanatory
+        stem = f"fuel_{date_str}"
+    else:
+        desc_str = sanitize_filename_part(
+            data.get("expense_description") or data.get("vendor") or "receipt"
+        )
+        stem = f"{category}_{date_str}_{desc_str}"
+
     ext      = img_path.suffix.lower()
     new_path = img_path.parent / f"{stem}{ext}"
 
@@ -305,23 +319,13 @@ def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
 # ── Date helpers ───────────────────────────────────────────────────────────────
 
 def sort_key_for_receipt(data: dict) -> date:
-    raw = (data.get("date") or "").strip()
-    if not raw:
-        return date.max
-    try:
-        return datetime.strptime(raw, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-    month_num = MONTH_MAP.get(raw.lower())
-    if month_num:
-        today = date.today()
-        year  = today.year if month_num <= today.month else today.year - 1
-        return date(year, month_num, 1)
-    return date.max
+    d = parse_date(data.get("date") or "")
+    return d if d else date.max
 
 
 def compute_expense_period(results: list[dict]) -> str:
-    dates = [sort_key_for_receipt(r) for r in results if sort_key_for_receipt(r) != date.max]
+    dates = [parse_date(r.get("date") or "") for r in results]
+    dates = [d for d in dates if d and d != date.max]
     if not dates:
         return ""
     fmt = lambda d: d.strftime("%m/%d/%y")
@@ -338,16 +342,15 @@ def process_receipts_batch(
     job_name_default: str = "",
     job_number_default: str = "",
     dry_run: bool = False,
+    rename_in_place: bool = False,
     progress_callback: Optional[Callable] = None,
     log_callback:      Optional[Callable] = None,
     cancel_event:      Optional[threading.Event] = None,
 ) -> dict:
     """
-    Full pipeline:
-      1. Gather images
-      2. Extract + classify + rename each image (respects cancel_event)
-      3. Sort by date per category
-      4. Build themed workbook (saved even on partial cancel)
+    Full pipeline: gather → extract → classify → rename → sort → build xlsx.
+    Set rename_in_place=True when working on the user's local folder directly
+    (folder mode) so renames stay in the source folder.
     """
     def log(msg: str):
         if log_callback:
@@ -365,11 +368,11 @@ def process_receipts_batch(
     )
     total = len(images)
     if total == 0:
-        log("No receipt images found in receipts folder.")
+        log("No receipt images found.")
         return {"processed": 0, "skipped": [], "total": 0,
                 "output_path": None, "expense_period": ""}
 
-    log(f"Found {total} receipt image(s).  Primary model: {_active_model}")
+    log(f"Found {total} receipt image(s).  Active model: {_active_model}")
     client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
 
     results: list[dict] = []
@@ -385,9 +388,15 @@ def process_receipts_batch(
 
         data = extract_receipt_data(client, img_path)
         if data is None:
-            log("    SKIPPED — AI extraction failed")
+            log("    SKIPPED — AI extraction failed completely")
             skipped.append(img_path.name)
             continue
+
+        # Normalize date to ISO format so spreadsheet always gets YYYY-MM-DD
+        if data.get("date"):
+            parsed = parse_date(data["date"])
+            if parsed:
+                data["date"] = parsed.strftime("%Y-%m-%d")
 
         category = classify_category(data)
         data["_category"] = category
@@ -397,11 +406,18 @@ def process_receipts_batch(
         if not data.get("job_number") and job_number_default:
             data["job_number"] = job_number_default
 
+        # Flag rows that need human review
+        missing = _check_review_needed(data)
+        data["_needs_review"]  = bool(missing)
+        data["_missing_fields"] = ", ".join(missing)
+
         new_path = rename_receipt_image(img_path, data, category)
         data["_new_filename"] = new_path.name
         data["_file"]         = new_path.name
+        data["_image_path"]   = str(new_path)   # used by spreadsheet for image embedding
 
-        log(f"    [{category.upper():9}] {data.get('vendor','?')} — ${data.get('amount',0):.2f}  →  {new_path.name}")
+        flag = "  ⚠ REVIEW (missing: " + data["_missing_fields"] + ")" if missing else ""
+        log(f"    [{category.upper():9}] {data.get('vendor','?')} — ${data.get('amount') or 0:.2f}  →  {new_path.name}{flag}")
         results.append(data)
 
     if not results:
@@ -418,6 +434,10 @@ def process_receipts_batch(
     expense_period = compute_expense_period(results)
     log(f"\nExpense period: {expense_period or '(no parseable dates)'}")
 
+    review_count = sum(1 for r in results if r.get("_needs_review"))
+    if review_count:
+        log(f"⚠  {review_count} receipt(s) flagged for review — highlighted in spreadsheet.")
+
     output_path: Optional[Path] = None
     if not dry_run:
         wb = build_themed_workbook(
@@ -433,8 +453,9 @@ def process_receipts_batch(
         log("\nDry run — workbook not saved.")
 
     processed = len(results)
-    log(f"Done. {processed}/{total} receipts processed"
-        + (f", {len(skipped)} skipped." if skipped else "."))
+    log(f"Done. {processed}/{total} processed"
+        + (f", {len(skipped)} skipped" if skipped else "")
+        + (f", {review_count} need review." if review_count else "."))
 
     return {
         "processed":      processed,
@@ -442,6 +463,7 @@ def process_receipts_batch(
         "total":          total,
         "output_path":    output_path,
         "expense_period": expense_period,
+        "review_count":   review_count,
     }
 
 

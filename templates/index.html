@@ -13,112 +13,58 @@
       --accent-h: #2563eb;
       --success:  #22c55e;
       --danger:   #ef4444;
+      --warn:     #f59e0b;
       --text:     #e2e8f0;
       --muted:    #94a3b8;
-      --amber:    #d97706;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
-    header {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 0 24px;
-      height: 56px;
-      display: flex;
-      align-items: center;
-    }
-    header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; height: 56px; display: flex; align-items: center; }
+    header h1 { font-size: 20px; font-weight: 700; }
     header span { color: var(--accent); }
 
-    main {
-      max-width: 860px;
-      margin: 32px auto;
-      padding: 0 16px;
-      display: grid;
-      gap: 20px;
-    }
+    main { max-width: 860px; margin: 32px auto; padding: 0 16px; display: grid; gap: 20px; }
 
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-    }
-    .card-title {
-      font-size: 13px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      margin-bottom: 16px;
-    }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 16px; }
+
+    /* Mode tabs */
+    .mode-tabs { display: flex; gap: 2px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 3px; margin-bottom: 18px; }
+    .mode-tab { flex: 1; padding: 8px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .mode-tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
 
     /* Drop zone */
-    #drop-zone {
-      border: 2px dashed var(--border);
-      border-radius: 10px;
-      padding: 40px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
-    }
+    #drop-zone { border: 2px dashed var(--border); border-radius: 10px; padding: 40px 24px; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
     #drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.06); }
     #drop-zone svg { width: 40px; height: 40px; color: var(--muted); margin-bottom: 12px; }
     #drop-zone p { color: var(--muted); font-size: 14px; }
     #drop-zone p strong { color: var(--text); }
     #drop-zone input { display: none; }
 
+    /* Folder mode */
+    .folder-panel { display: none; }
+    .folder-panel.visible { display: block; }
+    .folder-hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.6; padding: 10px 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border-left: 3px solid var(--accent); }
+    .folder-hint code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
     /* File list */
     #file-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
-    .file-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: rgba(255,255,255,0.04);
-      border-radius: 7px;
-      padding: 8px 12px;
-      font-size: 13px;
-    }
+    .file-item { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border-radius: 7px; padding: 8px 12px; font-size: 13px; }
     .file-item .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-item .fsize { color: var(--muted); flex-shrink: 0; }
-    .file-item button {
-      background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px 4px;
-      font-size: 16px; line-height: 1; flex-shrink: 0;
-    }
+    .file-item button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px 4px; font-size: 16px; line-height: 1; flex-shrink: 0; }
     .file-item button:hover { color: var(--danger); }
 
     /* Form fields */
     .fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
     @media (max-width: 600px) { .fields { grid-template-columns: 1fr; } }
     label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
-    input[type=text] {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      color: var(--text);
-      font-size: 14px;
-      padding: 9px 12px;
-      outline: none;
-      transition: border-color 0.15s;
-    }
+    input[type=text] { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: 14px; padding: 9px 12px; outline: none; transition: border-color 0.15s; }
     input[type=text]:focus { border-color: var(--accent); }
 
     /* Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      height: 44px;
-      padding: 0 24px;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s, opacity 0.15s;
-    }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 24px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.15s, opacity 0.15s; }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:not(:disabled):hover { background: var(--accent-h); }
@@ -132,30 +78,15 @@
     .progress-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; }
 
     /* Log */
-    #log {
-      background: rgba(0,0,0,0.3);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-family: ui-monospace, "Cascadia Code", monospace;
-      font-size: 12px;
-      color: #cbd5e1;
-      padding: 12px;
-      height: 200px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin-top: 16px;
-    }
+    #log { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; color: #cbd5e1; padding: 12px; height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; margin-top: 16px; }
+    .log-warn { color: #fbbf24; }
+
+    /* Review banner */
+    #review-banner { display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--warn); }
 
     .hidden { display: none !important; }
 
-    .status-badge {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 99px;
-      font-size: 12px;
-      font-weight: 600;
-    }
+    .status-badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
     .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
     .badge-done    { background: rgba(34,197,94,0.15);  color: var(--success); }
     .badge-error   { background: rgba(239,68,68,0.15);  color: var(--danger); }
@@ -168,37 +99,52 @@
 </header>
 
 <main>
-  <!-- Upload card -->
+  <!-- Source card -->
   <div class="card">
-    <div class="card-title">Receipt Images</div>
-    <div id="drop-zone">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path stroke-linecap="round" stroke-linejoin="round"
-          d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
-      </svg>
-      <p><strong>Drop receipt images here</strong></p>
-      <p style="margin-top:4px">or <strong>click to browse</strong> — JPG, PNG, WEBP, etc.</p>
-      <input type="file" id="file-input" multiple accept="image/*">
+    <div class="card-title">Receipt Source</div>
+
+    <!-- Mode tabs -->
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tab-upload" onclick="switchMode('upload')">Upload Files</button>
+      <button class="mode-tab"        id="tab-folder" onclick="switchMode('folder')">Folder Path</button>
     </div>
-    <div id="file-list"></div>
+
+    <!-- Upload mode -->
+    <div id="upload-panel">
+      <div id="drop-zone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+        </svg>
+        <p><strong>Drop receipt images here</strong></p>
+        <p style="margin-top:4px">or <strong>click to browse</strong> — JPG, PNG, WEBP, etc.</p>
+        <input type="file" id="file-input" multiple accept="image/*">
+      </div>
+      <div id="file-list"></div>
+    </div>
+
+    <!-- Folder mode -->
+    <div id="folder-panel" class="folder-panel">
+      <label>
+        Folder Path (inside Docker container)
+        <input type="text" id="folder-path" value="/mnt/input" placeholder="/mnt/input">
+      </label>
+      <div class="folder-hint">
+        Images are read and renamed <strong>in-place</strong> inside the container.<br>
+        To point at your Mac folder, add to a <code>.env</code> file next to <code>docker-compose.yml</code>:<br>
+        <code>RECEIPTS_PATH=/Users/you/Photos/receipts</code><br>
+        Then restart: <code>docker compose up --build</code>. The folder maps to <code>/mnt/input</code>.
+      </div>
+    </div>
   </div>
 
   <!-- Config card -->
   <div class="card">
     <div class="card-title">Details</div>
     <div class="fields">
-      <label>
-        Employee Name
-        <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name">
-      </label>
-      <label>
-        Job Name
-        <input type="text" id="job-name" placeholder="Default if blank on receipt">
-      </label>
-      <label>
-        Job Number
-        <input type="text" id="job-number" placeholder="Default if blank on receipt">
-      </label>
+      <label>Employee Name<input type="text" id="employee" value="Duane Hamilton" placeholder="Name"></label>
+      <label>Job Name<input type="text" id="job-name" placeholder="Default if blank on receipt"></label>
+      <label>Job Number<input type="text" id="job-number" placeholder="Default if blank on receipt"></label>
     </div>
   </div>
 
@@ -211,15 +157,13 @@
       Process Receipts
     </button>
     <button class="btn hidden" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger)">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="4" y="4" width="16" height="16" rx="2"/>
-      </svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
       Stop
     </button>
     <span id="status-badge" class="status-badge hidden"></span>
   </div>
 
-  <!-- Progress card (hidden until processing) -->
+  <!-- Progress card -->
   <div class="card hidden" id="progress-card">
     <div class="card-title">Processing</div>
     <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
@@ -230,7 +174,13 @@
     <div id="log"></div>
   </div>
 
-  <!-- Download card (hidden until done) -->
+  <!-- Review banner -->
+  <div id="review-banner">
+    ⚠ <strong id="review-count-text"></strong> — rows are highlighted yellow in the spreadsheet.
+    Column H has details. Delete those cells after reviewing.
+  </div>
+
+  <!-- Download card -->
   <div class="card hidden" id="download-card">
     <div class="card-title">Done</div>
     <div class="btn-row">
@@ -249,37 +199,53 @@
 </main>
 
 <script>
-  const dropZone    = document.getElementById('drop-zone');
-  const fileInput   = document.getElementById('file-input');
-  const fileList    = document.getElementById('file-list');
-  const processBtn  = document.getElementById('process-btn');
-  const stopBtn     = document.getElementById('stop-btn');
-  const statusBadge = document.getElementById('status-badge');
-  const progressCard= document.getElementById('progress-card');
-  const progressBar = document.getElementById('progress-bar');
-  const progressLbl = document.getElementById('progress-label');
-  const currentFile = document.getElementById('current-file');
-  const log         = document.getElementById('log');
-  const downloadCard= document.getElementById('download-card');
-  const downloadBtn = document.getElementById('download-btn');
-  const resetBtn    = document.getElementById('reset-btn');
+  const dropZone     = document.getElementById('drop-zone');
+  const fileInput    = document.getElementById('file-input');
+  const fileList     = document.getElementById('file-list');
+  const processBtn   = document.getElementById('process-btn');
+  const stopBtn      = document.getElementById('stop-btn');
+  const statusBadge  = document.getElementById('status-badge');
+  const progressCard = document.getElementById('progress-card');
+  const progressBar  = document.getElementById('progress-bar');
+  const progressLbl  = document.getElementById('progress-label');
+  const currentFile  = document.getElementById('current-file');
+  const logEl        = document.getElementById('log');
+  const downloadCard = document.getElementById('download-card');
+  const downloadBtn  = document.getElementById('download-btn');
+  const resetBtn     = document.getElementById('reset-btn');
+  const reviewBanner = document.getElementById('review-banner');
 
   let selectedFiles = [];
   let currentJobId  = null;
+  let currentMode   = 'upload';   // 'upload' | 'folder'
+
+  // ── Mode switch ──────────────────────────────────────────────────────────────
+  function switchMode(mode) {
+    currentMode = mode;
+    document.getElementById('tab-upload').classList.toggle('active', mode === 'upload');
+    document.getElementById('tab-folder').classList.toggle('active', mode === 'folder');
+    document.getElementById('upload-panel').style.display = mode === 'upload' ? '' : 'none';
+    document.getElementById('folder-panel').classList.toggle('visible', mode === 'folder');
+    updateProcessBtn();
+  }
+
+  function updateProcessBtn() {
+    processBtn.disabled = currentMode === 'upload'
+      ? selectedFiles.length === 0
+      : !document.getElementById('folder-path').value.trim();
+  }
+
+  document.getElementById('folder-path').addEventListener('input', updateProcessBtn);
 
   // ── Drag and drop ────────────────────────────────────────────────────────────
   dropZone.addEventListener('click', () => fileInput.click());
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    addFiles([...e.dataTransfer.files]);
-  });
+  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
   fileInput.addEventListener('change', () => addFiles([...fileInput.files]));
 
   function addFiles(newFiles) {
-    const images = newFiles.filter(f => f.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|bmp|webp|tiff?)$/i.test(f.name));
+    const images   = newFiles.filter(f => f.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|bmp|webp|tiff?)$/i.test(f.name));
     const existing = new Set(selectedFiles.map(f => f.name + f.size));
     images.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
     renderFileList();
@@ -290,37 +256,45 @@
     selectedFiles.forEach((f, i) => {
       const item = document.createElement('div');
       item.className = 'file-item';
-      item.innerHTML = `
-        <span class="fname">${esc(f.name)}</span>
-        <span class="fsize">${(f.size / 1024).toFixed(0)} KB</span>
-        <button title="Remove" onclick="removeFile(${i})">×</button>
-      `;
+      item.innerHTML = `<span class="fname">${esc(f.name)}</span><span class="fsize">${(f.size/1024).toFixed(0)} KB</span><button title="Remove" onclick="removeFile(${i})">×</button>`;
       fileList.appendChild(item);
     });
-    processBtn.disabled = selectedFiles.length === 0;
+    updateProcessBtn();
   }
 
   window.removeFile = (i) => { selectedFiles.splice(i, 1); renderFileList(); };
 
   // ── Process ──────────────────────────────────────────────────────────────────
   processBtn.addEventListener('click', async () => {
-    if (!selectedFiles.length) return;
     setProcessing(true);
-
-    const form = new FormData();
-    selectedFiles.forEach(f => form.append('files', f, f.name));
-    form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
-    form.append('job_name', document.getElementById('job-name').value.trim());
-    form.append('job_number', document.getElementById('job-number').value.trim());
 
     let jobId;
     try {
-      const res = await fetch('/process', { method: 'POST', body: form });
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      ({ job_id: jobId } = await res.json());
+      if (currentMode === 'upload') {
+        if (!selectedFiles.length) return;
+        const form = new FormData();
+        selectedFiles.forEach(f => form.append('files', f, f.name));
+        form.append('employee',   document.getElementById('employee').value.trim()   || 'Employee');
+        form.append('job_name',   document.getElementById('job-name').value.trim());
+        form.append('job_number', document.getElementById('job-number').value.trim());
+        const res = await fetch('/process', { method: 'POST', body: form });
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        ({ job_id: jobId } = await res.json());
+      } else {
+        const form = new FormData();
+        form.append('folder_path', document.getElementById('folder-path').value.trim());
+        form.append('employee',    document.getElementById('employee').value.trim()   || 'Employee');
+        form.append('job_name',    document.getElementById('job-name').value.trim());
+        form.append('job_number',  document.getElementById('job-number').value.trim());
+        const res = await fetch('/process-folder', { method: 'POST', body: form });
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        const json = await res.json();
+        if (json.error) throw new Error(json.error);
+        jobId = json.job_id;
+      }
     } catch (err) {
       appendLog(`\nERROR: ${err.message}\n`);
-      setStatus('error', 'Upload failed');
+      setStatus('error', 'Failed');
       setProcessing(false);
       return;
     }
@@ -330,12 +304,11 @@
     stopBtn.disabled = false;
     stopBtn.textContent = '⏹ Stop';
 
-    // SSE progress stream
     const es = new EventSource(`/events/${jobId}`);
     es.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'log') {
-        appendLog(msg.message);
+        appendLog(msg.message, msg.message.includes('⚠'));
       } else if (msg.type === 'progress') {
         const pct = msg.total ? (msg.current / msg.total) * 100 : 0;
         progressBar.style.width = pct + '%';
@@ -346,6 +319,7 @@
         progressBar.style.width = '100%';
         setStatus('done', 'Complete');
         if (msg.filename) showDownload(jobId);
+        if (msg.review_count > 0) showReviewBanner(msg.review_count);
         setProcessing(false);
       } else if (msg.type === 'error') {
         es.close();
@@ -357,7 +331,7 @@
     es.onerror = () => { es.close(); setProcessing(false); };
   });
 
-  // ── Stop button ──────────────────────────────────────────────────────────────
+  // ── Stop ─────────────────────────────────────────────────────────────────────
   stopBtn.addEventListener('click', async () => {
     if (!currentJobId) return;
     stopBtn.disabled = true;
@@ -365,14 +339,16 @@
     await fetch(`/cancel/${currentJobId}`, { method: 'POST' });
   });
 
+  // ── Helpers ──────────────────────────────────────────────────────────────────
   function setProcessing(on) {
-    processBtn.disabled = on;
+    processBtn.disabled = on || (currentMode === 'upload' ? selectedFiles.length === 0 : false);
     processBtn.textContent = on ? 'Processing…' : 'Process Receipts';
     if (!on) stopBtn.classList.add('hidden');
     if (on) {
       progressCard.classList.remove('hidden');
       downloadCard.classList.add('hidden');
-      log.textContent = '';
+      reviewBanner.style.display = 'none';
+      logEl.textContent = '';
       progressBar.style.width = '0%';
       progressLbl.textContent = '0 / 0';
       currentFile.textContent = '';
@@ -391,9 +367,18 @@
     downloadCard.classList.remove('hidden');
   }
 
-  function appendLog(text) {
-    log.textContent += text + '\n';
-    log.scrollTop = log.scrollHeight;
+  function showReviewBanner(count) {
+    document.getElementById('review-count-text').textContent =
+      `${count} receipt${count > 1 ? 's' : ''} need review`;
+    reviewBanner.style.display = 'block';
+  }
+
+  function appendLog(text, isWarn = false) {
+    const span = document.createElement('span');
+    if (isWarn) span.className = 'log-warn';
+    span.textContent = text + '\n';
+    logEl.appendChild(span);
+    logEl.scrollTop = logEl.scrollHeight;
   }
 
   function esc(str) {
@@ -408,10 +393,11 @@
     renderFileList();
     progressCard.classList.add('hidden');
     downloadCard.classList.add('hidden');
+    reviewBanner.style.display = 'none';
     statusBadge.classList.add('hidden');
     stopBtn.classList.add('hidden');
     processBtn.textContent = 'Process Receipts';
-    processBtn.disabled = true;
+    updateProcessBtn();
   });
 </script>
 </body>
