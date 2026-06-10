@@ -25,6 +25,7 @@ from process_receipts import (
     _try_load_model,
     GEMMA_SMALL_MODEL_ID,
     GEMMA_LARGE_MODEL_ID,
+    IMAGE_EXTENSIONS,
     OUTPUT_FOLDER,
     HOST_OUTPUT_PATH,
     RECEIPTS_FOLDER,
@@ -186,6 +187,103 @@ def _safe_receipt_data(data) -> dict:
         if k in data:
             out[k] = data[k]
     return out
+
+
+@app.get("/intake/files")
+async def list_intake_files():
+    """List image files currently visible in the intake folder."""
+    try:
+        files = sorted(
+            p.name for p in INTAKE_FOLDER.iterdir()
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        return JSONResponse({"files": files, "count": len(files)})
+    except Exception as exc:
+        return JSONResponse({"files": [], "count": 0, "error": str(exc)})
+
+
+@app.post("/process-intake")
+async def process_intake(
+    employee: str = Form("Employee"),
+    job_name: str = Form(""),
+    job_number: str = Form(""),
+):
+    """Process all image files currently in the intake folder (no upload needed)."""
+    image_files = sorted(
+        p for p in INTAKE_FOLDER.iterdir()
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    if not image_files:
+        return JSONResponse({"error": "No image files found in intake folder"}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    receipt_file_map = {p.name: str(p) for p in image_files}
+    cancel = threading.Event()
+    q: Queue = Queue()
+    job_client = _OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+    _jobs[job_id] = {
+        "queue":              q,
+        "done":               False,
+        "output_path":        None,
+        "results":            None,
+        "employee":           employee or "Employee",
+        "job_name_default":   job_name,
+        "job_number_default": job_number,
+        "cancel":             cancel,
+        "client":             job_client,
+        "out_dir":            OUT_FOLDER,
+        "receipts_dir":       INTAKE_FOLDER,
+        "receipt_file_map":   receipt_file_map,
+    }
+
+    def run():
+        def log_cb(msg: str):
+            q.put({"type": "log", "message": msg})
+
+        def progress_cb(cur: int, tot: int, fname: str):
+            q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
+
+        def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data, model: str = ""):
+            q.put({
+                "type":     "receipt_update",
+                "index":    idx,
+                "total":    tot,
+                "filename": fname,
+                "status":   status,
+                "model":    model,
+                "data":     _safe_receipt_data(data),
+            })
+
+        try:
+            result = process_receipts_batch(
+                template_path=Path("Reimbursement_sheet_1.xlsx"),
+                receipts_folder=INTAKE_FOLDER,
+                output_dir=OUT_FOLDER,
+                employee_name=employee or "Employee",
+                job_name_default=job_name,
+                job_number_default=job_number,
+                auto_generate=False,
+                log_callback=log_cb,
+                progress_callback=progress_cb,
+                cancel_event=cancel,
+                receipt_status_callback=receipt_status_cb,
+                openai_client=job_client,
+            )
+            _jobs[job_id]["results"] = result.get("results", [])
+            q.put({
+                "type":           "done",
+                "processed":      result.get("processed", 0),
+                "skipped":        result.get("skipped", []),
+                "total":          result.get("total", 0),
+                "expense_period": result.get("expense_period", ""),
+            })
+        except Exception as exc:
+            q.put({"type": "error", "message": str(exc)})
+        finally:
+            _jobs[job_id]["done"] = True
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
 
 
 @app.post("/cancel/{job_id}")

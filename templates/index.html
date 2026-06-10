@@ -539,10 +539,16 @@
 
     <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px">
       <div>
-        <div class="watch-count" id="watch-count">—</div>
-        <div class="watch-label">receipts pending in watch queue</div>
+        <div class="watch-count" id="intake-count">—</div>
+        <div class="watch-label">files in intake folder</div>
       </div>
       <div class="btn-row" style="flex:1;justify-content:flex-end">
+        <button class="btn btn-primary hidden" id="process-intake-btn" style="gap:6px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Process Intake Folder
+        </button>
         <button class="btn btn-amber hidden" id="send-email-btn">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round"
@@ -562,8 +568,11 @@
     </summary>
     <div style="padding:0 24px 24px">
       <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">
-        Enter the host machine paths that correspond to the intake and output folders inside Docker.
-        Used for folder shortcut buttons and clipboard copy.
+        These paths are for the folder shortcut buttons and clipboard copy — they tell the app what the intake and output folders are called on your machine.<br><br>
+        <strong style="color:var(--text)">To change which folder Docker actually uses:</strong>
+        create a <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">.env</code> file next to
+        <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">docker-compose.yml</code> with
+        <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">INTAKE_PATH=/your/path</code> and restart the container.
       </p>
       <div class="fields" style="grid-template-columns:1fr 1fr">
         <label>
@@ -843,11 +852,49 @@ window.openKanbanFolder = async function(key) {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 };
 
-// ── Process ───────────────────────────────────────────────────────────────────
+// ── Shared SSE handler ────────────────────────────────────────────────────────
+function attachSSE(es) {
+  es.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'log') {
+      appendLog(msg.message);
+    } else if (msg.type === 'progress') {
+      const pct = msg.total ? (msg.current / msg.total) * 100 : 0;
+      progressBar.style.width = pct + '%';
+      progressLbl.textContent = `${msg.current} / ${msg.total}`;
+      currentFile.textContent = msg.filename;
+    } else if (msg.type === 'receipt_update') {
+      const fname = msg.filename;
+      receiptCards[fname] = { status: msg.status, data: msg.data };
+      moveCard(fname, msg.status, msg.data || null, msg.model || '');
+    } else if (msg.type === 'done') {
+      es.close();
+      progressBar.style.width = '100%';
+      setStatus('done', 'Complete');
+      showGenerateCard(msg);
+      setProcessing(false);
+      loadIntakeCount();
+    } else if (msg.type === 'error') {
+      es.close();
+      appendLog(`\nERROR: ${msg.message}\n`);
+      setStatus('error', 'Failed');
+      setProcessing(false);
+    }
+  };
+  es.onerror = () => { es.close(); setProcessing(false); };
+}
+
+function startJobSSE(jobId) {
+  currentJobId = jobId;
+  stopBtn.classList.remove('hidden');
+  stopBtn.disabled = false;
+  attachSSE(new EventSource(`/events/${jobId}`));
+}
+
+// ── Process (upload) ──────────────────────────────────────────────────────────
 processBtn.addEventListener('click', async () => {
   if (!selectedFiles.length) return;
   setProcessing(true);
-
   totalReceipts = selectedFiles.length;
   initKanban(selectedFiles);
 
@@ -857,55 +904,69 @@ processBtn.addEventListener('click', async () => {
   form.append('job_name', document.getElementById('job-name').value.trim());
   form.append('job_number', document.getElementById('job-number').value.trim());
 
-  let jobId;
   try {
     const res = await fetch('/process', { method: 'POST', body: form });
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
-    ({ job_id: jobId } = await res.json());
+    const { job_id } = await res.json();
+    startJobSSE(job_id);
   } catch (err) {
     appendLog(`\nERROR: ${err.message}\n`);
     setStatus('error', 'Upload failed');
     setProcessing(false);
+  }
+});
+
+// ── Process intake folder ─────────────────────────────────────────────────────
+const processIntakeBtn = document.getElementById('process-intake-btn');
+
+async function loadIntakeCount() {
+  try {
+    const res = await fetch('/intake/files');
+    if (!res.ok) return;
+    const d = await res.json();
+    const count = d.count || 0;
+    document.getElementById('intake-count').textContent = count;
+    processIntakeBtn.classList.toggle('hidden', count === 0);
+  } catch (_) {}
+}
+
+processIntakeBtn.addEventListener('click', async () => {
+  let files;
+  try {
+    const r = await fetch('/intake/files');
+    const d = await r.json();
+    files = (d.files || []).map(name => ({ name }));
+  } catch (err) {
+    showToast(`Error scanning intake folder: ${err.message}`, false);
+    return;
+  }
+  if (!files.length) {
+    showToast('No image files found in intake folder', false);
     return;
   }
 
-  currentJobId = jobId;
-  stopBtn.classList.remove('hidden');
-  stopBtn.disabled = false;
+  setProcessing(true);
+  totalReceipts = files.length;
+  initKanban(files);
 
-  const es = new EventSource(`/events/${jobId}`);
-  es.onmessage = e => {
-    const msg = JSON.parse(e.data);
+  const form = new FormData();
+  form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
+  form.append('job_name', document.getElementById('job-name').value.trim());
+  form.append('job_number', document.getElementById('job-number').value.trim());
 
-    if (msg.type === 'log') {
-      appendLog(msg.message);
-
-    } else if (msg.type === 'progress') {
-      const pct = msg.total ? (msg.current / msg.total) * 100 : 0;
-      progressBar.style.width = pct + '%';
-      progressLbl.textContent = `${msg.current} / ${msg.total}`;
-      currentFile.textContent = msg.filename;
-
-    } else if (msg.type === 'receipt_update') {
-      const fname = msg.filename;
-      receiptCards[fname] = { status: msg.status, data: msg.data };
-      moveCard(fname, msg.status, msg.data || null, msg.model || '');
-
-    } else if (msg.type === 'done') {
-      es.close();
-      progressBar.style.width = '100%';
-      setStatus('done', 'Complete');
-      showGenerateCard(msg);
-      setProcessing(false);
-
-    } else if (msg.type === 'error') {
-      es.close();
-      appendLog(`\nERROR: ${msg.message}\n`);
-      setStatus('error', 'Failed');
-      setProcessing(false);
+  try {
+    const res = await fetch('/process-intake', { method: 'POST', body: form });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `Server error: ${res.status}`);
     }
-  };
-  es.onerror = () => { es.close(); setProcessing(false); };
+    const { job_id } = await res.json();
+    startJobSSE(job_id);
+  } catch (err) {
+    appendLog(`\nERROR: ${err.message}\n`);
+    setStatus('error', 'Failed');
+    setProcessing(false);
+  }
 });
 
 stopBtn.addEventListener('click', async () => {
@@ -916,6 +977,7 @@ stopBtn.addEventListener('click', async () => {
 
 function setProcessing(on) {
   processBtn.disabled = on;
+  processIntakeBtn.disabled = on;
   if (on) {
     processBtn.innerHTML = `<span class="spinner"></span> Processing…`;
   } else {
@@ -1291,8 +1353,10 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadWatchStatus();
+loadIntakeCount();
 loadLMStudioModels();
 loadModels();
+loadSettings();
 loadSettings();
 </script>
 </body>
