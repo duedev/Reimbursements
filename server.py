@@ -23,7 +23,6 @@ from process_receipts import (
     generate_spreadsheet,
     list_available_models,
     _try_load_model,
-    OLMOCR_MODEL_ID,
     GEMMA_SMALL_MODEL_ID,
     GEMMA_LARGE_MODEL_ID,
     OUTPUT_FOLDER,
@@ -33,7 +32,7 @@ from process_receipts import (
 TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(exist_ok=True)
 
-# job_id → {queue, done, output_path, results, cancel}
+# job_id → {queue, done, output_path, results, cancel, receipt_file_map}
 _jobs: dict[str, dict] = {}
 
 
@@ -79,21 +78,29 @@ async def process(
     out_dir = TMP_ROOT / job_id / "output"
     out_dir.mkdir()
 
+    # Store original filename → tmp path mapping for retry support
+    receipt_file_map: dict[str, str] = {}
     for f in files:
-        dest = receipts_dir / (f.filename or "receipt")
+        fname = f.filename or "receipt"
+        dest = receipts_dir / fname
         with open(dest, "wb") as fh:
             fh.write(await f.read())
+        receipt_file_map[fname] = str(dest)
 
     cancel = threading.Event()
     q: Queue = Queue()
     _jobs[job_id] = {
-        "queue":       q,
-        "done":        False,
-        "output_path": None,
-        "results":     None,       # stored after processing for deferred spreadsheet
-        "employee":    employee or "Employee",
-        "cancel":      cancel,
-        "out_dir":     out_dir,
+        "queue":            q,
+        "done":             False,
+        "output_path":      None,
+        "results":          None,
+        "employee":         employee or "Employee",
+        "job_name_default": job_name,
+        "job_number_default": job_number,
+        "cancel":           cancel,
+        "out_dir":          out_dir,
+        "receipts_dir":     receipts_dir,
+        "receipt_file_map": receipt_file_map,
     }
 
     def run():
@@ -103,17 +110,14 @@ async def process(
         def progress_cb(cur: int, tot: int, fname: str):
             q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
 
-        def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data):
-            # Store original image path on first contact for retry support
-            if status == "queued":
-                orig = receipts_dir / fname
-                _jobs[job_id].setdefault("image_paths_by_idx", {})[idx] = str(orig)
+        def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data, model: str = ""):
             q.put({
                 "type":     "receipt_update",
                 "index":    idx,
                 "total":    tot,
                 "filename": fname,
                 "status":   status,
+                "model":    model,
                 "data":     _safe_receipt_data(data),
             })
 
@@ -125,7 +129,7 @@ async def process(
                 employee_name=employee or "Employee",
                 job_name_default=job_name,
                 job_number_default=job_number,
-                auto_generate=False,   # deferred — user clicks "Generate Spreadsheet"
+                auto_generate=False,
                 log_callback=log_cb,
                 progress_callback=progress_cb,
                 cancel_event=cancel,
@@ -154,7 +158,7 @@ def _safe_receipt_data(data) -> dict:
         return {}
     out = {}
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
-              "expense_description", "ai_summary", "_flag", "_category",
+              "expense_description", "summary", "ai_summary", "_flag", "_category",
               "_new_filename", "_file", "flags"):
         if k in data:
             out[k] = data[k]
@@ -197,11 +201,7 @@ async def events(job_id: str):
 
 @app.post("/generate-spreadsheet/{job_id}")
 async def make_spreadsheet(job_id: str):
-    """
-    Generate the Excel workbook from stored processing results.
-    Called when the user clicks the 'Generate Spreadsheet' button.
-    Returns the file as a download.
-    """
+    """Generate the Excel workbook from stored processing results."""
     if job_id not in _jobs:
         return HTMLResponse("Job not found", status_code=404)
 
@@ -246,81 +246,114 @@ async def make_spreadsheet(job_id: str):
     )
 
 
-@app.post("/retry-receipt/{job_id}/{index}")
-async def retry_receipt(job_id: str, index: int):
+class RetryRequest(BaseModel):
+    filename: str
+
+
+@app.post("/retry-receipt/{job_id}")
+async def retry_receipt(job_id: str, body: RetryRequest):
     """
-    Re-process a single failed receipt using the primary model (direct vision).
-    Works for both failed receipts and previously succeeded ones.
+    Re-process a single failed receipt by original filename.
+    Updates the job results in-place and emits an SSE receipt_update via the job queue.
     """
     if job_id not in _jobs:
         return JSONResponse({"ok": False, "error": "Job not found"}, status_code=404)
 
     job = _jobs[job_id]
-    results = job.get("results", [])
-    image_paths = job.get("image_paths_by_idx", {})
+    filename = body.filename
 
-    # Find existing successful result (if any) by original index
-    target = None
-    target_pos = None
-    for i, r in enumerate(results):
-        if r.get("_original_index") == index:
-            target = r
-            target_pos = i
-            break
+    # Look up the image path from the upload map
+    file_map: dict = job.get("receipt_file_map", {})
+    img_path_str = file_map.get(filename)
 
-    # Resolve image path: successful result has renamed path; failed receipt has original
-    img_path_str = None
-    if target:
-        img_path_str = target.get("_image_path")
-    if not img_path_str or not Path(img_path_str).exists():
-        img_path_str = image_paths.get(index)
+    # Also check if there's already a processed result with a renamed path
+    if not img_path_str:
+        results = job.get("results") or []
+        for r in results:
+            if r.get("_file") == filename or r.get("_new_filename") == filename:
+                img_path_str = r.get("_image_path")
+                break
 
     if not img_path_str or not Path(img_path_str).exists():
-        return JSONResponse({"ok": False, "error": "Image file not available for retry"}, status_code=404)
+        # Try finding it in the receipts directory
+        receipts_dir: Path = job.get("receipts_dir", TMP_ROOT / job_id / "receipts")
+        candidate = receipts_dir / filename
+        if candidate.exists():
+            img_path_str = str(candidate)
+        else:
+            return JSONResponse(
+                {"ok": False, "error": f"Image file not found for retry: {filename}"},
+                status_code=404,
+            )
 
     img_path = Path(img_path_str)
 
     def _retry():
         from openai import OpenAI
         client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
-        return _pr._extract_with_model(client, img_path, _pr._active_gemma_model)
+
+        def status_cb(status, data=None, model=""):
+            q = job.get("queue")
+            if q:
+                q.put({
+                    "type":     "receipt_update",
+                    "index":    0,
+                    "total":    0,
+                    "filename": filename,
+                    "status":   status,
+                    "model":    model,
+                    "data":     _safe_receipt_data(data),
+                })
+
+        return _pr._extract_receipt_with_status(client, Path(img_path_str), status_cb)
 
     try:
         new_data = await asyncio.get_event_loop().run_in_executor(None, _retry)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
-    if not new_data or _pr._is_low_confidence(new_data):
-        return JSONResponse({"ok": False, "error": "Retry extraction failed or still low confidence"}, status_code=422)
+    if new_data and not _pr._is_low_confidence(new_data):
+        from process_receipts import classify_category
+        category = classify_category(new_data)
+        new_data["_category"] = category
+        if category == "fuel":
+            new_data["expense_description"] = None
 
-    new_data["_original_index"] = index
-    new_data["_image_path"]     = str(img_path)
-    new_data["_file"]           = img_path.name
-    new_data["_new_filename"]   = img_path.name
-    new_data["_category"]       = _pr.classify_category(new_data)
-    flags_list = new_data.get("flags") or []
-    new_data["_flag"] = flags_list[0].get("flag", "") if flags_list else ""
+        jn = job.get("job_name_default", "")
+        jnum = job.get("job_number_default", "")
+        new_data["job_name"]   = jn or None
+        new_data["job_number"] = jnum or None
 
-    if target_pos is not None:
-        results[target_pos] = new_data          # replace in-place
-    else:
-        results.append(new_data)                # first-time success for a previously failed receipt
+        flags_list = new_data.get("flags") or []
+        if flags_list and not new_data.get("_flag"):
+            new_data["_flag"] = flags_list[0].get("flag", "")
 
-    q = job.get("queue")
-    if q:
-        q.put({"type": "receipt_update", "index": index, "status": "done",
-               "data": _safe_receipt_data(new_data)})
-    return JSONResponse({"ok": True, "data": _safe_receipt_data(new_data)})
+        results = job.get("results") or []
+        matched = False
+        for r in results:
+            if r.get("_file") == filename or r.get("_new_filename") == filename:
+                r.update(new_data)
+                matched = True
+                break
+        if not matched:
+            new_data["_file"] = filename
+            new_data["_image_path"] = img_path_str
+            results.append(new_data)
+            job["results"] = results
 
+        q = job.get("queue")
+        if q:
+            q.put({
+                "type": "receipt_update", "index": 0, "total": 0,
+                "filename": filename, "status": "done", "model": "",
+                "data": _safe_receipt_data(new_data),
+            })
+        return JSONResponse({"ok": True, "data": _safe_receipt_data(new_data)})
 
-@app.get("/models")
-async def get_models():
-    return JSONResponse({
-        "olmocr":      _pr._active_model,
-        "gemma":       _pr._active_gemma_model,
-        "gemma_small": GEMMA_SMALL_MODEL_ID,
-        "gemma_large": GEMMA_LARGE_MODEL_ID,
-    })
+    return JSONResponse(
+        {"ok": False, "error": "Retry extraction failed or still low confidence"},
+        status_code=422,
+    )
 
 
 @app.get("/models/available")
@@ -331,47 +364,65 @@ async def get_available_models():
 
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return JSONResponse({"models": models, "active_gemma": _pr._active_gemma_model,
-                             "active_secondary": _pr._active_secondary_model, "ok": True})
+        return JSONResponse({
+            "models":         models,
+            "active_distill": _pr._active_distill_model,
+            "active_ocr":     _pr._active_ocr_model,
+            "ok":             True,
+        })
     except Exception as exc:
-        return JSONResponse({"models": [], "active_gemma": _pr._active_gemma_model,
-                             "active_secondary": _pr._active_secondary_model,
-                             "ok": False, "error": str(exc)})
+        return JSONResponse({
+            "models":         [],
+            "active_distill": _pr._active_distill_model,
+            "active_ocr":     _pr._active_ocr_model,
+            "ok":             False,
+            "error":          str(exc),
+        })
 
 
-class GemmaSwapRequest(BaseModel):
-    model: str  # model id from discovery list, or "small" | "large"
+class ModelSwapRequest(BaseModel):
+    model: str
 
 
-@app.post("/models/gemma")
-async def swap_gemma_model(body: GemmaSwapRequest):
-    if body.model == "small":
-        target = GEMMA_SMALL_MODEL_ID
-    elif body.model == "large":
-        target = GEMMA_LARGE_MODEL_ID
-    else:
-        target = body.model
-
+@app.post("/models/distill")
+async def swap_distill_model(body: ModelSwapRequest):
+    target = GEMMA_SMALL_MODEL_ID if body.model == "small" else (
+        GEMMA_LARGE_MODEL_ID if body.model == "large" else body.model
+    )
     ok = _try_load_model(target)
     if ok:
-        _pr._active_gemma_model = target
-        _pr._active_model = target
-        return JSONResponse({"ok": True, "active_gemma": target})
+        _pr._active_distill_model = target
+        return JSONResponse({"ok": True, "active_distill": target})
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
 
 
-@app.post("/models/secondary")
-async def swap_secondary_model(body: GemmaSwapRequest):
-    """Set or clear the secondary (OCR-stage) model."""
+@app.post("/models/ocr")
+async def swap_ocr_model(body: ModelSwapRequest):
+    """Set (or clear) the dedicated OCR model. Pass model="" to disable dedicated OCR."""
     target = body.model.strip()
     if not target:
-        _pr._active_secondary_model = ""
-        return JSONResponse({"ok": True, "active_secondary": ""})
+        _pr._active_ocr_model = ""
+        return JSONResponse({"ok": True, "active_ocr": ""})
     ok = _try_load_model(target)
     if ok:
-        _pr._active_secondary_model = target
-        return JSONResponse({"ok": True, "active_secondary": target})
+        _pr._active_ocr_model = target
+        return JSONResponse({"ok": True, "active_ocr": target})
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
+
+
+@app.get("/folders")
+async def get_folders():
+    """Return configured folder paths for the UI."""
+    paths = {"output": str(OUTPUT_FOLDER)}
+    try:
+        from watch_mode import WATCH_INBOX, WATCH_STAGED, WATCH_STATE
+        paths["watch_inbox"]  = str(WATCH_INBOX)
+        paths["watch_staged"] = str(WATCH_STAGED)
+        paths["watch_state"]  = str(WATCH_STATE)
+    except Exception:
+        pass
+    return JSONResponse(paths)
+
 
 
 @app.get("/open-output-folder")
@@ -407,13 +458,32 @@ async def open_folder_in_manager():
         return JSONResponse({"ok": False, "error": str(exc), "path": str(folder)}, status_code=500)
 
 
+class OpenFolderRequest(BaseModel):
+    path: str
+
+
+@app.post("/open-folder-path")
+async def open_folder_by_path(body: OpenFolderRequest):
+    """Open an arbitrary folder path in the native file manager."""
+    folder = Path(body.path).resolve()
+    if _is_docker():
+        return JSONResponse({"ok": True, "path": str(folder), "docker": True})
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        _open_folder_native(folder)
+        return JSONResponse({"ok": True, "path": str(folder)})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc), "path": str(folder)}, status_code=500)
+
+
 @app.get("/watch/folder")
 async def watch_folder_path():
     try:
         from watch_mode import WATCH_INBOX
-        return JSONResponse({"path": str(WATCH_INBOX), "ok": True})
+        host = HOST_INTAKE_PATH or ""
+        return JSONResponse({"path": str(WATCH_INBOX), "host_path": host, "ok": True})
     except Exception as exc:
-        return JSONResponse({"path": "", "ok": False, "error": str(exc)})
+        return JSONResponse({"path": "", "host_path": "", "ok": False, "error": str(exc)})
 
 
 @app.post("/open-watch-folder")
@@ -423,7 +493,8 @@ async def open_watch_folder():
         folder = Path(WATCH_INBOX).resolve()
         folder.mkdir(parents=True, exist_ok=True)
         if _is_docker():
-            return JSONResponse({"ok": True, "path": str(folder), "docker": True})
+            host = HOST_INTAKE_PATH or str(folder)
+            return JSONResponse({"ok": True, "path": str(folder), "host_path": host, "docker": True})
         _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
     except Exception as exc:

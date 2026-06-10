@@ -13,11 +13,14 @@ services:
       # Intake folder — drop receipts here for batch processing
       - RECEIPTS_FOLDER=/data/intake
       - OUTPUT_FOLDER=/data/output
-      # Host-side absolute path for image links in the Excel spreadsheet.
-      # Set to the host path that maps to OUTPUT_FOLDER/Completed so
-      # links in the workbook resolve on the host machine.
-      # Example: HOST_OUTPUT_PATH=/Users/yourname/receipts/output/Completed
+      # Watch inbox points at the same intake folder so the UI shows correctly
+      - WATCH_INBOX=/data/intake
+      # Host-side paths for "Open Folder" buttons — set these to the absolute
+      # host paths that map to the Docker volumes, e.g.:
+      #   HOST_OUTPUT_PATH=/Users/yourname/projects/Reimbursements/output
+      #   HOST_INTAKE_PATH=/Users/yourname/projects/Reimbursements/intake
       - HOST_OUTPUT_PATH=
+      - HOST_INTAKE_PATH=
       - MAX_PARALLEL_REQUESTS=4
       - GEMMA_SMALL_MODEL_ID=google/gemma-4-12b-qat
       - GEMMA_LARGE_MODEL_ID=google/gemma-4-26b-a4b-qat
