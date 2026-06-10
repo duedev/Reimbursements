@@ -281,6 +281,34 @@ def _is_low_confidence(data: Optional[dict]) -> bool:
     return False
 
 
+def _compute_confidence(data: Optional[dict]) -> tuple[int, str]:
+    """Return (0–100 pct, comma-separated missing-field string)."""
+    if not data:
+        return 0, "no data extracted"
+    score = 100
+    missing: list[str] = []
+    if not (data.get("vendor") or "").strip():
+        score -= 35; missing.append("vendor")
+    if not data.get("amount"):
+        score -= 35; missing.append("amount")
+    if not data.get("date"):
+        score -= 15; missing.append("date")
+    if not data.get("category"):
+        score -= 5; missing.append("category")
+    for _ in data.get("flags") or []:
+        score -= 5
+    return max(0, min(100, score)), ", ".join(missing)
+
+
+def _get_fail_reason(data: Optional[dict]) -> str:
+    if data is None:
+        return "Model returned no data"
+    _, issues = _compute_confidence(data)
+    if issues:
+        return f"Could not extract: {issues}"
+    return "Low-confidence extraction"
+
+
 def _strip_json(raw: str) -> str:
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```$", "", raw)

@@ -349,6 +349,52 @@
     #generate-card .stat-ok   { color: var(--success); }
     #generate-card .stat-skip { color: var(--danger); }
     #generate-card .stat-flag { color: var(--warning); }
+
+    /* Confidence badge */
+    .k-confidence { display: inline-block; font-size: 9px; font-weight: 700;
+      padding: 1px 6px; border-radius: 4px; letter-spacing: 0.04em; }
+    .k-conf-high   { background: rgba(34,197,94,0.15);  color: var(--success); }
+    .k-conf-medium { background: rgba(245,158,11,0.15); color: var(--warning); }
+    .k-conf-low    { background: rgba(239,68,68,0.15);  color: var(--danger);  }
+
+    /* Error reason on failed cards */
+    .k-error { font-size: 10px; color: #f87171; margin-top: 4px;
+      background: rgba(239,68,68,0.08); border-radius: 4px; padding: 3px 6px;
+      line-height: 1.4; }
+
+    /* Create (manual entry) button */
+    .k-create-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      margin-top: 6px; margin-left: 6px; padding: 4px 10px; border-radius: 6px;
+      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
+      color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    .k-create-btn:hover { background: rgba(59,130,246,0.22); }
+
+    /* Modals */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center; z-index: 1000;
+    }
+    .modal-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 28px; width: 540px; max-width: 96vw;
+      max-height: 90vh; overflow-y: auto;
+    }
+    .modal-box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .modal-box .modal-sub { font-size: 12px; color: var(--muted); margin-bottom: 18px; line-height: 1.5; }
+    .modal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .modal-fields label, .modal-full-row { display: flex; flex-direction: column; gap: 5px;
+      font-size: 12px; color: var(--muted); font-weight: 500; }
+    .modal-full-row { margin-bottom: 16px; }
+    .dup-group { background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+    .dup-group h4 { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 0.05em; }
+    .dup-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .dup-option:hover { background: rgba(255,255,255,0.04); }
+    .dup-option input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; flex-shrink:0; }
   </style>
 </head>
 <body>
@@ -622,6 +668,51 @@
   </div>
 </main>
 
+<!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="manual-review-modal">
+  <div class="modal-box">
+    <h3>&#9998; Manual Review</h3>
+    <p class="modal-sub">Automatic extraction was incomplete for <strong id="mr-filename-label"></strong>.
+      Fill in what you know — all fields optional. The entry will be flagged as a manual review.</p>
+    <div class="modal-fields">
+      <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
+      <label>Date <input type="text" id="mr-date" placeholder="YYYY-MM-DD"></label>
+      <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
+      <label>Category
+        <select id="mr-category">
+          <option value="fuel">Fuel</option>
+          <option value="mats">Materials</option>
+          <option value="misc" selected>Miscellaneous</option>
+        </select>
+      </label>
+      <label>Job Name <input type="text" id="mr-job-name"></label>
+      <label>Job Number <input type="text" id="mr-job-number"></label>
+    </div>
+    <div class="modal-full-row">
+      Summary
+      <input type="text" id="mr-summary" placeholder="Brief description of purchase">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-success" id="mr-save-btn">Save to Results</button>
+      <button class="btn" id="mr-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Duplicate Review Dialog ─────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="dup-modal">
+  <div class="modal-box">
+    <h3>&#9888; Possible Duplicate Receipts</h3>
+    <p class="modal-sub">The following receipts share the same vendor, date, and amount.
+      Check the ones you want to <strong>exclude</strong> from the spreadsheet, then click Generate.</p>
+    <div id="dup-groups-container"></div>
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn btn-success" id="dup-generate-btn">Generate Spreadsheet</button>
+      <button class="btn" id="dup-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -725,7 +816,13 @@ function shortModelName(model) {
   return parts[parts.length - 1] || model;
 }
 
-function makeCard(filename, status, data, model) {
+function confBadge(conf) {
+  if (conf == null) return '';
+  const cls = conf >= 75 ? 'k-conf-high' : conf >= 45 ? 'k-conf-medium' : 'k-conf-low';
+  return `<span class="k-confidence ${cls}">${conf}%</span>`;
+}
+
+function makeCard(filename, status, data, model, errorMsg) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
   div.className = `k-card status-${status}`;
@@ -738,6 +835,7 @@ function makeCard(filename, status, data, model) {
   inner += `<div class="k-status-row">`;
   inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
   if (model && spinning) inner += `<span class="k-model-tag" title="${esc(model)}">${esc(shortModelName(model))}</span>`;
+  if (data && data._confidence != null) inner += confBadge(data._confidence);
   inner += `</div>`;
 
   if (status === 'ocr') {
@@ -760,7 +858,12 @@ function makeCard(filename, status, data, model) {
   }
 
   if (status === 'failed') {
+    const errText = errorMsg || (data && data._error) || '';
+    if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
+    inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
     inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-create-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Create</button>`;
+    inner += `</div>`;
   }
 
   inner += `<button class="k-dismiss-btn" onclick="dismissCard('${esc(filename)}')" title="Dismiss">&#10005;</button>`;
@@ -779,15 +882,14 @@ function insertCardSorted(col, card) {
   insertBefore ? col.insertBefore(card, insertBefore) : col.appendChild(card);
 }
 
-function moveCard(filename, newStatus, data, model) {
+function moveCard(filename, newStatus, data, model, errorMsg) {
   const colMap = { queued:'col-queued', ocr:'col-processing', distilling:'col-processing', done:'col-completed', failed:'col-failed' };
   const existing = getCardEl(filename);
   if (existing) existing.remove();
-  const newCard = makeCard(filename, newStatus, data, model || '');
+  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '');
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
-  // Show "Clear Board" button whenever any card exists
   const hasCards = Object.keys(receiptCards).length > 0;
   document.getElementById('clear-board-btn').classList.toggle('hidden', !hasCards);
 }
@@ -823,8 +925,8 @@ function connectSSE() {
       // Restore kanban from server state
       const kanban = msg.kanban || {};
       Object.entries(kanban).forEach(([fname, info]) => {
-        receiptCards[fname] = { status: info.status, data: info.data };
-        moveCard(fname, info.status, info.data || null, info.model || '');
+        receiptCards[fname] = { status: info.status, data: info.data, error: (info.data || {})._error || '' };
+        moveCard(fname, info.status, info.data || null, info.model || '', (info.data || {})._error || '');
       });
       if (Object.keys(kanban).length > 0) {
         kanbanCard.classList.remove('hidden');
@@ -836,8 +938,8 @@ function connectSSE() {
 
     } else if (msg.type === 'kanban_update') {
       const fname = msg.filename;
-      receiptCards[fname] = { status: msg.status, data: msg.data };
-      moveCard(fname, msg.status, msg.data || null, msg.model || '');
+      receiptCards[fname] = { status: msg.status, data: msg.data, error: msg.error || '' };
+      moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '');
       kanbanCard.classList.remove('hidden');
       progressCard.classList.remove('hidden');
 
@@ -998,21 +1100,28 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Generate spreadsheet ──────────────────────────────────────────────────────
-generateBtn.addEventListener('click', async () => {
+// ── Generate spreadsheet (with duplicate check) ───────────────────────────────
+async function _doGenerate(excludeFilenames = []) {
   generateBtn.disabled = true;
   generateBtn.innerHTML = '<span class="spinner"></span> Generating…';
-
   try {
-    const res = await fetch('/generate-spreadsheet', { method: 'POST' });
+    const res = await fetch('/generate-spreadsheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exclude_filenames: excludeFilenames }),
+    });
     if (!res.ok) {
       const txt = await res.text();
       throw new Error(txt || `Server error: ${res.status}`);
     }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
+    // Try to get filename from content-disposition header
+    const cd   = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const fname = match ? match[1] : 'Reimbursements.xlsx';
     downloadBtn.href = url;
-    downloadBtn.download = 'Reimbursements.xlsx';
+    downloadBtn.download = fname;
     downloadRow.classList.remove('hidden');
     showToast('Spreadsheet ready — click Download', true);
   } catch (err) {
@@ -1025,6 +1134,19 @@ generateBtn.addEventListener('click', async () => {
           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
       </svg> Generate Spreadsheet`;
   }
+}
+
+generateBtn.addEventListener('click', async () => {
+  // Check for duplicates before generating
+  try {
+    const res  = await fetch('/results/check-duplicates');
+    const data = await res.json();
+    if (data.has_duplicates) {
+      _showDupDialog(data.groups);
+      return;
+    }
+  } catch (_) { /* skip check on error */ }
+  await _doGenerate();
 });
 
 // ── New Batch (clear completed results) ───────────────────────────────────────
@@ -1067,6 +1189,99 @@ window.dismissCard = async function(filename) {
     body: JSON.stringify({ filename }),
   }).catch(() => {});
 };
+
+// ── Manual Review Modal ───────────────────────────────────────────────────────
+let _mrFilename = '';
+
+window.openManualReview = function(filename) {
+  _mrFilename = filename;
+  document.getElementById('mr-filename-label').textContent = filename;
+  const card = receiptCards[filename];
+  const data = card?.data || {};
+  document.getElementById('mr-vendor').value     = data.vendor     || '';
+  document.getElementById('mr-date').value       = data.date       || '';
+  document.getElementById('mr-amount').value     = data.amount != null ? data.amount : '';
+  document.getElementById('mr-category').value   = data._category  || data.category || 'misc';
+  document.getElementById('mr-job-name').value   = data.job_name   || '';
+  document.getElementById('mr-job-number').value = data.job_number || '';
+  document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
+  document.getElementById('manual-review-modal').classList.remove('hidden');
+};
+
+document.getElementById('mr-cancel-btn').addEventListener('click', () => {
+  document.getElementById('manual-review-modal').classList.add('hidden');
+});
+
+document.getElementById('mr-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('mr-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await fetch('/results/add-manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename:   _mrFilename,
+        vendor:     document.getElementById('mr-vendor').value.trim(),
+        date:       document.getElementById('mr-date').value.trim(),
+        amount:     document.getElementById('mr-amount').value.trim(),
+        category:   document.getElementById('mr-category').value,
+        job_name:   document.getElementById('mr-job-name').value.trim(),
+        job_number: document.getElementById('mr-job-number').value.trim(),
+        summary:    document.getElementById('mr-summary').value.trim(),
+      }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      document.getElementById('manual-review-modal').classList.add('hidden');
+      showToast(`${_mrFilename} added to results`, true);
+      // SSE kanban_update will move the card to done
+    } else {
+      showToast(`Error: ${d.error || 'unknown'}`, false);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save to Results';
+  }
+});
+
+// ── Duplicate Dialog ──────────────────────────────────────────────────────────
+let _dupGroups = [];
+
+function _showDupDialog(groups) {
+  _dupGroups = groups;
+  const container = document.getElementById('dup-groups-container');
+  container.innerHTML = '';
+  groups.forEach((group, gi) => {
+    const box = document.createElement('div');
+    box.className = 'dup-group';
+    const first = group[0];
+    box.innerHTML = `<h4>${esc(first.vendor)} &bull; ${esc(first.date)} &bull; $${parseFloat(first.amount).toFixed(2)}</h4>`;
+    group.forEach((item) => {
+      const label = document.createElement('label');
+      label.className = 'dup-option';
+      label.innerHTML = `
+        <input type="checkbox" class="dup-check" data-gi="${gi}" data-file="${esc(item.filename)}">
+        <span>${esc(item.filename)}</span>`;
+      box.appendChild(label);
+    });
+    container.appendChild(box);
+  });
+  document.getElementById('dup-modal').classList.remove('hidden');
+}
+
+document.getElementById('dup-cancel-btn').addEventListener('click', () => {
+  document.getElementById('dup-modal').classList.add('hidden');
+});
+
+document.getElementById('dup-generate-btn').addEventListener('click', async () => {
+  const checked = document.querySelectorAll('.dup-check:checked');
+  const exclude = Array.from(checked).map(el => el.dataset.file);
+  document.getElementById('dup-modal').classList.add('hidden');
+  await _doGenerate(exclude);
+});
 
 // ── Clear board ───────────────────────────────────────────────────────────────
 document.getElementById('clear-board-btn').addEventListener('click', async () => {

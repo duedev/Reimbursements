@@ -178,9 +178,13 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
 
     _flood(ws, row, row_fill, row_font, row_border)
 
-    # A — Receipt No.
+    # A — # (receipt number, hyperlinked to image tab)
     cell_a = ws.cell(row=row, column=COL_RECEIPT_NO, value=receipt_no)
-    cell_a.font      = _font(bold=True, size=11)
+    if hyperlink_target:
+        cell_a.hyperlink = hyperlink_target
+        cell_a.font = _font(bold=True, size=11, color="2563EB")
+    else:
+        cell_a.font = _font(bold=True, size=11)
     cell_a.alignment = _align(h="center")
 
     # B — Date
@@ -202,17 +206,14 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
 
     # C — Store / vendor name
     cell_c = ws.cell(row=row, column=COL_STORE, value=data.get("vendor") or "")
-    cell_c.alignment = _align(h="left", wrap=True)
+    cell_c.alignment = _align(h="center", wrap=True)
 
     # D — Job Name
     cell_d = ws.cell(row=row, column=COL_JOB_NAME, value=data.get("job_name") or "")
     cell_d.alignment = _align(h="center", wrap=True)
 
-    # E — Job Number or Expense Description
-    if category == "misc":
-        e_val = data.get("expense_description") or data.get("job_number")
-    else:
-        e_val = data.get("job_number")
+    # E — Job Number (all categories)
+    e_val = data.get("job_number")
     cell_e = ws.cell(row=row, column=COL_JOB_NUMBER, value=e_val)
     cell_e.alignment = _align(h="center")
 
@@ -285,21 +286,20 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
     ws.row_dimensions[row].height = 24
 
 
-def _autosize_columns(ws, min_width: float = 8.0, max_width: float = 55.0) -> None:
-    """Estimate column widths based on maximum cell content length."""
-    from openpyxl.utils import get_column_letter
+def _autosize_columns(ws, min_width: float = 4.0, max_width: float = 55.0) -> None:
+    """Set column widths snug to content — allows narrow columns (#, Date, etc.)."""
     col_widths: dict[int, float] = {}
     for row in ws.iter_rows():
         for cell in row:
             if cell.value is None:
                 continue
-            # Skip merged cell tails
             if hasattr(cell, 'column') and cell.column is not None:
                 try:
                     text = str(cell.value)
-                    max_line = max((len(line) for line in text.split('\n')), default=0)
+                    longest = max((len(line) for line in text.split('\n')), default=0)
                     col = cell.column
-                    col_widths[col] = max(col_widths.get(col, min_width), max_line * 1.15 + 2)
+                    estimated = longest * 1.1 + 1.5
+                    col_widths[col] = max(col_widths.get(col, min_width), estimated)
                 except Exception:
                     pass
     for col, width in col_widths.items():
@@ -315,25 +315,24 @@ _IMG_MAX_H_PX      = 480
 _IMG_ROWS          = 27
 
 
-def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> list[str]:
-    """
-    Add a sheet with embedded receipt images for a single category.
-    Returns a list of anchor cell references (e.g. ["A3", "A32"]) for hyperlinks.
-    """
+def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
+                       category: str = "misc") -> list[str]:
+    """Add a sheet with embedded receipt images.  8-column layout mirrors Summary.
+    Returns anchor cell refs (e.g. ["A3", "A35"]) for hyperlinks from the Summary sheet."""
     ws = wb.create_sheet(title=sheet_name)
 
-    ws.column_dimensions["A"].width = 8
-    ws.column_dimensions["B"].width = 14
-    ws.column_dimensions["C"].width = 30
-    ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["E"].width = 38
+    # Apply same column widths as Summary sheet
+    for col_letter, width in COLUMN_WIDTHS.items():
+        ws.column_dimensions[col_letter].width = width
 
     current_row = 1
     anchors: list[str] = []
 
-    # Title row
-    ws.merge_cells(f"A{current_row}:E{current_row}")
-    title_cell = ws.cell(row=current_row, column=1, value=f"{sheet_name} — Receipt Images")
+    # Title row — merged A:H
+    _flood(ws, current_row, _fill(COLOR_TITLE_BG), cols=range(1, LAST_COL + 1))
+    ws.merge_cells(f"A{current_row}:H{current_row}")
+    title_cell = ws.cell(row=current_row, column=1,
+                         value=f"{sheet_name} — Receipt Images")
     title_cell.font      = _font(bold=True, color=COLOR_TITLE_FG, size=14)
     title_cell.fill      = _fill(COLOR_TITLE_BG)
     title_cell.alignment = _align(h="center")
@@ -344,41 +343,79 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
         ws.cell(row=current_row, column=1, value="No receipts in this category.")
         return anchors
 
-    # Column header row
-    col_headers = ["#", "Date", "Vendor / Name", "Amount", "Filename"]
-    hdr_fill = _fill(COLOR_HEADER_BG)
-    hdr_font = _font(bold=True, color=COLOR_HEADER_FG, size=10)
-    for col_idx, hdr_text in enumerate(col_headers, 1):
-        cell = ws.cell(row=current_row, column=col_idx, value=hdr_text)
-        cell.font      = hdr_font
-        cell.fill      = hdr_fill
-        cell.alignment = _align(h="center")
-        cell.border    = _border("2E75B6")
-    ws.row_dimensions[current_row].height = 18
+    # Column headers — same as Summary
+    tab_headers = ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"]
+    hdr_fill   = _fill(COLOR_HEADER_BG)
+    hdr_font   = _font(bold=True, color=COLOR_HEADER_FG, size=10)
+    hdr_border = _border("2E75B6")
+    _flood(ws, current_row, hdr_fill, hdr_font, hdr_border)
+    for col_idx, text in enumerate(tab_headers, 1):
+        cell = ws.cell(row=current_row, column=col_idx, value=text)
+        cell.alignment = _align(h="center", wrap=True)
+    ws.row_dimensions[current_row].height = 28
     current_row += 1
 
     for i, data in enumerate(receipts):
         img_path_str = data.get("_image_path", "")
-        date_val     = data.get("date") or ""
-        vendor       = data.get("vendor") or data.get("job_name") or ""
+        raw_date     = data.get("date") or ""
+        vendor       = data.get("vendor") or ""
         amount       = data.get("amount") or 0
+        job_name     = data.get("job_name") or ""
+        job_number   = data.get("job_number") or ""
+        ai_summary   = (data.get("ai_summary") or "").strip()
+        flag_text    = data.get("_flag") or ""
         filename     = data.get("_new_filename") or data.get("_file") or ""
 
         anchors.append(f"A{current_row}")
 
         row_fill   = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
         row_border = _receipt_sep_border()
-        row_values = [i + 1, date_val, vendor, f"${float(amount):.2f}", filename]
-        for col_idx, val in enumerate(row_values, 1):
-            cell = ws.cell(row=current_row, column=col_idx, value=val)
-            cell.font      = _font(bold=(col_idx == 1), size=10)
-            cell.fill      = row_fill
-            cell.border    = row_border
-            cell.alignment = _align(h="center" if col_idx in (1, 4) else "left", wrap=False)
-        ws.row_dimensions[current_row].height = 16
+        _flood(ws, current_row, row_fill, _font(size=10), row_border)
+
+        # A — #
+        cell_a = ws.cell(row=current_row, column=1, value=i + 1)
+        cell_a.font      = _font(bold=True, size=10)
+        cell_a.alignment = _align(h="center")
+
+        # B — Date
+        cell_b = ws.cell(row=current_row, column=2, value=raw_date)
+        cell_b.alignment = _align(h="center")
+
+        # C — Store
+        cell_c = ws.cell(row=current_row, column=3, value=vendor)
+        cell_c.alignment = _align(h="center", wrap=True)
+
+        # D — Job Name
+        cell_d = ws.cell(row=current_row, column=4, value=job_name)
+        cell_d.alignment = _align(h="center", wrap=True)
+
+        # E — Job Number
+        cell_e = ws.cell(row=current_row, column=5, value=job_number)
+        cell_e.alignment = _align(h="center")
+
+        # F — Amount
+        cell_f = ws.cell(row=current_row, column=6)
+        if amount:
+            cell_f.value = float(amount)
+            cell_f.number_format = ACCT_FORMAT
+        cell_f.alignment = _align(h="right")
+
+        # G — Summary
+        cell_g = ws.cell(row=current_row, column=7, value=ai_summary or None)
+        cell_g.font      = _font(size=9, color="4B5563")
+        cell_g.alignment = _align(h="center", wrap=True)
+
+        # H — Notes / Flag
+        cell_h = ws.cell(row=current_row, column=8, value=flag_text or None)
+        if flag_text:
+            cell_h.fill = _fill(COLOR_FLAG_BG)
+            cell_h.font = _font(size=9, color="991B1B")
+        cell_h.alignment = _align(h="left", wrap=True)
+
+        ws.row_dimensions[current_row].height = 22
         current_row += 1
 
-        # Embed image below metadata row
+        # Embed image below the metadata row
         if img_path_str and Path(img_path_str).exists():
             try:
                 from io import BytesIO
@@ -395,36 +432,36 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
                     else:
                         img_source = img_path_str
 
-                scale = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
-                img_w = int(orig_w * scale)
-                img_h = int(orig_h * scale)
-
+                scale  = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
+                img_w  = int(orig_w * scale)
+                img_h  = int(orig_h * scale)
                 rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
 
                 xl_img        = XLImage(img_source)
                 xl_img.width  = img_w
                 xl_img.height = img_h
                 ws.add_image(xl_img, f"A{current_row}")
-
                 for r in range(current_row, current_row + rows_needed):
                     ws.row_dimensions[r].height = _IMG_ROW_HEIGHT_PT
                 current_row += rows_needed
             except Exception as exc:
-                err_cell = ws.cell(row=current_row, column=1, value=f"[Image error: {exc}]")
+                err_cell = ws.cell(row=current_row, column=1,
+                                   value=f"[Image error: {exc}]")
                 err_cell.font = _font(size=9, color="991B1B")
                 ws.row_dimensions[current_row].height = 14
                 current_row += 1
         else:
-            placeholder = ws.cell(row=current_row, column=1,
-                                  value=f"[Image not available: {filename}]")
-            placeholder.font = _font(size=9, color="6B7280")
+            ph = ws.cell(row=current_row, column=1,
+                         value=f"[Image not available: {filename}]")
+            ph.font = _font(size=9, color="6B7280")
             ws.row_dimensions[current_row].height = 14
             current_row += 1
 
-        # Spacer between receipts
+        # Spacer
         ws.row_dimensions[current_row].height = 8
         current_row += 1
 
+    _autosize_columns(ws)
     return anchors
 
 
@@ -459,9 +496,6 @@ def build_themed_workbook(
     ws = wb.active
     ws.title = "Summary"
 
-    for col_letter, width in COLUMN_WIDTHS.items():
-        ws.column_dimensions[col_letter].width = width
-
     # ── Build image sheets FIRST to get anchor cells for hyperlinks ───────────
     IMAGE_SHEET_DEFS = [
         ("fuel",  "Fuel"),
@@ -469,12 +503,12 @@ def build_themed_workbook(
         ("misc",  "Miscellaneous"),
     ]
     image_links: dict[tuple, str] = {}
-    for category, sheet_name in IMAGE_SHEET_DEFS:
-        receipts = sections.get(category, [])
-        anchors  = _build_image_sheet(wb, sheet_name, receipts)
+    for cat, sheet_name in IMAGE_SHEET_DEFS:
+        receipts  = sections.get(cat, [])
+        anchors   = _build_image_sheet(wb, sheet_name, receipts, category=cat)
         safe_name = sheet_name.replace("'", "''")
         for i, cell_ref in enumerate(anchors):
-            image_links[(category, i)] = f"#'{safe_name}'!{cell_ref}"
+            image_links[(cat, i)] = f"#'{safe_name}'!{cell_ref}"
 
     # ── Fill in Summary sheet ─────────────────────────────────────────────────
     # Rows 1-4: form header (no row 5 spacer)
@@ -490,17 +524,17 @@ def build_themed_workbook(
     SECTION_DEFS = [
         (
             "fuel",
-            ["Receipt\nNo.", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
+            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
             "Fuel",
         ),
         (
             "mats",
-            ["Receipt\nNo.", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
+            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
             "Materials",
         ),
         (
             "misc",
-            ["Receipt\nNo.", "Date", "Store", "Job Name", "Expense Description", "Amount", "Summary", "Notes"],
+            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
             "Miscellaneous",
         ),
     ]
