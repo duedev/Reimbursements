@@ -7,21 +7,31 @@ import json
 import shutil
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from queue import Empty, Queue
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
-from process_receipts import process_receipts_batch
-
-app = FastAPI(title="Receipt Processor")
+from process_receipts import initialize_models, process_receipts_batch
 
 TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(exist_ok=True)
 
-# job_id → {"queue": Queue, "done": bool, "output_path": Path|None}
+# job_id → {"queue": Queue, "done": bool, "output_path": Path|None, "cancel": Event}
 _jobs: dict[str, dict] = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load olmOCR-2 (or fall back to Gemma) in a background thread so the
+    # server is immediately available while the model loads.
+    threading.Thread(target=initialize_models, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Receipt Processor", lifespan=lifespan)
 
 
 @app.get("/", response_class=FileResponse)
@@ -47,8 +57,9 @@ async def process(
         with open(dest, "wb") as fh:
             fh.write(await f.read())
 
+    cancel = threading.Event()
     q: Queue = Queue()
-    _jobs[job_id] = {"queue": q, "done": False, "output_path": None}
+    _jobs[job_id] = {"queue": q, "done": False, "output_path": None, "cancel": cancel}
 
     def run():
         def log_cb(msg: str):
@@ -67,6 +78,7 @@ async def process(
                 job_number_default=job_number,
                 log_callback=log_cb,
                 progress_callback=progress_cb,
+                cancel_event=cancel,
             )
             out_path = result.get("output_path")
             _jobs[job_id]["output_path"] = out_path
@@ -78,6 +90,14 @@ async def process(
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id}
+
+
+@app.post("/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    if job_id in _jobs:
+        _jobs[job_id]["cancel"].set()
+        return {"ok": True}
+    return {"ok": False}
 
 
 @app.get("/events/{job_id}")
