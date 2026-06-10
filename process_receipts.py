@@ -49,8 +49,9 @@ IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff
 IMAGE_MAX_PX         = 1568
 
 # Runtime state — updated by initialize_models() and POST /models/gemma
-_active_model:       str = OLMOCR_MODEL_ID
-_active_gemma_model: str = GEMMA_MODEL_ID
+_active_model:           str = GEMMA_MODEL_ID   # primary model
+_active_gemma_model:     str = GEMMA_MODEL_ID
+_active_secondary_model: str = ""               # OCR-stage model; empty = primary-only
 
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
@@ -94,21 +95,19 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     '  "vendor": "store or vendor name",\n'
     '  "amount": 0.00,\n'
     '  "category": "fuel | mats | misc",\n'
-    '  "job_name": null,\n'
-    '  "job_number": null,\n'
     '  "expense_description": null,\n'
-    '  "ai_summary": "one-sentence summary, e.g. Lunch at Butchs Grinders, $87.92",\n'
+    '  "summary": "one-sentence description of what was purchased, e.g. Lunch at Butchs Grinders",\n'
     '  "flags": []\n'
     "}}\n\n"
     "Category rules:\n"
     '- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, Valero, etc.)\n'
-    '  → set job_name = null, expense_description = null\n'
+    '  → set expense_description = null\n'
     '- "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n'
     '- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)\n\n'
     "Field rules:\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
     "- date must be YYYY-MM-DD from the transaction date\n"
-    "- ai_summary: one sentence distillation, include vendor and amount\n"
+    "- summary: one sentence describing what was purchased at the vendor (no dollar amount)\n"
     "- flags: JSON array of flag objects for any issues found:\n"
     '  * High amount: fuel > $200 → {{"flag": "Amount ${amount} exceeds $200 fuel threshold"}}\n'
     '  * High amount: mats > $500 → {{"flag": "Amount ${amount} exceeds $500 mats threshold"}}\n'
@@ -121,7 +120,7 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "Receipt OCR text:\n{ocr_text}"
 )
 
-# Gemma direct-vision fallback (used when olmOCR-2 is unavailable)
+# Primary direct-vision extraction (used when no secondary OCR model is configured)
 _GEMMA_VISION_TEMPLATE = """\
 You are a receipt data extractor and expense auditor. Analyze this receipt image and return ONLY a JSON object:
 
@@ -130,20 +129,19 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
   "vendor": "store or vendor name",
   "amount": 0.00,
   "category": "fuel | mats | misc",
-  "job_name": null,
-  "job_number": null,
   "expense_description": null,
-  "ai_summary": "one-sentence summary, e.g. Lunch at Butchs Grinders, $87.92",
+  "summary": "one-sentence description of what was purchased, e.g. Lunch at Butchs Grinders",
   "flags": []
 }}
 
 Category rules:
-- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, etc.) → job_name=null, expense_description=null
+- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, etc.) → expense_description=null
 - "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
 - "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
 Amount: use TOTAL or GRAND TOTAL.
 Date: YYYY-MM-DD from transaction date.
+summary: describe what was purchased at the vendor (no dollar amount).
 
 flags: array of objects if issues found:
 - fuel > $200, mats > $500, misc > $300 → {{"flag": "Amount exceeds threshold"}}
@@ -221,18 +219,17 @@ def list_available_models() -> list[str]:
 
 def initialize_models() -> str:
     """
-    Try to load olmOCR-2 via LM Studio API.
-    Falls back to the active Gemma variant if olmOCR-2 is unavailable.
+    Load the primary model at startup.
     Returns the active model ID.
     """
     global _active_model
-    print(f"[models] Checking for olmOCR-2 ({OLMOCR_MODEL_ID}) …")
-    if _try_load_model(OLMOCR_MODEL_ID):
-        _active_model = OLMOCR_MODEL_ID
-        print(f"[models] Primary: olmOCR-2  ({OLMOCR_MODEL_ID})")
+    print(f"[models] Loading primary model ({_active_gemma_model}) …")
+    if _try_load_model(_active_gemma_model):
+        _active_model = _active_gemma_model
+        print(f"[models] Primary: {_active_gemma_model}")
     else:
         _active_model = _active_gemma_model
-        print(f"[models] olmOCR-2 not available — using Gemma ({_active_gemma_model})")
+        print(f"[models] Warning: could not confirm primary model {_active_gemma_model}")
     return _active_model
 
 
@@ -311,11 +308,7 @@ def _unified_distillation(
     *,
     _retry: bool = True,
 ) -> Optional[dict]:
-    """
-    Stage 2 (new unified pipeline): send raw OCR text to Gemma.
-    Returns a single JSON with extracted fields + ai_summary + flags.
-    Replaces the old separate parse + audit steps.
-    """
+    """Stage 2: send raw OCR text to primary model; returns JSON with fields + summary + flags."""
     today = date.today().isoformat()
     prompt = _UNIFIED_DISTILLATION_TEMPLATE.format(ocr_text=ocr_text, today=today)
     system_msg = {
@@ -330,6 +323,9 @@ def _unified_distillation(
             result = json.loads(raw)
             if "flags" not in result:
                 result["flags"] = []
+            # normalise "summary" field name to "ai_summary" used downstream
+            if "summary" in result and "ai_summary" not in result:
+                result["ai_summary"] = result.pop("summary")
             return result
         except json.JSONDecodeError:
             return None
@@ -384,6 +380,8 @@ def _extract_with_model(
             result = json.loads(raw)
             if "flags" not in result:
                 result["flags"] = []
+            if "summary" in result and "ai_summary" not in result:
+                result["ai_summary"] = result.pop("summary")
             return result
         except json.JSONDecodeError:
             return None
@@ -450,9 +448,9 @@ def _extract_receipt_with_status(
         if status_cb:
             status_cb(status, data)
 
-    if _active_model != _active_gemma_model:
+    if _active_secondary_model:
         _cb("ocr")
-        ocr_text = _extract_raw_ocr(client, image_path, _active_model)
+        ocr_text = _extract_raw_ocr(client, image_path, _active_secondary_model)
         if ocr_text:
             _cb("distilling")
             data = _unified_distillation(client, ocr_text)
@@ -461,9 +459,9 @@ def _extract_receipt_with_status(
                     data["_raw_ocr"] = ocr_text
                 return data
             print(f"[extract] Two-step low-confidence for {image_path.name}, "
-                  f"falling back to Gemma direct vision")
+                  f"falling back to primary direct vision")
 
-    # Fallback: Gemma analyzes the image directly
+    # Primary model analyzes the image directly
     _cb("distilling")
     return _extract_with_model(client, image_path, _active_gemma_model)
 
@@ -777,16 +775,16 @@ def process_receipts_batch(
 
         category = classify_category(data)
         data["_category"] = category
+        data["_original_index"] = ridx
 
-        # Schema enforcement: fuel receipts have no job_name or expense_description
+        # Job name/number always come from user input, never from the receipt
         if category == "fuel":
             data["job_name"] = None
+            data["job_number"] = None
             data["expense_description"] = None
         else:
-            if not data.get("job_name") and job_name_default:
-                data["job_name"] = job_name_default
-            if not data.get("job_number") and job_number_default:
-                data["job_number"] = job_number_default
+            data["job_name"] = job_name_default or None
+            data["job_number"] = job_number_default or None
 
         # Promote first flag from unified distillation to the legacy _flag field
         flags_list = data.get("flags") or []

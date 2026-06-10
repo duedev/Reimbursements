@@ -37,8 +37,8 @@ COL_DATE       = 2   # B
 COL_NAME       = 3   # C  (C+D merged in data rows)
 COL_JOB_NUMBER = 5   # E  (also "Expense Description" in misc)
 COL_AMOUNT     = 6   # F
-COL_AI_SUMMARY = 7   # G  ← AI Summary (new: between data and image link)
-COL_FILENAME   = 8   # H  ← Filename / image link
+COL_FILENAME   = 7   # G  ← Filename / image link
+COL_AI_SUMMARY = 8   # H  ← Summary
 COL_FLAG       = 9   # I  ← Review Notes (conditional)
 
 COLUMN_WIDTHS = {
@@ -48,13 +48,13 @@ COLUMN_WIDTHS = {
     "D": 22.5,
     "E": 28.5,
     "F": 17.5,
-    "G": 48.0,   # AI Summary — wide enough for a sentence
-    "H": 36.0,   # Filename
+    "G": 36.0,   # Filename
+    "H": 48.0,   # Summary — wide enough for a sentence
 }
 
 ACCT_FORMAT = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 DATE_FORMAT  = "m/d/yy"
-LAST_COL     = 8   # H — main styled bands stop here
+LAST_COL     = 9   # I — main styled bands stop here
 
 
 # ── Style helpers ──────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ def _flood(ws, row: int, fill: PatternFill, font: Font = None,
 # ── Row writers ────────────────────────────────────────────────────────────────
 
 def _write_title(ws, row: int):
-    ws.merge_cells(f"A{row}:H{row}")
+    ws.merge_cells(f"A{row}:I{row}")
     cell = ws.cell(row=row, column=1, value="Expense Reimbursement Form")
     cell.font = _font(bold=True, color=COLOR_TITLE_FG, size=16)
     cell.fill = _fill(COLOR_TITLE_BG)
@@ -135,7 +135,7 @@ def _write_meta_field(ws, row: int, label: str, value: str,
 def _write_note_row(ws, row: int, text: str):
     note_fill = _fill(COLOR_NOTE_BG)
     _flood(ws, row, note_fill)
-    ws.merge_cells(f"D{row}:H{row}")
+    ws.merge_cells(f"D{row}:I{row}")
     cell = ws.cell(row=row, column=4, value=text)
     cell.font = _font(bold=True, size=10, color="92400E")
     cell.fill = note_fill
@@ -144,7 +144,7 @@ def _write_note_row(ws, row: int, text: str):
 
 
 def _write_section_banner(ws, row: int, label: str):
-    ws.merge_cells(f"A{row}:H{row}")
+    ws.merge_cells(f"A{row}:I{row}")
     cell = ws.cell(row=row, column=1, value=f"  {label}")
     cell.font = _font(bold=True, color=COLOR_SECTION_FG, size=13)
     cell.fill = _fill(COLOR_SECTION_BG)
@@ -244,20 +244,20 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         cell_f.number_format = ACCT_FORMAT
     cell_f.alignment = _align(h="right")
 
-    # G — AI Summary
-    ai_summary = (data.get("ai_summary") or "").strip()
-    cell_g = ws.cell(row=row, column=COL_AI_SUMMARY, value=ai_summary or None)
-    cell_g.font      = _font(size=10, color="4B5563")
-    cell_g.alignment = _align(h="left", wrap=True)
-
-    # H — Filename (hyperlink to image sheet when available)
+    # G — Filename (hyperlink to image sheet when available)
     filename = data.get("_new_filename") or data.get("_file") or ""
-    cell_h = ws.cell(row=row, column=COL_FILENAME, value=filename)
+    cell_g = ws.cell(row=row, column=COL_FILENAME, value=filename)
     if hyperlink_target and filename:
-        cell_h.hyperlink = hyperlink_target
-        cell_h.font = Font(bold=False, color="1155CC", underline="single",
+        cell_g.hyperlink = hyperlink_target
+        cell_g.font = Font(bold=False, color="1155CC", underline="single",
                            name="Calibri", size=11)
-    cell_h.alignment = _align(h="left", wrap=False)
+    cell_g.alignment = _align(h="left", wrap=False)
+
+    # H — Summary
+    ai_summary = (data.get("ai_summary") or "").strip()
+    cell_h = ws.cell(row=row, column=COL_AI_SUMMARY, value=ai_summary or None)
+    cell_h.font      = _font(size=10, color="4B5563")
+    cell_h.alignment = _align(h="left", wrap=True)
 
     # I — Review Notes (only when flags column active)
     if show_flags:
@@ -300,7 +300,7 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
 
     _flood(ws, row, tot_fill, tot_font)
 
-    ws.merge_cells(f"A{row}:D{row}")
+    ws.merge_cells(f"A{row}:E{row}")
     note = ws.cell(row=row, column=1, value="**Please attach receipts.**")
     note.alignment = _align(h="left", wrap=False)
 
@@ -474,14 +474,13 @@ def build_themed_workbook(
 
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
-    if has_flags:
-        ws.column_dimensions["I"].width = 40.0
+    ws.column_dimensions["I"].width = 40.0
 
     # ── Build image sheets FIRST to get anchor cells for hyperlinks ───────────
     IMAGE_SHEET_DEFS = [
-        ("fuel",  "Fuel Receipts"),
-        ("mats",  "Mats Receipts"),
-        ("misc",  "Misc Receipts"),
+        ("fuel",  "Fuel"),
+        ("mats",  "Materials"),
+        ("misc",  "Miscellaneous"),
     ]
     image_links: dict[tuple, str] = {}
     for category, sheet_name in IMAGE_SHEET_DEFS:
@@ -505,18 +504,18 @@ def build_themed_workbook(
     SECTION_DEFS = [
         (
             "fuel",
-            ["Receipt\nNo.", "Date", "Job Name", "", "Job Number", "Amount", "AI Summary", "Filename"],
-            "FUEL",
+            ["Receipt\nNo.", "Date", "Job Name", "", "Job Number", "Amount", "Filename", "Summary"],
+            "Fuel",
         ),
         (
             "mats",
-            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Job Number", "Amount", "AI Summary", "Filename"],
-            "MATS",
+            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Job Number", "Amount", "Filename", "Summary"],
+            "Materials",
         ),
         (
             "misc",
-            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Expense Description", "Amount", "AI Summary", "Filename"],
-            "MISCELLANEOUS",
+            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Expense Description", "Amount", "Filename", "Summary"],
+            "Miscellaneous",
         ),
     ]
 

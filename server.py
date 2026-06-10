@@ -104,6 +104,10 @@ async def process(
             q.put({"type": "progress", "current": cur, "total": tot, "filename": fname})
 
         def receipt_status_cb(idx: int, tot: int, fname: str, status: str, data):
+            # Store original image path on first contact for retry support
+            if status == "queued":
+                orig = receipts_dir / fname
+                _jobs[job_id].setdefault("image_paths_by_idx", {})[idx] = str(orig)
             q.put({
                 "type":     "receipt_update",
                 "index":    idx,
@@ -245,49 +249,68 @@ async def make_spreadsheet(job_id: str):
 @app.post("/retry-receipt/{job_id}/{index}")
 async def retry_receipt(job_id: str, index: int):
     """
-    Re-process a single failed receipt using Gemma direct-vision (bypasses olmOCR).
-    Updates the job results in-place and emits an SSE receipt_update via the job queue.
+    Re-process a single failed receipt using the primary model (direct vision).
+    Works for both failed receipts and previously succeeded ones.
     """
     if job_id not in _jobs:
         return JSONResponse({"ok": False, "error": "Job not found"}, status_code=404)
 
     job = _jobs[job_id]
     results = job.get("results", [])
+    image_paths = job.get("image_paths_by_idx", {})
 
-    # Find the matching result by index (index is 1-based from the Kanban)
-    receipt_idx = index - 1
-    if receipt_idx < 0 or receipt_idx >= len(results):
-        return JSONResponse({"ok": False, "error": "Invalid receipt index"}, status_code=400)
+    # Find existing successful result (if any) by original index
+    target = None
+    target_pos = None
+    for i, r in enumerate(results):
+        if r.get("_original_index") == index:
+            target = r
+            target_pos = i
+            break
 
-    target = results[receipt_idx]
-    img_path_str = target.get("_image_path")
+    # Resolve image path: successful result has renamed path; failed receipt has original
+    img_path_str = None
+    if target:
+        img_path_str = target.get("_image_path")
+    if not img_path_str or not Path(img_path_str).exists():
+        img_path_str = image_paths.get(index)
+
     if not img_path_str or not Path(img_path_str).exists():
         return JSONResponse({"ok": False, "error": "Image file not available for retry"}, status_code=404)
+
+    img_path = Path(img_path_str)
 
     def _retry():
         from openai import OpenAI
         client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
-        return _pr._extract_with_model(client, Path(img_path_str), _pr._active_gemma_model)
+        return _pr._extract_with_model(client, img_path, _pr._active_gemma_model)
 
     try:
         new_data = await asyncio.get_event_loop().run_in_executor(None, _retry)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
-    if new_data and not _pr._is_low_confidence(new_data):
-        # Merge new data into existing result
-        for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
-                  "expense_description", "ai_summary", "flags"):
-            if k in new_data:
-                target[k] = new_data[k]
-        target["_flag"] = (new_data.get("flags") or [{}])[0].get("flag", "") if new_data.get("flags") else ""
-        q = job.get("queue")
-        if q:
-            q.put({"type": "receipt_update", "index": index, "status": "done",
-                   "data": _safe_receipt_data(target)})
-        return JSONResponse({"ok": True, "data": _safe_receipt_data(target)})
+    if not new_data or _pr._is_low_confidence(new_data):
+        return JSONResponse({"ok": False, "error": "Retry extraction failed or still low confidence"}, status_code=422)
 
-    return JSONResponse({"ok": False, "error": "Retry extraction failed or still low confidence"}, status_code=422)
+    new_data["_original_index"] = index
+    new_data["_image_path"]     = str(img_path)
+    new_data["_file"]           = img_path.name
+    new_data["_new_filename"]   = img_path.name
+    new_data["_category"]       = _pr.classify_category(new_data)
+    flags_list = new_data.get("flags") or []
+    new_data["_flag"] = flags_list[0].get("flag", "") if flags_list else ""
+
+    if target_pos is not None:
+        results[target_pos] = new_data          # replace in-place
+    else:
+        results.append(new_data)                # first-time success for a previously failed receipt
+
+    q = job.get("queue")
+    if q:
+        q.put({"type": "receipt_update", "index": index, "status": "done",
+               "data": _safe_receipt_data(new_data)})
+    return JSONResponse({"ok": True, "data": _safe_receipt_data(new_data)})
 
 
 @app.get("/models")
@@ -308,9 +331,11 @@ async def get_available_models():
 
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return JSONResponse({"models": models, "active_gemma": _pr._active_gemma_model, "ok": True})
+        return JSONResponse({"models": models, "active_gemma": _pr._active_gemma_model,
+                             "active_secondary": _pr._active_secondary_model, "ok": True})
     except Exception as exc:
         return JSONResponse({"models": [], "active_gemma": _pr._active_gemma_model,
+                             "active_secondary": _pr._active_secondary_model,
                              "ok": False, "error": str(exc)})
 
 
@@ -330,7 +355,22 @@ async def swap_gemma_model(body: GemmaSwapRequest):
     ok = _try_load_model(target)
     if ok:
         _pr._active_gemma_model = target
+        _pr._active_model = target
         return JSONResponse({"ok": True, "active_gemma": target})
+    return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
+
+
+@app.post("/models/secondary")
+async def swap_secondary_model(body: GemmaSwapRequest):
+    """Set or clear the secondary (OCR-stage) model."""
+    target = body.model.strip()
+    if not target:
+        _pr._active_secondary_model = ""
+        return JSONResponse({"ok": True, "active_secondary": ""})
+    ok = _try_load_model(target)
+    if ok:
+        _pr._active_secondary_model = target
+        return JSONResponse({"ok": True, "active_secondary": target})
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
 
 
