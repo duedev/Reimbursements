@@ -39,7 +39,7 @@
     header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; flex: 1; }
     header span { color: var(--accent); }
 
-    main { margin: 28px auto; padding: 0 24px; display: grid; gap: 20px; }
+    main { width: 100%; padding: 20px 16px; display: grid; gap: 20px; }
 
     .card {
       background: var(--surface);
@@ -134,7 +134,7 @@
       gap: 12px;
       min-height: 200px;
     }
-    @media (max-width: 800px) { .kanban-board { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 900px) { .kanban-board { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 480px) { .kanban-board { grid-template-columns: 1fr; } }
 
     .kanban-col {
@@ -165,6 +165,19 @@
       min-width: 20px;
       text-align: center;
     }
+    .col-folder-btn {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+    }
+    .col-folder-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
     .kanban-cards { padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 60px; }
 
     .k-card {
@@ -190,19 +203,39 @@
       text-overflow: ellipsis;
       margin-bottom: 4px;
     }
+    .k-card .k-status-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
     .k-card .k-status-badge {
       display: inline-block;
       padding: 2px 8px;
       border-radius: 99px;
       font-size: 10px;
       font-weight: 600;
-      margin-bottom: 6px;
     }
     .k-status-badge.s-queued    { background: rgba(148,163,184,0.15); color: var(--muted); }
     .k-status-badge.s-ocr       { background: rgba(59,130,246,0.2);   color: var(--accent); }
     .k-status-badge.s-distilling{ background: rgba(245,158,11,0.2);   color: var(--warning); }
     .k-status-badge.s-done      { background: rgba(34,197,94,0.2);    color: var(--success); }
     .k-status-badge.s-failed    { background: rgba(239,68,68,0.2);    color: var(--danger); }
+
+    .k-model-tag {
+      font-family: ui-monospace, monospace;
+      font-size: 9px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     .k-card .k-vendor  { font-weight: 600; font-size: 13px; color: var(--text); }
     .k-card .k-meta    { color: var(--muted); font-size: 11px; margin-top: 2px; }
@@ -243,10 +276,20 @@
     .model-select-row {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     }
-    .model-select-row select { flex: 1; min-width: 200px; }
+    .model-select-row select { flex: 1; min-width: 180px; }
     .model-active-dot {
       width: 8px; height: 8px; border-radius: 50%;
       background: var(--success); flex-shrink: 0;
+    }
+    .model-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 600px) { .model-grid { grid-template-columns: 1fr; } }
+    .model-section-label {
+      font-size: 11px; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
     }
 
     /* Output folder strip */
@@ -302,7 +345,6 @@
 
 <header>
   <h1>Receipt <span>Processor</span></h1>
-  <!-- Active model indicator -->
   <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
     <div class="model-active-dot" id="gemma-status-dot"></div>
     <span id="active-model-label" style="font-family:ui-monospace,monospace;font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Loading…</span>
@@ -310,7 +352,7 @@
 </header>
 
 <main>
-  <!-- Upload card -->
+  <!-- Upload card (hidden while processing) -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
     <div id="drop-zone">
@@ -325,9 +367,9 @@
     <div id="file-list"></div>
   </div>
 
-  <!-- Config card -->
+  <!-- Config card (hidden while processing) -->
   <div class="card" id="config-card">
-    <div class="card-title">Details &amp; Model</div>
+    <div class="card-title">Details &amp; Models</div>
     <div class="fields" style="margin-bottom:16px">
       <label>
         Employee Name
@@ -342,31 +384,29 @@
         <input type="text" id="job-number" placeholder="Optional">
       </label>
     </div>
-    <!-- Model selectors -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <!-- Two model dropdowns -->
+    <div class="model-grid">
       <div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-          Primary Model
-        </div>
+        <div class="model-section-label">OCR Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — leave blank for direct vision)</span></div>
         <div class="model-select-row">
-          <div class="model-active-dot" id="model-dot"></div>
-          <select id="model-select" title="Primary model for extraction and distillation">
+          <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
+          <select id="ocr-model-select" title="Select dedicated OCR model (optional)">
+            <option value="">(none — direct vision)</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <div class="model-section-label">Distillation Model</div>
+        <div class="model-select-row">
+          <div class="model-active-dot" id="distill-model-dot"></div>
+          <select id="distill-model-select" title="Select model for extraction and audit">
             <option value="">Loading available models…</option>
           </select>
-          <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh</button>
         </div>
       </div>
-      <div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-          Secondary Model <span style="font-size:10px;text-transform:none;font-weight:400;letter-spacing:0">(OCR stage, optional)</span>
-        </div>
-        <div class="model-select-row">
-          <div class="model-active-dot" id="secondary-model-dot" style="background:var(--border)"></div>
-          <select id="secondary-model-select" title="Optional secondary model for the OCR stage">
-            <option value="">None — primary only</option>
-          </select>
-        </div>
-      </div>
+    </div>
+    <div style="margin-top:10px;text-align:right">
+      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
     </div>
   </div>
 
@@ -405,24 +445,28 @@
       <div class="kanban-col">
         <div class="kanban-col-header">
           Queued <span class="col-count" id="cnt-queued">0</span>
+          <button class="col-folder-btn" title="Open intake folder" onclick="openKanbanFolder('intake')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-queued"></div>
       </div>
       <div class="kanban-col">
         <div class="kanban-col-header">
           Processing <span class="col-count" id="cnt-processing">0</span>
+          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('watch_staged')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-processing"></div>
       </div>
       <div class="kanban-col">
         <div class="kanban-col-header">
           Completed <span class="col-count" id="cnt-completed">0</span>
+          <button class="col-folder-btn" title="Open output folder" onclick="openKanbanFolder('output')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-completed"></div>
       </div>
       <div class="kanban-col">
         <div class="kanban-col-header">
           Failed <span class="col-count" id="cnt-failed">0</span>
+          <button class="col-folder-btn" title="Open failed folder" onclick="openKanbanFolder('failed')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-failed"></div>
       </div>
@@ -446,7 +490,6 @@
         Process Another Batch
       </button>
     </div>
-    <!-- Download link (shown after generation) -->
     <div class="hidden" id="download-row" style="margin-top:14px">
       <a class="btn btn-success" id="download-btn" href="#" download>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -527,29 +570,33 @@
 
 <script>
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const dropZone     = document.getElementById('drop-zone');
-const fileInput    = document.getElementById('file-input');
-const fileList     = document.getElementById('file-list');
-const processBtn   = document.getElementById('process-btn');
-const stopBtn      = document.getElementById('stop-btn');
-const statusBadge  = document.getElementById('status-badge');
-const progressCard = document.getElementById('progress-card');
-const progressBar  = document.getElementById('progress-bar');
-const progressLbl  = document.getElementById('progress-label');
-const currentFile  = document.getElementById('current-file');
-const logEl        = document.getElementById('log');
-const kanbanCard   = document.getElementById('kanban-card');
-const generateCard = document.getElementById('generate-card');
-const generateBtn  = document.getElementById('generate-btn');
-const genSummary   = document.getElementById('gen-summary');
-const downloadRow  = document.getElementById('download-row');
-const downloadBtn  = document.getElementById('download-btn');
-const resetBtn     = document.getElementById('reset-btn');
-const modelSelect  = document.getElementById('model-select');
+const dropZone        = document.getElementById('drop-zone');
+const fileInput       = document.getElementById('file-input');
+const fileList        = document.getElementById('file-list');
+const processBtn      = document.getElementById('process-btn');
+const stopBtn         = document.getElementById('stop-btn');
+const statusBadge     = document.getElementById('status-badge');
+const progressCard    = document.getElementById('progress-card');
+const progressBar     = document.getElementById('progress-bar');
+const progressLbl     = document.getElementById('progress-label');
+const currentFile     = document.getElementById('current-file');
+const logEl           = document.getElementById('log');
+const kanbanCard      = document.getElementById('kanban-card');
+const generateCard    = document.getElementById('generate-card');
+const generateBtn     = document.getElementById('generate-btn');
+const genSummary      = document.getElementById('gen-summary');
+const downloadRow     = document.getElementById('download-row');
+const downloadBtn     = document.getElementById('download-btn');
+const resetBtn        = document.getElementById('reset-btn');
+const uploadCard      = document.getElementById('upload-card');
+const configCard      = document.getElementById('config-card');
+const distillSelect   = document.getElementById('distill-model-select');
+const ocrSelect       = document.getElementById('ocr-model-select');
 
 let selectedFiles  = [];
 let currentJobId   = null;
 let totalReceipts  = 0;
+let folderPaths    = {};
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function esc(str) {
@@ -594,7 +641,7 @@ function renderFileList() {
 window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 
 // ── Kanban state ──────────────────────────────────────────────────────────────
-// Map: filename → {index, status, data}
+// Map: filename → {status, data}
 const receiptCards = {};
 
 function getCardEl(filename) {
@@ -613,7 +660,14 @@ function catBadge(cat) {
   return `<span class="k-cat-badge k-cat-${c}">${c.toUpperCase()}</span>`;
 }
 
-function makeCard(filename, status, data) {
+function shortModelName(model) {
+  if (!model) return '';
+  // Return last path segment (after last /)
+  const parts = model.split('/');
+  return parts[parts.length - 1] || model;
+}
+
+function makeCard(filename, status, data, model) {
   const div = document.createElement('div');
   div.id = 'kcard-' + filename;
   div.className = `k-card status-${status}`;
@@ -626,7 +680,12 @@ function makeCard(filename, status, data) {
     queued: 'Queued', ocr: 'OCR', distilling: 'Distilling', done: 'Done', failed: 'Failed'
   }[status] || status;
 
-  inner += `<div class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</div>`;
+  inner += `<div class="k-status-row">`;
+  inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
+  if (model && spinning) {
+    inner += `<span class="k-model-tag" title="${esc(model)}">${esc(shortModelName(model))}</span>`;
+  }
+  inner += `</div>`;
 
   // LLM tag: show which model is working on this card
   if (status === 'ocr') {
@@ -645,8 +704,9 @@ function makeCard(filename, status, data) {
     inner += `<div class="k-vendor">${esc(data.vendor)} ${catBadge(data._category || data.category)}</div>`;
     const amtStr = data.amount != null ? ` &bull; <span class="k-amount">$${parseFloat(data.amount).toFixed(2)}</span>` : '';
     inner += `<div class="k-meta">${esc(data.date || '')}${amtStr}</div>`;
-    if (data.ai_summary) {
-      inner += `<div class="k-summary">"${esc(data.ai_summary)}"</div>`;
+    const summaryText = data.summary || data.ai_summary;
+    if (summaryText) {
+      inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
     if (data._flag) {
       inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
@@ -654,62 +714,74 @@ function makeCard(filename, status, data) {
   }
 
   if (status === 'failed') {
-    const idx = receiptCards[filename]?.index ?? 0;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt(${idx}, '${esc(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
   }
 
   div.innerHTML = inner;
   return div;
 }
 
-function moveCard(filename, newStatus, data) {
+function insertCardSorted(col, card) {
+  // Insert oldest (earliest date) at top, newest at bottom
+  // Cards without dates go at bottom
+  const newDate = card.dataset.date || 'zzzz';
+  const children = Array.from(col.children);
+  let insertBefore = null;
+  for (const child of children) {
+    const childDate = child.dataset.date || 'zzzz';
+    if (newDate < childDate) {
+      insertBefore = child;
+      break;
+    }
+  }
+  if (insertBefore) {
+    col.insertBefore(card, insertBefore);
+  } else {
+    col.appendChild(card);
+  }
+}
+
+function moveCard(filename, newStatus, data, model) {
   const colMap = {
     queued: 'col-queued', ocr: 'col-processing', distilling: 'col-processing',
     done: 'col-completed', failed: 'col-failed'
   };
 
-  // Remove from every column (not just the expected one — handles race conditions)
-  ['col-queued','col-processing','col-completed','col-failed'].forEach(id => {
-    const el = document.getElementById(id)?.querySelector(`#kcard-${CSS.escape(filename)}`);
-    if (el) el.remove();
-  });
+  // Remove existing card from wherever it is
+  const existing = getCardEl(filename);
+  if (existing) existing.remove();
 
-  const newCard = makeCard(filename, newStatus, data);
+  const newCard = makeCard(filename, newStatus, data, model || '');
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
 
-  // Completed column: insert oldest-first (aging to top)
-  if (newStatus === 'done' && data && data.date) {
-    const cards = [...col.querySelectorAll('.k-card')];
-    let insertBefore = null;
-    for (const card of cards) {
-      if (!card.dataset.date || data.date <= card.dataset.date) {
-        insertBefore = card;
-        break;
-      }
-    }
-    insertBefore ? col.insertBefore(newCard, insertBefore) : col.appendChild(newCard);
+  if (newStatus === 'done') {
+    insertCardSorted(col, newCard);
   } else {
     col.appendChild(newCard);
   }
   setCounts();
 }
 
-window.retryReceipt = async function(index, filename) {
+window.retryReceipt = async function(filename) {
   if (!currentJobId) return;
-  moveCard(filename, 'distilling', receiptCards[filename]?.data);
+  moveCard(filename, 'distilling', receiptCards[filename]?.data, '');
   try {
-    const res = await fetch(`/retry-receipt/${currentJobId}/${index}`, { method: 'POST' });
+    const res = await fetch(`/retry-receipt/${currentJobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    });
     const d = await res.json();
     if (d.ok) {
-      receiptCards[filename] = { ...receiptCards[filename], status: 'done', data: d.data };
-      moveCard(filename, 'done', d.data);
+      receiptCards[filename] = { status: 'done', data: d.data };
+      moveCard(filename, 'done', d.data, '');
     } else {
       receiptCards[filename] = { ...receiptCards[filename], status: 'failed' };
-      moveCard(filename, 'failed', receiptCards[filename]?.data);
+      moveCard(filename, 'failed', receiptCards[filename]?.data, '');
       showToast(`Retry failed: ${d.error}`, false);
     }
   } catch (err) {
-    moveCard(filename, 'failed', receiptCards[filename]?.data);
+    moveCard(filename, 'failed', receiptCards[filename]?.data, '');
     showToast(`Retry error: ${err.message}`, false);
   }
 };
@@ -720,13 +792,28 @@ function initKanban(files) {
   });
   Object.keys(receiptCards).forEach(k => delete receiptCards[k]);
 
-  files.forEach((f, i) => {
-    receiptCards[f.name] = { index: i + 1, status: 'queued', data: null };
-    moveCard(f.name, 'queued', null);
+  files.forEach(f => {
+    receiptCards[f.name] = { status: 'queued', data: null };
+    moveCard(f.name, 'queued', null, '');
   });
   kanbanCard.classList.remove('hidden');
   setCounts();
 }
+
+// ── Kanban folder shortcuts ────────────────────────────────────────────────────
+window.openKanbanFolder = async function(key) {
+  const path = folderPaths[key] || folderPaths['output'];
+  if (!path) return;
+  try {
+    const res = await fetch('/open-folder-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const d = await res.json();
+    showToast(d.docker ? `Folder: ${d.path}` : d.ok ? `Opened: ${d.path}` : `Error: ${d.error}`, d.ok);
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+};
 
 // ── Process ───────────────────────────────────────────────────────────────────
 processBtn.addEventListener('click', async () => {
@@ -773,8 +860,8 @@ processBtn.addEventListener('click', async () => {
 
     } else if (msg.type === 'receipt_update') {
       const fname = msg.filename;
-      receiptCards[fname] = { index: msg.index, status: msg.status, data: msg.data };
-      moveCard(fname, msg.status, msg.data || null);
+      receiptCards[fname] = { status: msg.status, data: msg.data };
+      moveCard(fname, msg.status, msg.data || null, msg.model || '');
 
     } else if (msg.type === 'done') {
       es.close();
@@ -801,11 +888,20 @@ stopBtn.addEventListener('click', async () => {
 
 function setProcessing(on) {
   processBtn.disabled = on;
-  processBtn.textContent = on ? 'Processing…' : 'Process Receipts';
-  if (!on) stopBtn.classList.add('hidden');
-  document.getElementById('upload-card').classList.toggle('hidden', on);
-  document.getElementById('config-card').classList.toggle('hidden', on);
   if (on) {
+    processBtn.innerHTML = `<span class="spinner"></span> Processing…`;
+  } else {
+    processBtn.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg> Process Receipts`;
+  }
+  if (!on) stopBtn.classList.add('hidden');
+
+  // Hide upload + config while processing; show again on reset
+  if (on) {
+    uploadCard.classList.add('hidden');
+    configCard.classList.add('hidden');
     progressCard.classList.remove('hidden');
     generateCard.classList.add('hidden');
     downloadRow.classList.add('hidden');
@@ -826,7 +922,6 @@ function setStatus(type, text) {
 function showGenerateCard(msg) {
   const ok    = msg.processed || 0;
   const skip  = (msg.skipped || []).length;
-  const total = msg.total || totalReceipts;
   const period = msg.expense_period || '';
 
   let html = `<span class="gen-stat stat-ok">${ok} processed</span>`;
@@ -848,14 +943,13 @@ generateBtn.addEventListener('click', async () => {
       const err = await res.text();
       throw new Error(err);
     }
-    // The response IS the file; convert to a blob download
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     downloadBtn.href = url;
     downloadBtn.download = 'Reimbursements.xlsx';
     downloadRow.classList.remove('hidden');
     showToast('Spreadsheet ready — click Download', true);
-    currentJobId = null;  // job is cleaned up server-side
+    currentJobId = null;
   } catch (err) {
     showToast(`Generation failed: ${err.message}`, false);
   } finally {
@@ -878,15 +972,18 @@ resetBtn.addEventListener('click', () => {
   document.getElementById('error-card').classList.add('hidden');
   document.getElementById('error-log').textContent = '';
   renderFileList();
+  uploadCard.classList.remove('hidden');
+  configCard.classList.remove('hidden');
   progressCard.classList.add('hidden');
   kanbanCard.classList.add('hidden');
   generateCard.classList.add('hidden');
   downloadRow.classList.add('hidden');
   statusBadge.classList.add('hidden');
   stopBtn.classList.add('hidden');
-  document.getElementById('upload-card').classList.remove('hidden');
-  document.getElementById('config-card').classList.remove('hidden');
-  processBtn.textContent = 'Process Receipts';
+  processBtn.innerHTML = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="5 3 19 12 5 21 5 3"/>
+    </svg> Process Receipts`;
   processBtn.disabled = true;
 });
 
@@ -921,90 +1018,94 @@ document.getElementById('error-toggle').addEventListener('click', () => {
   document.getElementById('error-chevron').style.transform = errorPanelOpen ? '' : 'rotate(-90deg)';
 });
 
-// ── Model selector ────────────────────────────────────────────────────────────
+// ── Model selectors ───────────────────────────────────────────────────────────
 async function loadModels() {
   try {
     const res  = await fetch('/models/available');
     const data = await res.json();
-    const active          = data.active_gemma || '';
-    const activeSecondary = data.active_secondary || '';
+    const activeDistill = data.active_distill || '';
+    const activeOcr     = data.active_ocr     || '';
 
-    document.getElementById('active-model-label').textContent = active || 'No model';
-    document.getElementById('gemma-status-dot').style.background = active ? 'var(--success)' : 'var(--border)';
-    document.getElementById('model-dot').style.background = active ? 'var(--success)' : 'var(--border)';
-    document.getElementById('secondary-model-dot').style.background = activeSecondary ? 'var(--success)' : 'var(--border)';
+    document.getElementById('active-model-label').textContent = activeDistill || 'No model';
+    document.getElementById('gemma-status-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
+    document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background = activeOcr ? 'var(--success)' : 'var(--border)';
 
-    const sel  = modelSelect;
-    const sel2 = document.getElementById('secondary-model-select');
-    const prev  = sel.value;
-    const prev2 = sel2.value;
-    sel.innerHTML  = '';
-    sel2.innerHTML = '<option value="">None — primary only</option>';
+    const models = data.models || [];
 
-    if (!data.models || data.models.length === 0) {
-      sel.innerHTML = '<option value="">No models loaded in LM Studio</option>';
-      return;
+    // Populate distillation dropdown
+    const prevDistill = distillSelect.value;
+    distillSelect.innerHTML = '';
+    if (models.length === 0) {
+      distillSelect.innerHTML = '<option value="">No models loaded in LM Studio</option>';
+    } else {
+      models.forEach(id => {
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = id;
+        if (id === activeDistill) opt.selected = true;
+        distillSelect.appendChild(opt);
+      });
+      if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
 
-    data.models.forEach(id => {
+    // Populate OCR dropdown (with "(none)" first)
+    const prevOcr = ocrSelect.value;
+    ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
+    models.forEach(id => {
       const opt = document.createElement('option');
       opt.value = id; opt.textContent = id;
-      if (id === active) opt.selected = true;
-      sel.appendChild(opt);
-
-      const opt2 = document.createElement('option');
-      opt2.value = id; opt2.textContent = id;
-      if (id === activeSecondary) opt2.selected = true;
-      sel2.appendChild(opt2);
+      if (id === activeOcr) opt.selected = true;
+      ocrSelect.appendChild(opt);
     });
-    if (!sel.value && prev) sel.value = prev;
-    if (!sel2.value && prev2) sel2.value = prev2;
+    if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
+
+
   } catch (_) {
-    modelSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
+    distillSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
   }
 }
 
-modelSelect.addEventListener('change', async () => {
-  const chosen = modelSelect.value;
+distillSelect.addEventListener('change', async () => {
+  const chosen = distillSelect.value;
   if (!chosen) return;
-  document.getElementById('model-dot').style.background = 'var(--warning)';
+  document.getElementById('distill-model-dot').style.background = 'var(--warning)';
   try {
-    const res  = await fetch('/models/gemma', {
+    const res  = await fetch('/models/distill', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: chosen }),
     });
     const data = await res.json();
     if (data.ok) {
       document.getElementById('active-model-label').textContent = chosen;
-      document.getElementById('model-dot').style.background = 'var(--success)';
+      document.getElementById('distill-model-dot').style.background = 'var(--success)';
       document.getElementById('gemma-status-dot').style.background = 'var(--success)';
-      showToast(`Primary model: ${chosen}`, true);
+      showToast(`Distillation model: ${chosen}`, true);
     } else {
       showToast(`Could not load model: ${data.error}`, false);
-      document.getElementById('model-dot').style.background = 'var(--danger)';
+      document.getElementById('distill-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) {
     showToast(`Error: ${err.message}`, false);
   }
 });
 
-document.getElementById('secondary-model-select').addEventListener('change', async () => {
-  const chosen = document.getElementById('secondary-model-select').value;
-  document.getElementById('secondary-model-dot').style.background = 'var(--warning)';
+ocrSelect.addEventListener('change', async () => {
+  const chosen = ocrSelect.value;
+  document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--warning)' : 'var(--border)';
   try {
-    const res  = await fetch('/models/secondary', {
+    const res  = await fetch('/models/ocr', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: chosen }),
     });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('secondary-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
-      showToast(chosen ? `Secondary model: ${chosen}` : 'Secondary model cleared', true);
+      document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
+      showToast(chosen ? `OCR model: ${chosen}` : 'OCR model cleared (direct vision)', true);
     } else {
-      showToast(`Could not set secondary: ${data.error}`, false);
-      document.getElementById('secondary-model-dot').style.background = 'var(--danger)';
+      showToast(`Could not load OCR model: ${data.error}`, false);
+      document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) {
     showToast(`Error: ${err.message}`, false);
@@ -1016,10 +1117,11 @@ document.getElementById('refresh-models-btn').addEventListener('click', loadMode
 // ── Output folder + watch status ──────────────────────────────────────────────
 async function loadWatchStatus() {
   try {
-    const [folderRes, statusRes, watchFolderRes] = await Promise.all([
+    const [folderRes, statusRes, watchFolderRes, foldersRes] = await Promise.all([
       fetch('/open-output-folder'),
       fetch('/watch/status'),
       fetch('/watch/folder'),
+      fetch('/folders'),
     ]);
     if (folderRes.ok) {
       const { path } = await folderRes.json();
@@ -1033,6 +1135,9 @@ async function loadWatchStatus() {
     if (watchFolderRes.ok) {
       const { path } = await watchFolderRes.json();
       document.getElementById('watch-folder-path').textContent = path || '(not configured)';
+    }
+    if (foldersRes.ok) {
+      folderPaths = await foldersRes.json();
     }
   } catch (_) {}
 }
