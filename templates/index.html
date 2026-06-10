@@ -263,6 +263,16 @@
     }
     .k-retry-btn:hover { background: rgba(239,68,68,0.2); }
 
+    .k-dismiss-btn {
+      position: absolute; top: 6px; right: 6px;
+      background: none; border: none; color: var(--muted);
+      font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 4px;
+      border-radius: 4px; opacity: 0.5;
+    }
+    .k-card:hover .k-dismiss-btn { opacity: 1; }
+    .k-dismiss-btn:hover { color: var(--danger); background: rgba(239,68,68,0.1); }
+    .btn-danger { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
+
     /* Spinner for in-progress cards */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner {
@@ -426,6 +436,9 @@
         <rect x="4" y="4" width="16" height="16" rx="2"/>
       </svg>
       Cancel Queue
+    </button>
+    <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
+      &#10005; Clear Board
     </button>
     <span id="status-badge" class="status-badge hidden"></span>
     <span id="queue-badge" style="font-size:12px;color:var(--muted);display:none">
@@ -690,7 +703,8 @@ window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 const receiptCards = {};
 
 function getCardEl(filename) {
-  return document.getElementById('kcard-' + CSS.escape(filename));
+  const escaped = filename.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return document.querySelector(`.k-card[data-kf="${escaped}"]`);
 }
 
 function setCounts() {
@@ -713,7 +727,7 @@ function shortModelName(model) {
 
 function makeCard(filename, status, data, model) {
   const div = document.createElement('div');
-  div.id = 'kcard-' + filename;
+  div.dataset.kf = filename;
   div.className = `k-card status-${status}`;
   if (data && data.date) div.dataset.date = data.date;
 
@@ -749,6 +763,8 @@ function makeCard(filename, status, data, model) {
     inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
   }
 
+  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${esc(filename)}')" title="Dismiss">&#10005;</button>`;
+
   div.innerHTML = inner;
   return div;
 }
@@ -771,6 +787,9 @@ function moveCard(filename, newStatus, data, model) {
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
+  // Show "Clear Board" button whenever any card exists
+  const hasCards = Object.keys(receiptCards).length > 0;
+  document.getElementById('clear-board-btn').classList.toggle('hidden', !hasCards);
 }
 
 // ── Kanban folder shortcuts ────────────────────────────────────────────────────
@@ -795,7 +814,13 @@ function connectSSE() {
     const msg = JSON.parse(e.data);
 
     if (msg.type === 'full_state') {
-      // Restore kanban from server state on (re)connect
+      // Clear the board first to avoid ghost duplicates on reconnect
+      ['col-queued', 'col-processing', 'col-completed', 'col-failed'].forEach(id => {
+        document.getElementById(id).innerHTML = '';
+      });
+      Object.keys(receiptCards).forEach(k => delete receiptCards[k]);
+
+      // Restore kanban from server state
       const kanban = msg.kanban || {};
       Object.entries(kanban).forEach(([fname, info]) => {
         receiptCards[fname] = { status: info.status, data: info.data };
@@ -843,6 +868,21 @@ function connectSSE() {
         if (['done','failed'].includes(receiptCards[k].status)) delete receiptCards[k];
       });
       setCounts();
+
+    } else if (msg.type === 'kanban_cleared') {
+      completedCount = 0;
+      _updateGenerateCard();
+      downloadRow.classList.add('hidden');
+      generateCard.classList.add('hidden');
+      ['col-queued', 'col-processing', 'col-completed', 'col-failed'].forEach(id => {
+        document.getElementById(id).innerHTML = '';
+      });
+      Object.keys(receiptCards).forEach(k => delete receiptCards[k]);
+      setCounts();
+      _updateQueueBadge(0);
+      stopBtn.style.display = 'none';
+      document.getElementById('clear-board-btn').classList.add('hidden');
+      showToast('Board cleared', true);
     }
   };
 
@@ -996,24 +1036,50 @@ resetBtn.addEventListener('click', async () => {
 
 // ── Retry ─────────────────────────────────────────────────────────────────────
 window.retryReceipt = async function(filename) {
-  moveCard(filename, 'distilling', receiptCards[filename]?.data, '');
   try {
     const res = await fetch('/retry-receipt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename }),
     });
+    const d = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      moveCard(filename, 'failed', receiptCards[filename]?.data, '');
       showToast(`Retry failed: ${d.error || res.status}`, false);
+    } else {
+      showToast(`${filename} re-queued`, true);
+      // SSE kanban_update will move the card to queued
     }
-    // SSE kanban_update event handles the success / failure state update
   } catch (err) {
-    moveCard(filename, 'failed', receiptCards[filename]?.data, '');
     showToast(`Retry error: ${err.message}`, false);
   }
 };
+
+// ── Dismiss (remove card from view) ───────────────────────────────────────────
+window.dismissCard = async function(filename) {
+  const el = getCardEl(filename);
+  if (el) el.remove();
+  delete receiptCards[filename];
+  setCounts();
+  // Notify server to clean up kanban entry
+  fetch('/kanban/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename }),
+  }).catch(() => {});
+};
+
+// ── Clear board ───────────────────────────────────────────────────────────────
+document.getElementById('clear-board-btn').addEventListener('click', async () => {
+  if (!confirm('Clear the entire board? This will cancel queued items and remove all results.')) return;
+  try {
+    const res = await fetch('/queue/clear-all', { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok) showToast(`Error: ${d.error || res.status}`, false);
+    // SSE kanban_cleared handles the UI reset
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  }
+});
 
 // ── Log helpers ───────────────────────────────────────────────────────────────
 let errorLines = [];
