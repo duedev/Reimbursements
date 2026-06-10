@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -29,7 +30,7 @@ from openai import OpenAI
 from spreadsheet_theme import build_themed_workbook
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
 MODEL_ID = "google/gemma-4-12b-qat"
 RECEIPTS_FOLDER = "receipts"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
