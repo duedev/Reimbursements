@@ -159,6 +159,56 @@
     .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
     .badge-done    { background: rgba(34,197,94,0.15);  color: var(--success); }
     .badge-error   { background: rgba(239,68,68,0.15);  color: var(--danger); }
+
+    /* Output folder strip */
+    .folder-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .folder-strip code {
+      flex: 1;
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 12px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    /* Watch card */
+    .watch-count { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .watch-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .btn-amber { background: var(--amber); color: #fff; }
+    .btn-amber:not(:disabled):hover { filter: brightness(1.1); }
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      padding: 12px 20px; border-radius: 8px;
+      font-size: 14px; font-weight: 500;
+      opacity: 0; transition: opacity 0.3s;
+      pointer-events: none; z-index: 999;
+    }
+    .toast.show { opacity: 1; }
+    .toast-ok  { background: #166534; color: #dcfce7; }
+    .toast-err { background: #7f1d1d; color: #fee2e2; }
   </style>
 </head>
 <body>
@@ -246,7 +296,34 @@
       </button>
     </div>
   </div>
+
+  <!-- Watch-mode card -->
+  <div class="card" id="watch-card">
+    <div class="card-title">Watch Mode / Output</div>
+    <div class="folder-strip" style="margin-bottom:16px">
+      <span>Output folder:</span>
+      <code id="folder-path">loading…</code>
+      <button class="copy-btn" id="copy-folder-btn" title="Copy path">Copy</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div>
+        <div class="watch-count" id="watch-count">—</div>
+        <div class="watch-label">receipts pending in watch queue</div>
+      </div>
+      <div class="btn-row" style="flex:1;justify-content:flex-end">
+        <button class="btn btn-amber hidden" id="send-email-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
+          </svg>
+          Send Report Now
+        </button>
+      </div>
+    </div>
+  </div>
 </main>
+
+<div class="toast" id="toast"></div>
 
 <script>
   const dropZone    = document.getElementById('drop-zone');
@@ -413,6 +490,66 @@
     processBtn.textContent = 'Process Receipts';
     processBtn.disabled = true;
   });
+
+  // ── Output folder + watch status ─────────────────────────────────────────────
+  const folderPath    = document.getElementById('folder-path');
+  const copyFolderBtn = document.getElementById('copy-folder-btn');
+  const watchCount    = document.getElementById('watch-count');
+  const sendEmailBtn  = document.getElementById('send-email-btn');
+  const toast         = document.getElementById('toast');
+
+  function showToast(msg, ok) {
+    toast.textContent = msg;
+    toast.className = `toast ${ok ? 'toast-ok' : 'toast-err'} show`;
+    setTimeout(() => toast.classList.remove('show'), 3500);
+  }
+
+  async function loadWatchStatus() {
+    try {
+      const [folderRes, statusRes] = await Promise.all([
+        fetch('/open-output-folder'),
+        fetch('/watch/status'),
+      ]);
+      if (folderRes.ok) {
+        const { path } = await folderRes.json();
+        folderPath.textContent = path;
+      }
+      if (statusRes.ok) {
+        const { receipts, smtp_configured } = await statusRes.json();
+        watchCount.textContent = receipts;
+        if (smtp_configured) sendEmailBtn.classList.remove('hidden');
+      }
+    } catch (_) {}
+  }
+
+  copyFolderBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(folderPath.textContent).then(() => {
+      copyFolderBtn.textContent = 'Copied!';
+      setTimeout(() => copyFolderBtn.textContent = 'Copy', 1500);
+    });
+  });
+
+  sendEmailBtn.addEventListener('click', async () => {
+    sendEmailBtn.disabled = true;
+    sendEmailBtn.textContent = 'Sending…';
+    try {
+      const res = await fetch('/watch/send-email', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        showToast(`Report sent: ${data.filename}`, true);
+        loadWatchStatus();
+      } else {
+        showToast(`Failed: ${data.error}`, false);
+      }
+    } catch (err) {
+      showToast(`Error: ${err.message}`, false);
+    } finally {
+      sendEmailBtn.disabled = false;
+      sendEmailBtn.textContent = 'Send Report Now';
+    }
+  });
+
+  loadWatchStatus();
 </script>
 </body>
 </html>

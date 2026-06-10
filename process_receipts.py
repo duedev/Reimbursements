@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import concurrent.futures
 import threading
 import urllib.request
 import urllib.error
@@ -35,16 +36,21 @@ from PIL import Image
 from spreadsheet_theme import build_themed_workbook
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
-OLMOCR_MODEL_ID   = os.getenv("OLMOCR_MODEL_ID",   "allenai/olmOCR-2-7B")
-GEMMA_MODEL_ID    = os.getenv("GEMMA_MODEL_ID",     "google/gemma-4-12b-qat")
-RECEIPTS_FOLDER   = "receipts"
-IMAGE_EXTENSIONS  = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+LMSTUDIO_BASE_URL    = os.getenv("LMSTUDIO_BASE_URL",    "http://127.0.0.1:1234/v1")
+OLMOCR_MODEL_ID      = os.getenv("OLMOCR_MODEL_ID",      "allenai/olmOCR-2-7B")
+GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "google/gemma-4-12b-qat")
+GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "google/gemma-4-26b-a4b-qat")
+GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
+MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "4"))
+RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
+OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
+IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 # Qwen2-VL (olmOCR-2 base) recommends ≤1568 px per side
-IMAGE_MAX_PX      = 1568
+IMAGE_MAX_PX         = 1568
 
-# Runtime state — updated by initialize_models()
-_active_model: str = GEMMA_MODEL_ID
+# Runtime state — updated by initialize_models() and POST /models/gemma
+_active_model:       str = OLMOCR_MODEL_ID   # primary OCR model
+_active_gemma_model: str = GEMMA_MODEL_ID    # active Gemma variant (swappable at runtime)
 
 # Column positions (shared with spreadsheet_theme)
 COL_RECEIPT_NO = 1
@@ -165,7 +171,7 @@ def _try_load_model(model_id: str) -> bool:
 def initialize_models() -> str:
     """
     Try to load olmOCR-2 via LM Studio API.
-    Falls back to Gemma 4 12B QAT if olmOCR-2 is unavailable.
+    Falls back to the active Gemma variant if olmOCR-2 is unavailable.
     Returns the active model ID.
     """
     global _active_model
@@ -174,8 +180,8 @@ def initialize_models() -> str:
         _active_model = OLMOCR_MODEL_ID
         print(f"[models] Primary: olmOCR-2  ({OLMOCR_MODEL_ID})")
     else:
-        _active_model = GEMMA_MODEL_ID
-        print(f"[models] olmOCR-2 not available — using Gemma ({GEMMA_MODEL_ID})")
+        _active_model = _active_gemma_model
+        print(f"[models] olmOCR-2 not available — using Gemma ({_active_gemma_model})")
     return _active_model
 
 
@@ -211,23 +217,39 @@ def _is_low_confidence(data: Optional[dict]) -> bool:
     return False
 
 
-def _extract_with_model(client: OpenAI, image_path: Path, model_id: str) -> Optional[dict]:
+def _normalize_model_id(s: str) -> str:
+    return re.sub(r"[-_/]", "", s.lower())
+
+
+def _extract_with_model(
+    client: OpenAI,
+    image_path: Path,
+    model_id: str,
+    *,
+    _retry: bool = True,
+) -> Optional[dict]:
     """Send receipt image to a specific model; return parsed dict or None."""
     try:
         b64, mime = encode_image(image_path)
-        is_olmocr  = OLMOCR_MODEL_ID.lower().split("/")[-1] in model_id.lower().replace("-", "").replace("_", "")
+        is_olmocr  = _normalize_model_id(OLMOCR_MODEL_ID.split("/")[-1]) in _normalize_model_id(model_id)
         prompt     = OLMOCR_EXTRACTION_PROMPT if is_olmocr else GEMMA_EXTRACTION_PROMPT
         max_tokens = 2048 if is_olmocr else 512
 
+        system_msg = {
+            "role": "system",
+            "content": "You are a receipt data extractor. Always respond with valid JSON only — no markdown, no prose.",
+        }
+        user_msg = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                {"type": "text",      "text": prompt},
+            ],
+        }
+
         response = client.chat.completions.create(
             model=model_id,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                    {"type": "text",      "text": prompt},
-                ],
-            }],
+            messages=[system_msg, user_msg],
             temperature=0.0,
             max_tokens=max_tokens,
         )
@@ -239,22 +261,137 @@ def _extract_with_model(client: OpenAI, image_path: Path, model_id: str) -> Opti
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             raw = match.group(0)
-        return json.loads(raw)
-    except (json.JSONDecodeError, Exception):
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            if _retry:
+                print(f"[extract] JSON parse failed for {image_path.name}, retrying …")
+                print(f"[extract] Raw response: {raw[:400]}")
+                strict_msg = {
+                    "role": "user",
+                    "content": "Your response was not valid JSON. Return ONLY the JSON object with no additional text, no markdown, and no explanation.",
+                }
+                retry_resp = client.chat.completions.create(
+                    model=model_id,
+                    messages=[system_msg, user_msg, strict_msg],
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                )
+                raw2 = retry_resp.choices[0].message.content.strip()
+                raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
+                raw2 = re.sub(r"\s*```$", "", raw2)
+                m2 = re.search(r"\{.*\}", raw2, re.DOTALL)
+                if m2:
+                    raw2 = m2.group(0)
+                try:
+                    return json.loads(raw2)
+                except json.JSONDecodeError:
+                    print(f"[extract] Retry also failed for {image_path.name}: {raw2[:400]}")
+                    return None
+            return None
+
+    except Exception as exc:
+        print(f"[extract] Exception for {image_path.name}: {exc}")
         return None
 
 
 def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
     """
     Extract receipt data using the primary model (olmOCR-2 when available).
-    Automatically falls back to Gemma 4 12B QAT on low-confidence results.
+    Automatically falls back to the active Gemma model on low-confidence results.
     """
     data = _extract_with_model(client, image_path, _active_model)
 
-    if _is_low_confidence(data) and _active_model != GEMMA_MODEL_ID:
-        data = _extract_with_model(client, image_path, GEMMA_MODEL_ID)
+    if _is_low_confidence(data) and _active_model != _active_gemma_model:
+        data = _extract_with_model(client, image_path, _active_gemma_model)
 
     return data
+
+
+def gemma_review_expenses(
+    client: OpenAI,
+    results: list[dict],
+    log_cb: Optional[Callable] = None,
+) -> None:
+    """
+    Send all extracted receipts to the active Gemma model for a holistic review.
+    Writes a '_flag' key into any result dict that has a suspected issue.
+    Non-fatal — a failure here does not abort workbook generation.
+    """
+    def _log(msg: str):
+        if log_cb:
+            log_cb(msg)
+        else:
+            print(msg)
+
+    if not results:
+        return
+
+    compact = [
+        {
+            "index":       i,
+            "vendor":      r.get("vendor", ""),
+            "date":        r.get("date", ""),
+            "amount":      r.get("amount", 0),
+            "category":    r.get("_category", r.get("category", "")),
+            "description": r.get("expense_description", ""),
+        }
+        for i, r in enumerate(results)
+    ]
+
+    review_prompt = (
+        "You are an expense auditor. Review the following JSON array of receipts "
+        "and return a JSON array flagging suspicious entries.\n\n"
+        f"Receipts:\n{json.dumps(compact, indent=2)}\n\n"
+        "Flag when:\n"
+        "1. Amount is unusually high for the category (fuel > $200, materials > $500, misc > $300)\n"
+        "2. Duplicate vendor + date + amount combination exists\n"
+        "3. Likely OCR error (amount of 0, missing/garbled vendor, implausible date)\n"
+        f"4. Date is outside a 6-month window from today ({date.today().isoformat()})\n\n"
+        'Return ONLY a JSON array of objects: [{"index": N, "flag": "reason"}]. '
+        "Return [] if nothing is suspicious."
+    )
+
+    _log("[review] Sending receipts to Gemma for validation …")
+    try:
+        response = client.chat.completions.create(
+            model=_active_gemma_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expense auditor. Respond with valid JSON only.",
+                },
+                {"role": "user", "content": review_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=1024,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        arr_match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if arr_match:
+            raw = arr_match.group(0)
+        flags: list[dict] = json.loads(raw)
+    except Exception as exc:
+        _log(f"[review] Review step skipped: {exc}")
+        return
+
+    flag_count = 0
+    for flag_obj in flags:
+        try:
+            idx  = int(flag_obj["index"])
+            note = str(flag_obj["flag"])
+            if 0 <= idx < len(results):
+                results[idx]["_flag"] = note
+                vendor = results[idx].get("vendor", f"#{idx + 1}")
+                _log(f"[review] FLAG #{idx + 1} ({vendor}): {note}")
+                flag_count += 1
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    _log(f"[review] Complete — {flag_count} flag(s) found.")
 
 
 def classify_category(data: dict) -> str:
@@ -375,15 +512,35 @@ def process_receipts_batch(
     results: list[dict] = []
     skipped: list[str]  = []
 
-    for i, img_path in enumerate(images, start=1):
+    # ── Parallel extraction (up to MAX_PARALLEL_REQUESTS in-flight) ──────────
+    futures_map: dict = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_REQUESTS) as executor:
+        for i, img_path in enumerate(images, start=1):
+            if cancel_event and cancel_event.is_set():
+                log("Processing stopped by user (before submission).")
+                break
+            futures_map[executor.submit(extract_receipt_data, client, img_path)] = (i, img_path)
+
+        raw_results: list[tuple] = []
+        for future in concurrent.futures.as_completed(futures_map):
+            idx, img_path = futures_map[future]
+            progress(idx, total, img_path.name)
+            try:
+                data = future.result()
+            except Exception as exc:
+                log(f"  [{idx}/{total}] ERROR — {img_path.name}: {exc}")
+                data = None
+            raw_results.append((idx, img_path, data))
+
+    # ── Sequential classify + rename (avoids filename race conditions) ────────
+    raw_results.sort(key=lambda t: t[0])
+    for idx, img_path, data in raw_results:
         if cancel_event and cancel_event.is_set():
             log("Processing stopped by user.")
             break
 
-        progress(i, total, img_path.name)
-        log(f"  [{i}/{total}] Analyzing: {img_path.name}")
+        log(f"  [{idx}/{total}] Analyzing: {img_path.name}")
 
-        data = extract_receipt_data(client, img_path)
         if data is None:
             log("    SKIPPED — AI extraction failed")
             skipped.append(img_path.name)
@@ -417,6 +574,9 @@ def process_receipts_batch(
 
     expense_period = compute_expense_period(results)
     log(f"\nExpense period: {expense_period or '(no parseable dates)'}")
+
+    if not dry_run:
+        gemma_review_expenses(client, results, log)
 
     output_path: Optional[Path] = None
     if not dry_run:
@@ -453,7 +613,7 @@ def main():
     )
     parser.add_argument("spreadsheet", nargs="?", default="Reimbursement_sheet_1.xlsx")
     parser.add_argument("--receipts",    default=RECEIPTS_FOLDER)
-    parser.add_argument("--output-dir",  default=None)
+    parser.add_argument("--output-dir",  default=OUTPUT_FOLDER)
     parser.add_argument("--employee",    default="Duane Hamilton")
     parser.add_argument("--job-name",    default="")
     parser.add_argument("--job-number",  default="")
@@ -462,7 +622,8 @@ def main():
 
     template = Path(args.spreadsheet)
     receipts = Path(args.receipts)
-    out_dir  = Path(args.output_dir) if args.output_dir else template.parent
+    out_dir  = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if not template.exists():
         print(f"ERROR: Template not found: {template}"); sys.exit(1)
