@@ -191,8 +191,13 @@ def encode_image(path: Path) -> tuple[str, str]:
     """
     Open, resize to ≤IMAGE_MAX_PX on longest side (Qwen2-VL / olmOCR-2 limit),
     and return (base64_jpeg, 'image/jpeg').
+    MPO (dual-camera/burst JPEG) files are handled by using only the first frame.
     """
-    img = Image.open(path).convert("RGB")
+    raw = Image.open(path)
+    # MPO is a multi-image JPEG variant; grab just the first frame
+    if getattr(raw, "format", None) == "MPO":
+        raw.seek(0)
+    img = raw.convert("RGB")
     if max(img.size) > IMAGE_MAX_PX:
         ratio = IMAGE_MAX_PX / max(img.size)
         img = img.resize(
@@ -370,9 +375,13 @@ def gemma_review_expenses(
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-        arr_match = re.search(r"\[.*\]", raw, re.DOTALL)
+        arr_match = re.search(r"\[.*?\]", raw, re.DOTALL)
         if arr_match:
             raw = arr_match.group(0)
+        elif not raw or not raw.startswith("["):
+            # Model returned prose instead of JSON (e.g. "No issues found.")
+            _log("[review] No flags — model returned prose response.")
+            return
         flags: list[dict] = json.loads(raw)
     except Exception as exc:
         _log(f"[review] Review step skipped: {exc}")
@@ -418,13 +427,20 @@ def sanitize_filename_part(s: str) -> str:
 
 
 def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
+    """
+    Naming convention:
+      fuel/materials → {category}_{YYYY-MM-DD}{ext}
+      misc           → misc_{YYYY-MM-DD}_{vendor}{ext}
+    Collisions get a numeric suffix: …_2, _3, …
+    """
     raw_date = (data.get("date") or "unknown").strip()
     date_str = raw_date if re.match(r"\d{4}-\d{2}-\d{2}", raw_date) else sanitize_filename_part(raw_date)
-    if category == "fuel":
+    if category in ("fuel", "materials"):
         stem = f"{category}_{date_str}"
     else:
-        desc_str = sanitize_filename_part(data.get("expense_description") or data.get("vendor") or "receipt")
-        stem = f"{category}_{date_str}_{desc_str}"
+        # misc: prefer the vendor name — expense_description can contain garbled OCR text
+        vendor_str = sanitize_filename_part(data.get("vendor") or data.get("expense_description") or "receipt")
+        stem = f"{category}_{date_str}_{vendor_str}"
     ext      = img_path.suffix.lower()
     new_path = img_path.parent / f"{stem}{ext}"
 

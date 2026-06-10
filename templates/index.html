@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Receipt Processor</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#1e293b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Receipts">
   <style>
     :root {
       --bg:       #0f172a;
@@ -323,7 +328,9 @@
   <!-- Watch-mode card -->
   <div class="card" id="watch-card">
     <div class="card-title">Watch Mode / Output</div>
-    <div class="folder-strip" style="margin-bottom:16px">
+
+    <!-- Output folder -->
+    <div class="folder-strip" style="margin-bottom:10px">
       <span>Output folder:</span>
       <code id="folder-path">loading…</code>
       <button class="copy-btn" id="open-folder-btn" title="Open in file manager">
@@ -332,12 +339,25 @@
         </svg>Open Folder
       </button>
     </div>
-    <!-- LM Studio model status -->
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Loaded Models</div>
+
+    <!-- Watch inbox folder -->
+    <div class="folder-strip" style="margin-bottom:16px">
+      <span>Watch inbox:</span>
+      <code id="watch-folder-path">loading…</code>
+      <button class="copy-btn" id="open-watch-folder-btn" title="Open watch inbox in file manager">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:inline;vertical-align:middle;margin-right:3px">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+        </svg>Open Folder
+      </button>
+    </div>
+
+    <!-- LM Studio model status — shows models currently available in LM Studio -->
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">LM Studio Models</div>
     <div class="model-strip" id="model-strip">
       <div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">Querying LM Studio…</span></div>
     </div>
-    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px">
       <div>
         <div class="watch-count" id="watch-count">—</div>
         <div class="watch-label">receipts pending in watch queue</div>
@@ -352,6 +372,17 @@
         </button>
       </div>
     </div>
+  </div>
+
+  <!-- Error log (hidden until there are errors) -->
+  <div class="card hidden" id="error-card" style="border-color:rgba(239,68,68,0.4)">
+    <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
+      <div class="card-title" style="color:var(--danger);margin-bottom:0">
+        ⚠ Errors <span id="error-count-badge" style="font-size:11px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:10px;padding:1px 7px;margin-left:6px">0</span>
+      </div>
+      <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
+    </div>
+    <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:200px;overflow-y:auto"></div>
   </div>
 </main>
 
@@ -500,20 +531,52 @@
     downloadCard.classList.remove('hidden');
   }
 
+  let errorLines = [];
+
   function appendLog(text) {
     log.textContent += text + '\n';
     log.scrollTop = log.scrollHeight;
+    // capture lines that look like errors into the dedicated error panel
+    if (/error|skipped|SKIPPED/i.test(text)) {
+      errorLines.push(text.trim());
+      renderErrorPanel();
+    }
   }
 
   function esc(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // ── Error log panel ──────────────────────────────────────────────────────────
+  const errorCard       = document.getElementById('error-card');
+  const errorLogEl      = document.getElementById('error-log');
+  const errorCountBadge = document.getElementById('error-count-badge');
+  const errorToggle     = document.getElementById('error-toggle');
+  const errorChevron    = document.getElementById('error-chevron');
+  let errorPanelOpen    = true;
+
+  function renderErrorPanel() {
+    if (!errorLines.length) return;
+    errorCard.classList.remove('hidden');
+    errorCountBadge.textContent = errorLines.length;
+    errorLogEl.textContent = errorLines.join('\n');
+    errorLogEl.scrollTop = errorLogEl.scrollHeight;
+  }
+
+  errorToggle.addEventListener('click', () => {
+    errorPanelOpen = !errorPanelOpen;
+    errorLogEl.style.display = errorPanelOpen ? '' : 'none';
+    errorChevron.style.transform = errorPanelOpen ? '' : 'rotate(-90deg)';
+  });
+
   // ── Reset ────────────────────────────────────────────────────────────────────
   resetBtn.addEventListener('click', () => {
     selectedFiles = [];
     currentJobId  = null;
     fileInput.value = '';
+    errorLines = [];
+    errorCard.classList.add('hidden');
+    errorLogEl.textContent = '';
     renderFileList();
     progressCard.classList.add('hidden');
     downloadCard.classList.add('hidden');
@@ -524,12 +587,14 @@
   });
 
   // ── Output folder + watch status ─────────────────────────────────────────────
-  const folderPath    = document.getElementById('folder-path');
-  const openFolderBtn = document.getElementById('open-folder-btn');
-  const watchCount    = document.getElementById('watch-count');
-  const sendEmailBtn  = document.getElementById('send-email-btn');
-  const toast         = document.getElementById('toast');
-  const modelStrip    = document.getElementById('model-strip');
+  const folderPath        = document.getElementById('folder-path');
+  const openFolderBtn     = document.getElementById('open-folder-btn');
+  const watchFolderPath   = document.getElementById('watch-folder-path');
+  const openWatchFolderBtn= document.getElementById('open-watch-folder-btn');
+  const watchCount        = document.getElementById('watch-count');
+  const sendEmailBtn      = document.getElementById('send-email-btn');
+  const toast             = document.getElementById('toast');
+  const modelStrip        = document.getElementById('model-strip');
 
   function showToast(msg, ok) {
     toast.textContent = msg;
@@ -539,9 +604,10 @@
 
   async function loadWatchStatus() {
     try {
-      const [folderRes, statusRes] = await Promise.all([
+      const [folderRes, statusRes, watchFolderRes] = await Promise.all([
         fetch('/open-output-folder'),
         fetch('/watch/status'),
+        fetch('/watch/folder'),
       ]);
       if (folderRes.ok) {
         const { path } = await folderRes.json();
@@ -551,6 +617,10 @@
         const { receipts, smtp_configured } = await statusRes.json();
         watchCount.textContent = receipts;
         if (smtp_configured) sendEmailBtn.classList.remove('hidden');
+      }
+      if (watchFolderRes.ok) {
+        const { path } = await watchFolderRes.json();
+        watchFolderPath.textContent = path || '(not configured)';
       }
     } catch (_) {}
   }
@@ -580,7 +650,17 @@
     try {
       const res = await fetch('/open-folder', { method: 'POST' });
       const data = await res.json();
-      if (!data.ok) showToast(`Could not open folder: ${data.error}`, false);
+      if (!data.ok) showToast(`Path: ${data.path || ''} — ${data.error}`, false);
+    } catch (err) {
+      showToast(`Error: ${err.message}`, false);
+    }
+  });
+
+  openWatchFolderBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/open-watch-folder', { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) showToast(`Path: ${data.path || ''} — ${data.error}`, false);
     } catch (err) {
       showToast(`Error: ${err.message}`, false);
     }

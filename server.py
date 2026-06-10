@@ -50,6 +50,16 @@ async def index():
     return FileResponse("templates/index.html", media_type="text/html")
 
 
+@app.get("/manifest.json")
+async def manifest():
+    return FileResponse("templates/manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/icon.svg")
+async def icon():
+    return FileResponse("templates/icon.svg", media_type="image/svg+xml")
+
+
 @app.post("/process")
 async def process(
     files: list[UploadFile] = File(...),
@@ -172,12 +182,46 @@ async def open_output_folder():
     return JSONResponse({"path": str(OUTPUT_FOLDER)})
 
 
+def _open_folder_native(folder: Path) -> None:
+    """Open *folder* in the host OS file manager. Raises on failure."""
+    import sys
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)])
+    elif sys.platform == "win32":
+        import os as _os
+        _os.startfile(str(folder))
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+
+
 @app.post("/open-folder")
 async def open_folder_in_manager():
     folder = Path(OUTPUT_FOLDER).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.Popen(["xdg-open", str(folder)])
+        _open_folder_native(folder)
+        return JSONResponse({"ok": True, "path": str(folder)})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc), "path": str(folder)}, status_code=500)
+
+
+@app.get("/watch/folder")
+async def watch_folder_path():
+    """Return the host-side watch inbox path (from env or docker-compose volume)."""
+    try:
+        from watch_mode import WATCH_INBOX
+        return JSONResponse({"path": str(WATCH_INBOX), "ok": True})
+    except Exception as exc:
+        return JSONResponse({"path": "", "ok": False, "error": str(exc)})
+
+
+@app.post("/open-watch-folder")
+async def open_watch_folder():
+    try:
+        from watch_mode import WATCH_INBOX
+        folder = Path(WATCH_INBOX).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
