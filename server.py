@@ -27,6 +27,8 @@ from process_receipts import (
     initialize_models,
     _extract_receipt_with_status,
     _is_low_confidence,
+    _compute_confidence,
+    _get_fail_reason,
     classify_category,
     rename_receipt_image,
     _detect_duplicates,
@@ -148,7 +150,7 @@ def _safe_receipt_data(data) -> dict:
     out = {}
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
               "expense_description", "summary", "ai_summary", "_flag", "_category",
-              "_new_filename", "_file", "flags"):
+              "_new_filename", "_file", "flags", "_confidence", "_error"):
         if k in data:
             out[k] = data[k]
     return out
@@ -206,13 +208,23 @@ def _run_worker() -> None:
                     _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
 
                 if data is None or _is_low_confidence(data):
-                    _update_kanban(fname, "failed", None)
+                    fail_reason = _get_fail_reason(data)
+                    partial: dict = {}
+                    if data is not None:
+                        partial = dict(data)
+                        partial["_flag"]   = "Manual review required — incomplete extraction"
+                        partial["_error"]  = fail_reason
+                        partial["_file"]   = fname
+                        conf, _            = _compute_confidence(data)
+                        partial["_confidence"] = conf
+                    _update_kanban(fname, "failed", partial)
                     _broadcast({
                         "type":     "kanban_update",
                         "filename": fname,
                         "status":   "failed",
-                        "data":     {},
+                        "data":     _safe_receipt_data(partial),
                         "model":    "",
+                        "error":    fail_reason,
                     })
                     continue
 
@@ -220,11 +232,11 @@ def _run_worker() -> None:
                 data["_category"]  = category
                 data["job_name"]   = item.get("job_name") or None
                 data["job_number"] = item.get("job_number") or None
-                if category == "fuel":
-                    data["expense_description"] = None
                 flags = data.get("flags") or []
                 if flags and not data.get("_flag"):
                     data["_flag"] = flags[0].get("flag", "")
+                conf, _ = _compute_confidence(data)
+                data["_confidence"] = conf
 
                 IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
                 final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
@@ -628,11 +640,101 @@ async def list_intake_files():
 
 # ── Spreadsheet generation ─────────────────────────────────────────────────────
 
+class GenerateRequest(BaseModel):
+    exclude_filenames: list[str] = []
+
+
+@app.get("/results/check-duplicates")
+async def check_duplicates():
+    """Return groups of receipts that share the same vendor/date/amount."""
+    with _results_lock:
+        results_copy = list(_results)
+
+    groups: dict[tuple, list] = {}
+    for i, r in enumerate(results_copy):
+        vendor = (r.get("vendor") or "").lower().strip()
+        dt     = r.get("date") or ""
+        try:
+            amt = round(float(r.get("amount") or 0), 2)
+        except (ValueError, TypeError):
+            amt = 0.0
+        if not vendor or not amt:
+            continue
+        key = (vendor, dt, amt)
+        groups.setdefault(key, []).append({
+            "index":    i,
+            "filename": r.get("_file") or r.get("_new_filename", ""),
+            "vendor":   r.get("vendor", ""),
+            "date":     dt,
+            "amount":   amt,
+        })
+
+    dup_groups = [v for v in groups.values() if len(v) > 1]
+    return JSONResponse({"has_duplicates": bool(dup_groups), "groups": dup_groups})
+
+
+class ManualReceiptRequest(BaseModel):
+    filename:   str
+    vendor:     str = ""
+    date:       str = ""
+    amount:     str = ""
+    category:   str = "misc"
+    job_name:   str = ""
+    job_number: str = ""
+    summary:    str = ""
+
+
+@app.post("/results/add-manual")
+async def add_manual_result(body: ManualReceiptRequest):
+    """Manually add or update a receipt result (for failed/partial extractions)."""
+    try:
+        amt = float(body.amount) if body.amount.strip() else 0.0
+    except ValueError:
+        amt = 0.0
+
+    data: dict = {
+        "vendor":       body.vendor.strip() or "Unknown",
+        "date":         body.date.strip(),
+        "amount":       amt,
+        "category":     body.category or "misc",
+        "_category":    body.category or "misc",
+        "job_name":     body.job_name.strip() or _last_context.get("job_name") or None,
+        "job_number":   body.job_number.strip() or _last_context.get("job_number") or None,
+        "ai_summary":   body.summary.strip(),
+        "_flag":        "Manual entry",
+        "_file":        body.filename,
+        "_confidence":  None,
+    }
+
+    with _results_lock:
+        for r in _results:
+            if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                r.update(data)
+                break
+        else:
+            _results.append(data)
+
+    _update_kanban(body.filename, "done", data)
+    _broadcast({
+        "type":     "kanban_update",
+        "filename": body.filename,
+        "status":   "done",
+        "data":     _safe_receipt_data(data),
+        "model":    "",
+    })
+    return JSONResponse({"ok": True})
+
+
 @app.post("/generate-spreadsheet")
-async def make_spreadsheet():
+async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     """Generate an Excel workbook from all completed results."""
     with _results_lock:
         results_copy = list(_results)
+
+    if body.exclude_filenames:
+        excl = set(body.exclude_filenames)
+        results_copy = [r for r in results_copy
+                        if r.get("_file") not in excl and r.get("_new_filename") not in excl]
 
     if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
