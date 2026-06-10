@@ -102,12 +102,13 @@ def _flood(ws, row: int, fill: PatternFill, font: Font = None,
 # ── Row writers ────────────────────────────────────────────────────────────────
 
 def _write_title(ws, row: int):
+    # Flood all columns BEFORE merging — MergedCell objects are read-only
+    _flood(ws, row, _fill(COLOR_TITLE_BG), cols=range(1, LAST_COL + 1))
     ws.merge_cells(f"A{row}:I{row}")
     cell = ws.cell(row=row, column=1, value="Expense Reimbursement Form")
-    cell.font = _font(bold=True, color=COLOR_TITLE_FG, size=16)
-    cell.fill = _fill(COLOR_TITLE_BG)
+    cell.font      = _font(bold=True, color=COLOR_TITLE_FG, size=16)
+    cell.fill      = _fill(COLOR_TITLE_BG)
     cell.alignment = _align(h="center")
-    _flood(ws, row, _fill(COLOR_TITLE_BG), cols=range(2, LAST_COL + 1))
     ws.row_dimensions[row].height = 30
 
 
@@ -144,12 +145,12 @@ def _write_note_row(ws, row: int, text: str):
 
 
 def _write_section_banner(ws, row: int, label: str):
+    _flood(ws, row, _fill(COLOR_SECTION_BG), cols=range(1, LAST_COL + 1))
     ws.merge_cells(f"A{row}:I{row}")
     cell = ws.cell(row=row, column=1, value=f"  {label}")
-    cell.font = _font(bold=True, color=COLOR_SECTION_FG, size=13)
-    cell.fill = _fill(COLOR_SECTION_BG)
+    cell.font      = _font(bold=True, color=COLOR_SECTION_FG, size=13)
+    cell.fill      = _fill(COLOR_SECTION_BG)
     cell.alignment = _align(h="left", wrap=False)
-    _flood(ws, row, _fill(COLOR_SECTION_BG), cols=range(2, LAST_COL + 1))
     ws.row_dimensions[row].height = 24
 
 
@@ -158,9 +159,8 @@ def _write_col_headers(ws, row: int, headers: list[str], show_flags: bool = Fals
     hdr_font   = _font(bold=True, color=COLOR_HEADER_FG, size=11)
     hdr_border = _border("2E75B6")
 
-    # Merge C+D
-    ws.merge_cells(f"C{row}:D{row}")
     _flood(ws, row, hdr_fill, hdr_font, hdr_border)
+    ws.merge_cells(f"C{row}:D{row}")
 
     for col_idx, text in enumerate(headers, start=1):
         if col_idx == 4:
@@ -300,7 +300,8 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
 
     _flood(ws, row, tot_fill, tot_font)
 
-    ws.merge_cells(f"A{row}:E{row}")
+    # Merge only A:D so COL_JOB_NUMBER (E) stays writable
+    ws.merge_cells(f"A{row}:D{row}")
     note = ws.cell(row=row, column=1, value="**Please attach receipts.**")
     note.alignment = _align(h="left", wrap=False)
 

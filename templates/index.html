@@ -560,6 +560,12 @@ function showToast(msg, ok) {
   t.textContent = msg;
   t.className = `toast ${ok ? 'toast-ok' : 'toast-err'} show`;
   setTimeout(() => t.classList.remove('show'), 3500);
+  if (!ok) {
+    // Mirror all error toasts into the persistent error panel
+    const stamp = new Date().toLocaleTimeString();
+    errorLines.push(`[${stamp}] ${msg}`);
+    renderErrorPanel();
+  }
 }
 
 // ── Drag and drop ─────────────────────────────────────────────────────────────
