@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 import threading
 import uuid
@@ -27,10 +26,11 @@ from process_receipts import (
     GEMMA_LARGE_MODEL_ID,
     OUTPUT_FOLDER,
     HOST_OUTPUT_PATH,
+    RECEIPTS_FOLDER,
 )
 
-TMP_ROOT = Path("tmp")
-TMP_ROOT.mkdir(exist_ok=True)
+INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
+OUT_FOLDER    = Path(OUTPUT_FOLDER)
 
 # job_id → {queue, done, output_path, results, cancel, receipt_file_map}
 _jobs: dict[str, dict] = {}
@@ -73,10 +73,10 @@ async def process(
     Spreadsheet is NOT generated automatically — use POST /generate-spreadsheet/{job_id}.
     """
     job_id = str(uuid.uuid4())
-    receipts_dir = TMP_ROOT / job_id / "receipts"
-    receipts_dir.mkdir(parents=True)
-    out_dir = TMP_ROOT / job_id / "output"
-    out_dir.mkdir()
+    receipts_dir = INTAKE_FOLDER / job_id
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = OUT_FOLDER
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Store original filename → tmp path mapping for retry support
     receipt_file_map: dict[str, str] = {}
@@ -210,7 +210,7 @@ async def make_spreadsheet(job_id: str):
     if not results:
         return HTMLResponse("No processed results available", status_code=404)
 
-    out_dir = job.get("out_dir", TMP_ROOT / job_id / "output")
+    out_dir = job.get("out_dir", OUT_FOLDER)
     employee = job.get("employee", "Employee")
 
     def _build():
@@ -236,7 +236,6 @@ async def make_spreadsheet(job_id: str):
         with open(output_path, "rb") as f:
             while chunk := f.read(65536):
                 yield chunk
-        shutil.rmtree(TMP_ROOT / job_id, ignore_errors=True)
         _jobs.pop(job_id, None)
 
     return StreamingResponse(
@@ -276,7 +275,7 @@ async def retry_receipt(job_id: str, body: RetryRequest):
 
     if not img_path_str or not Path(img_path_str).exists():
         # Try finding it in the receipts directory
-        receipts_dir: Path = job.get("receipts_dir", TMP_ROOT / job_id / "receipts")
+        receipts_dir: Path = job.get("receipts_dir", INTAKE_FOLDER / job_id)
         candidate = receipts_dir / filename
         if candidate.exists():
             img_path_str = str(candidate)
@@ -561,7 +560,6 @@ async def download(job_id: str):
         with open(output_path, "rb") as f:
             while chunk := f.read(65536):
                 yield chunk
-        shutil.rmtree(TMP_ROOT / job_id, ignore_errors=True)
         _jobs.pop(job_id, None)
 
     return StreamingResponse(
