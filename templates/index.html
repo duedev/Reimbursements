@@ -650,7 +650,13 @@
     try {
       const res = await fetch('/open-folder', { method: 'POST' });
       const data = await res.json();
-      if (!data.ok) showToast(`Path: ${data.path || ''} — ${data.error}`, false);
+      if (data.docker) {
+        showToast(`Output folder: ${data.path}`, true);
+      } else if (!data.ok) {
+        showToast(`Could not open folder: ${data.error || data.path}`, false);
+      } else {
+        showToast(`Opened: ${data.path}`, true);
+      }
     } catch (err) {
       showToast(`Error: ${err.message}`, false);
     }
@@ -660,7 +666,13 @@
     try {
       const res = await fetch('/open-watch-folder', { method: 'POST' });
       const data = await res.json();
-      if (!data.ok) showToast(`Path: ${data.path || ''} — ${data.error}`, false);
+      if (data.docker) {
+        showToast(`Watch inbox: ${data.path}`, true);
+      } else if (!data.ok) {
+        showToast(`Could not open folder: ${data.error || data.path}`, false);
+      } else {
+        showToast(`Opened: ${data.path}`, true);
+      }
     } catch (err) {
       showToast(`Error: ${err.message}`, false);
     }

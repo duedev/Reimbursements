@@ -182,6 +182,11 @@ async def open_output_folder():
     return JSONResponse({"path": str(OUTPUT_FOLDER)})
 
 
+def _is_docker() -> bool:
+    """Return True when running inside a Docker container."""
+    return Path("/.dockerenv").exists()
+
+
 def _open_folder_native(folder: Path) -> None:
     """Open *folder* in the host OS file manager. Raises on failure."""
     import sys
@@ -198,6 +203,10 @@ def _open_folder_native(folder: Path) -> None:
 async def open_folder_in_manager():
     folder = Path(OUTPUT_FOLDER).resolve()
     folder.mkdir(parents=True, exist_ok=True)
+    if _is_docker():
+        # Cannot open a GUI file manager from inside a Docker container.
+        # Return the path so the frontend can display it for manual navigation.
+        return JSONResponse({"ok": True, "path": str(folder), "docker": True})
     try:
         _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
@@ -221,6 +230,8 @@ async def open_watch_folder():
         from watch_mode import WATCH_INBOX
         folder = Path(WATCH_INBOX).resolve()
         folder.mkdir(parents=True, exist_ok=True)
+        if _is_docker():
+            return JSONResponse({"ok": True, "path": str(folder), "docker": True})
         _open_folder_native(folder)
         return JSONResponse({"ok": True, "path": str(folder)})
     except Exception as exc:

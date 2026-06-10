@@ -85,15 +85,35 @@ MONTH_MAP: dict[str, int] = {
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
-# olmOCR-2 is a Qwen2-VL fine-tune: terse prompt, temp=0, higher max_tokens
-OLMOCR_EXTRACTION_PROMPT = (
-    'Extract receipt data as JSON with these exact keys: '
-    '{"date":"YYYY-MM-DD","vendor":"store name","amount":0.00,'
-    '"category":"fuel|materials|misc","job_name":null,"job_number":null,'
-    '"expense_description":"brief description"}. '
-    'Use the transaction TOTAL for amount. Return ONLY valid JSON, no markdown.'
+# olmOCR-2 step 1: raw text transcription only — NO logic, NO JSON
+OLMOCR_RAW_PROMPT = (
+    "Transcribe ALL visible text from this receipt image. "
+    "Include every word, number, date, total, and label exactly as shown. "
+    "Output only the raw transcribed text — no JSON, no formatting, no commentary."
 )
 
+# Gemma step 2: parse raw OCR text into structured data (all logic lives here)
+GEMMA_PARSE_OCR_PROMPT = (
+    "You are a receipt data extractor. Parse the following raw OCR text from a receipt "
+    "and return ONLY a JSON object:\n\n"
+    "{{\n"
+    '  "date": "YYYY-MM-DD (or month name if no day visible)",\n'
+    '  "vendor": "store or vendor name",\n'
+    '  "amount": 0.00,\n'
+    '  "category": "fuel | materials | misc",\n'
+    '  "job_name": "job name if visible, else null",\n'
+    '  "job_number": "job/project number if visible, else null",\n'
+    '  "expense_description": "brief description"\n'
+    "}}\n\n"
+    "Category rules:\n"
+    "- \"fuel\": gas stations, fuel purchases (Shell, Chevron, Arco, Mobil, 76, etc.)\n"
+    "- \"materials\": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n"
+    "- \"misc\": everything else (phone bills, hotel, meals, WiFi, restaurants, coffee, etc.)\n\n"
+    "Use the TOTAL or GRAND TOTAL for amount. Return ONLY valid JSON, no markdown.\n\n"
+    "Receipt OCR text:\n{ocr_text}"
+)
+
+# Gemma direct-vision fallback (used when olmOCR-2 is unavailable)
 GEMMA_EXTRACTION_PROMPT = """You are a receipt data extractor. Analyze this receipt image and return ONLY a JSON object:
 
 {
@@ -226,6 +246,93 @@ def _normalize_model_id(s: str) -> str:
     return re.sub(r"[-_/]", "", s.lower())
 
 
+def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optional[str]:
+    """
+    Step 1 of two-step pipeline: send image to olmOCR-2, return raw transcribed text.
+    olmOCR-2 only does visual text extraction — no logic, no JSON formatting.
+    """
+    try:
+        b64, mime = encode_image(image_path)
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    {"type": "text", "text": OLMOCR_RAW_PROMPT},
+                ],
+            }],
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        text = response.choices[0].message.content.strip()
+        return text if text else None
+    except Exception as exc:
+        print(f"[ocr] Raw extraction failed for {image_path.name}: {exc}")
+        return None
+
+
+def _parse_ocr_with_gemma(
+    client: OpenAI,
+    ocr_text: str,
+    *,
+    _retry: bool = True,
+) -> Optional[dict]:
+    """
+    Step 2 of two-step pipeline: send raw OCR text to Gemma for structured extraction.
+    All logic (date interpretation, categorization, expense period) lives here.
+    """
+    prompt = GEMMA_PARSE_OCR_PROMPT.format(ocr_text=ocr_text)
+    system_msg = {
+        "role": "system",
+        "content": "You are a receipt data extractor. Respond with valid JSON only.",
+    }
+    user_msg = {"role": "user", "content": prompt}
+    try:
+        response = client.chat.completions.create(
+            model=_active_gemma_model,
+            messages=[system_msg, user_msg],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            raw = match.group(0)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            if _retry:
+                print(f"[gemma-parse] JSON parse failed, retrying …  ({raw[:200]})")
+                strict_msg = {
+                    "role": "user",
+                    "content": "Return ONLY the JSON object — no extra text, no markdown.",
+                }
+                r2 = client.chat.completions.create(
+                    model=_active_gemma_model,
+                    messages=[system_msg, user_msg, strict_msg],
+                    temperature=0.0,
+                    max_tokens=512,
+                )
+                raw2 = r2.choices[0].message.content.strip()
+                raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
+                raw2 = re.sub(r"\s*```$", "", raw2)
+                m2 = re.search(r"\{.*\}", raw2, re.DOTALL)
+                if m2:
+                    raw2 = m2.group(0)
+                try:
+                    return json.loads(raw2)
+                except json.JSONDecodeError:
+                    print(f"[gemma-parse] Retry failed: {raw2[:200]}")
+                    return None
+            return None
+    except Exception as exc:
+        print(f"[gemma-parse] Exception: {exc}")
+        return None
+
+
 def _extract_with_model(
     client: OpenAI,
     image_path: Path,
@@ -233,13 +340,9 @@ def _extract_with_model(
     *,
     _retry: bool = True,
 ) -> Optional[dict]:
-    """Send receipt image to a specific model; return parsed dict or None."""
+    """Gemma direct-vision extraction (used as fallback when olmOCR-2 is unavailable)."""
     try:
         b64, mime = encode_image(image_path)
-        is_olmocr  = _normalize_model_id(OLMOCR_MODEL_ID.split("/")[-1]) in _normalize_model_id(model_id)
-        prompt     = OLMOCR_EXTRACTION_PROMPT if is_olmocr else GEMMA_EXTRACTION_PROMPT
-        max_tokens = 2048 if is_olmocr else 512
-
         system_msg = {
             "role": "system",
             "content": "You are a receipt data extractor. Always respond with valid JSON only — no markdown, no prose.",
@@ -248,7 +351,7 @@ def _extract_with_model(
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                {"type": "text",      "text": prompt},
+                {"type": "text",      "text": GEMMA_EXTRACTION_PROMPT},
             ],
         }
 
@@ -256,13 +359,11 @@ def _extract_with_model(
             model=model_id,
             messages=[system_msg, user_msg],
             temperature=0.0,
-            max_tokens=max_tokens,
+            max_tokens=512,
         )
         raw = response.choices[0].message.content.strip()
-        # Strip markdown fences
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-        # Grab the first {...} block in case the model added surrounding text
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             raw = match.group(0)
@@ -272,7 +373,6 @@ def _extract_with_model(
         except json.JSONDecodeError:
             if _retry:
                 print(f"[extract] JSON parse failed for {image_path.name}, retrying …")
-                print(f"[extract] Raw response: {raw[:400]}")
                 strict_msg = {
                     "role": "user",
                     "content": "Your response was not valid JSON. Return ONLY the JSON object with no additional text, no markdown, and no explanation.",
@@ -281,7 +381,7 @@ def _extract_with_model(
                     model=model_id,
                     messages=[system_msg, user_msg, strict_msg],
                     temperature=0.0,
-                    max_tokens=max_tokens,
+                    max_tokens=512,
                 )
                 raw2 = retry_resp.choices[0].message.content.strip()
                 raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
@@ -303,15 +403,29 @@ def _extract_with_model(
 
 def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
     """
-    Extract receipt data using the primary model (olmOCR-2 when available).
-    Automatically falls back to the active Gemma model on low-confidence results.
+    Two-step pipeline when olmOCR-2 is active:
+      1. olmOCR-2 extracts raw text from the image (visual OCR only, no logic).
+      2. Gemma parses the raw text into structured data (all logic stays with Gemma).
+    Falls back to Gemma direct-vision when olmOCR-2 is unavailable or the
+    two-step result is low confidence.
+    All date interpretation, categorization, and expense-period logic
+    is always performed by Gemma.
     """
-    data = _extract_with_model(client, image_path, _active_model)
+    if _active_model != _active_gemma_model:
+        # Step 1 — olmOCR-2: visual text extraction only
+        ocr_text = _extract_raw_ocr(client, image_path, _active_model)
+        if ocr_text:
+            # Step 2 — Gemma: all logic (dates, amounts, categories)
+            data = _parse_ocr_with_gemma(client, ocr_text)
+            if not _is_low_confidence(data):
+                if data is not None:
+                    data["_raw_ocr"] = ocr_text  # kept for debugging
+                return data
+            print(f"[extract] Two-step low-confidence for {image_path.name}, "
+                  f"falling back to Gemma direct vision")
 
-    if _is_low_confidence(data) and _active_model != _active_gemma_model:
-        data = _extract_with_model(client, image_path, _active_gemma_model)
-
-    return data
+    # Fallback: Gemma analyzes the image directly
+    return _extract_with_model(client, image_path, _active_gemma_model)
 
 
 def gemma_review_expenses(
