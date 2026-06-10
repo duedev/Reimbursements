@@ -7,6 +7,7 @@ Public API:
   initialize_models()          — load olmOCR-2 at startup, fall back to Gemma
   process_receipts_batch(...)  — full pipeline, returns a summary dict
   extract_receipt_data(...)    — send one image to LM Studio, get structured dict
+  generate_spreadsheet(...)    — build the Excel workbook from processed results
 """
 from __future__ import annotations
 
@@ -26,10 +27,6 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Callable, Optional
 
-import openpyxl
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 from openai import OpenAI
 from PIL import Image
 
@@ -44,21 +41,16 @@ GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "4"))
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
+# Host-side absolute path prefix for file links in the generated spreadsheet.
+# When running in Docker, set this to the host path that maps to OUTPUT_FOLDER.
+HOST_OUTPUT_PATH     = os.getenv("HOST_OUTPUT_PATH", "")
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 # Qwen2-VL (olmOCR-2 base) recommends ≤1568 px per side
 IMAGE_MAX_PX         = 1568
 
 # Runtime state — updated by initialize_models() and POST /models/gemma
-_active_model:       str = OLMOCR_MODEL_ID   # primary OCR model
-_active_gemma_model: str = GEMMA_MODEL_ID    # active Gemma variant (swappable at runtime)
-
-# Column positions (shared with spreadsheet_theme)
-COL_RECEIPT_NO = 1
-COL_DATE       = 2
-COL_NAME       = 3
-COL_JOB_NUMBER = 5
-COL_AMOUNT     = 6
-COL_FILENAME   = 7
+_active_model:       str = OLMOCR_MODEL_ID
+_active_gemma_model: str = GEMMA_MODEL_ID
 
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
@@ -66,7 +58,7 @@ FUEL_VENDORS = {
     "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
     "gas station", "fuel station", "petro",
 }
-MATERIALS_VENDORS = {
+MATS_VENDORS = {
     "home depot", "lowes", "lowe's", "menards", "ace hardware", "true value",
     "harbor freight", "fastenal", "grainger", "blueprint", "print shop",
     "reprographics", "planning department", "building supply",
@@ -92,47 +84,73 @@ OLMOCR_RAW_PROMPT = (
     "Output only the raw transcribed text — no JSON, no formatting, no commentary."
 )
 
-# Gemma step 2: parse raw OCR text into structured data (all logic lives here)
-GEMMA_PARSE_OCR_PROMPT = (
-    "You are a receipt data extractor. Parse the following raw OCR text from a receipt "
-    "and return ONLY a JSON object:\n\n"
+# Gemma step 2 (unified): extract structured data + AI summary + audit flags in one call.
+# Replaces the old separate parse + audit review steps.
+_UNIFIED_DISTILLATION_TEMPLATE = (
+    "You are a receipt data extractor and expense auditor. Parse the following raw OCR text "
+    "from a receipt and return ONLY a JSON object with ALL of these fields:\n\n"
     "{{\n"
-    '  "date": "YYYY-MM-DD (or month name if no day visible)",\n'
+    '  "date": "YYYY-MM-DD",\n'
     '  "vendor": "store or vendor name",\n'
     '  "amount": 0.00,\n'
-    '  "category": "fuel | materials | misc",\n'
-    '  "job_name": "job name if visible, else null",\n'
-    '  "job_number": "job/project number if visible, else null",\n'
-    '  "expense_description": "brief description"\n'
+    '  "category": "fuel | mats | misc",\n'
+    '  "job_name": null,\n'
+    '  "job_number": null,\n'
+    '  "expense_description": null,\n'
+    '  "ai_summary": "one-sentence summary, e.g. Lunch at Butchs Grinders, $87.92",\n'
+    '  "flags": []\n'
     "}}\n\n"
     "Category rules:\n"
-    "- \"fuel\": gas stations, fuel purchases (Shell, Chevron, Arco, Mobil, 76, etc.)\n"
-    "- \"materials\": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n"
-    "- \"misc\": everything else (phone bills, hotel, meals, WiFi, restaurants, coffee, etc.)\n\n"
-    "Use the TOTAL or GRAND TOTAL for amount. Return ONLY valid JSON, no markdown.\n\n"
+    '- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, Valero, etc.)\n'
+    '  → set job_name = null, expense_description = null\n'
+    '- "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n'
+    '- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)\n\n'
+    "Field rules:\n"
+    "- Use TOTAL or GRAND TOTAL for amount\n"
+    "- date must be YYYY-MM-DD from the transaction date\n"
+    "- ai_summary: one sentence distillation, include vendor and amount\n"
+    "- flags: JSON array of flag objects for any issues found:\n"
+    '  * High amount: fuel > $200 → {{"flag": "Amount ${amount} exceeds $200 fuel threshold"}}\n'
+    '  * High amount: mats > $500 → {{"flag": "Amount ${amount} exceeds $500 mats threshold"}}\n'
+    '  * High amount: misc > $300 → {{"flag": "Amount ${amount} exceeds $300 misc threshold"}}\n'
+    '  * OCR error: amount=0, missing vendor, garbled date → {{"flag": "OCR error: reason"}}\n'
+    "  * Date outside 6-month window from {today} → "
+    '{{"flag": "Date outside 6-month window"}}\n'
+    "  * Return [] if no issues\n\n"
+    "Return ONLY valid JSON — no markdown, no extra text.\n\n"
     "Receipt OCR text:\n{ocr_text}"
 )
 
 # Gemma direct-vision fallback (used when olmOCR-2 is unavailable)
-GEMMA_EXTRACTION_PROMPT = """You are a receipt data extractor. Analyze this receipt image and return ONLY a JSON object:
+_GEMMA_VISION_TEMPLATE = """\
+You are a receipt data extractor and expense auditor. Analyze this receipt image and return ONLY a JSON object:
 
-{
-  "date": "YYYY-MM-DD or month name if no specific date (e.g. 'January')",
+{{
+  "date": "YYYY-MM-DD",
   "vendor": "store or vendor name",
   "amount": 0.00,
-  "category": "fuel | materials | misc",
-  "job_name": "job name or project if visible, else null",
-  "job_number": "job/project number if visible, else null",
-  "expense_description": "brief description (e.g. 'Gasoline', 'Building Materials', 'Cell Phone', 'Hotel Stay')"
-}
+  "category": "fuel | mats | misc",
+  "job_name": null,
+  "job_number": null,
+  "expense_description": null,
+  "ai_summary": "one-sentence summary, e.g. Lunch at Butchs Grinders, $87.92",
+  "flags": []
+}}
 
 Category rules:
-- "fuel": gas stations, fuel purchases (Shell, Chevron, Arco, Mobil, 76, etc.)
-- "materials": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
-- "misc": everything else (phone bills, hotel, meals, WiFi, restaurants, coffee, etc.)
+- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, etc.) → job_name=null, expense_description=null
+- "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
+- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
-For amount: use the TOTAL or GRAND TOTAL. Return as a number only.
-For date: use the transaction date. Month name only if no day is visible.
+Amount: use TOTAL or GRAND TOTAL.
+Date: YYYY-MM-DD from transaction date.
+
+flags: array of objects if issues found:
+- fuel > $200, mats > $500, misc > $300 → {{"flag": "Amount exceeds threshold"}}
+- amount=0, missing vendor, garbled date → {{"flag": "OCR error: reason"}}
+- date outside 6-month window from {today} → {{"flag": "Date outside 6-month window"}}
+Return [] for flags if no issues.
+
 Return ONLY valid JSON, no markdown fences, no explanation."""
 
 
@@ -159,7 +177,6 @@ def _try_load_model(model_id: str) -> bool:
     """
     base = _api_base()
 
-    # 1. Check /v1/models for already-loaded models
     try:
         req = urllib.request.Request(
             f"{base}/v1/models",
@@ -173,7 +190,6 @@ def _try_load_model(model_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Ask LM Studio to load the model (LM Studio ≥0.3.x REST API)
     try:
         payload = json.dumps({"identifier": model_id}).encode()
         req = urllib.request.Request(
@@ -186,6 +202,21 @@ def _try_load_model(model_id: str) -> bool:
             return resp.status == 200
     except Exception:
         return False
+
+
+def list_available_models() -> list[str]:
+    """Query LM Studio for all loaded models. Returns list of model IDs."""
+    base = _api_base()
+    try:
+        req = urllib.request.Request(
+            f"{base}/v1/models",
+            headers={"Authorization": "Bearer lmstudio"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return [m["id"] for m in data.get("data", [])]
+    except Exception:
+        return []
 
 
 def initialize_models() -> str:
@@ -209,12 +240,10 @@ def initialize_models() -> str:
 
 def encode_image(path: Path) -> tuple[str, str]:
     """
-    Open, resize to ≤IMAGE_MAX_PX on longest side (Qwen2-VL / olmOCR-2 limit),
-    and return (base64_jpeg, 'image/jpeg').
-    MPO (dual-camera/burst JPEG) files are handled by using only the first frame.
+    Open, resize to ≤IMAGE_MAX_PX on longest side, return (base64_jpeg, 'image/jpeg').
+    MPO (dual-camera JPEG) files are handled by extracting only the first frame.
     """
     raw = Image.open(path)
-    # MPO is a multi-image JPEG variant; grab just the first frame
     if getattr(raw, "format", None) == "MPO":
         raw.seek(0)
     img = raw.convert("RGB")
@@ -242,14 +271,18 @@ def _is_low_confidence(data: Optional[dict]) -> bool:
     return False
 
 
-def _normalize_model_id(s: str) -> str:
-    return re.sub(r"[-_/]", "", s.lower())
+def _strip_json(raw: str) -> str:
+    """Strip markdown fences and extract the first JSON object/array."""
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    return match.group(0) if match else raw
 
 
 def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optional[str]:
     """
-    Step 1 of two-step pipeline: send image to olmOCR-2, return raw transcribed text.
-    olmOCR-2 only does visual text extraction — no logic, no JSON formatting.
+    Stage 1: send image to olmOCR-2, return raw transcribed text only.
+    No logic, no JSON — pure visual text extraction.
     """
     try:
         b64, mime = encode_image(image_path)
@@ -272,64 +305,65 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
         return None
 
 
-def _parse_ocr_with_gemma(
+def _unified_distillation(
     client: OpenAI,
     ocr_text: str,
     *,
     _retry: bool = True,
 ) -> Optional[dict]:
     """
-    Step 2 of two-step pipeline: send raw OCR text to Gemma for structured extraction.
-    All logic (date interpretation, categorization, expense period) lives here.
+    Stage 2 (new unified pipeline): send raw OCR text to Gemma.
+    Returns a single JSON with extracted fields + ai_summary + flags.
+    Replaces the old separate parse + audit steps.
     """
-    prompt = GEMMA_PARSE_OCR_PROMPT.format(ocr_text=ocr_text)
+    today = date.today().isoformat()
+    prompt = _UNIFIED_DISTILLATION_TEMPLATE.format(ocr_text=ocr_text, today=today)
     system_msg = {
         "role": "system",
         "content": "You are a receipt data extractor. Respond with valid JSON only.",
     }
     user_msg = {"role": "user", "content": prompt}
+
+    def _parse_response(raw: str) -> Optional[dict]:
+        raw = _strip_json(raw)
+        try:
+            result = json.loads(raw)
+            if "flags" not in result:
+                result["flags"] = []
+            return result
+        except json.JSONDecodeError:
+            return None
+
     try:
         response = client.chat.completions.create(
             model=_active_gemma_model,
             messages=[system_msg, user_msg],
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=768,
         )
         raw = response.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            raw = match.group(0)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            if _retry:
-                print(f"[gemma-parse] JSON parse failed, retrying …  ({raw[:200]})")
-                strict_msg = {
-                    "role": "user",
-                    "content": "Return ONLY the JSON object — no extra text, no markdown.",
-                }
-                r2 = client.chat.completions.create(
-                    model=_active_gemma_model,
-                    messages=[system_msg, user_msg, strict_msg],
-                    temperature=0.0,
-                    max_tokens=512,
-                )
-                raw2 = r2.choices[0].message.content.strip()
-                raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
-                raw2 = re.sub(r"\s*```$", "", raw2)
-                m2 = re.search(r"\{.*\}", raw2, re.DOTALL)
-                if m2:
-                    raw2 = m2.group(0)
-                try:
-                    return json.loads(raw2)
-                except json.JSONDecodeError:
-                    print(f"[gemma-parse] Retry failed: {raw2[:200]}")
-                    return None
-            return None
+        result = _parse_response(raw)
+        if result is not None:
+            return result
+        if _retry:
+            print(f"[distill] JSON parse failed, retrying …  ({raw[:120]})")
+            strict_msg = {
+                "role": "user",
+                "content": "Return ONLY the JSON object — no extra text, no markdown.",
+            }
+            r2 = client.chat.completions.create(
+                model=_active_gemma_model,
+                messages=[system_msg, user_msg, strict_msg],
+                temperature=0.0,
+                max_tokens=768,
+            )
+            result2 = _parse_response(r2.choices[0].message.content.strip())
+            if result2 is not None:
+                return result2
+            print(f"[distill] Retry failed.")
+        return None
     except Exception as exc:
-        print(f"[gemma-parse] Exception: {exc}")
+        print(f"[distill] Exception: {exc}")
         return None
 
 
@@ -340,18 +374,31 @@ def _extract_with_model(
     *,
     _retry: bool = True,
 ) -> Optional[dict]:
-    """Gemma direct-vision extraction (used as fallback when olmOCR-2 is unavailable)."""
+    """Gemma direct-vision fallback (used when olmOCR-2 is unavailable or low confidence)."""
+    today = date.today().isoformat()
+    prompt = _GEMMA_VISION_TEMPLATE.replace("{today}", today)
+
+    def _parse_response(raw: str) -> Optional[dict]:
+        raw = _strip_json(raw)
+        try:
+            result = json.loads(raw)
+            if "flags" not in result:
+                result["flags"] = []
+            return result
+        except json.JSONDecodeError:
+            return None
+
     try:
         b64, mime = encode_image(image_path)
         system_msg = {
             "role": "system",
-            "content": "You are a receipt data extractor. Always respond with valid JSON only — no markdown, no prose.",
+            "content": "You are a receipt data extractor. Always respond with valid JSON only.",
         }
         user_msg = {
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                {"type": "text",      "text": GEMMA_EXTRACTION_PROMPT},
+                {"type": "text",      "text": prompt},
             ],
         }
 
@@ -359,175 +406,111 @@ def _extract_with_model(
             model=model_id,
             messages=[system_msg, user_msg],
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=768,
         )
-        raw = response.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            raw = match.group(0)
+        result = _parse_response(response.choices[0].message.content.strip())
+        if result is not None:
+            return result
 
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            if _retry:
-                print(f"[extract] JSON parse failed for {image_path.name}, retrying …")
-                strict_msg = {
-                    "role": "user",
-                    "content": "Your response was not valid JSON. Return ONLY the JSON object with no additional text, no markdown, and no explanation.",
-                }
-                retry_resp = client.chat.completions.create(
-                    model=model_id,
-                    messages=[system_msg, user_msg, strict_msg],
-                    temperature=0.0,
-                    max_tokens=512,
-                )
-                raw2 = retry_resp.choices[0].message.content.strip()
-                raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
-                raw2 = re.sub(r"\s*```$", "", raw2)
-                m2 = re.search(r"\{.*\}", raw2, re.DOTALL)
-                if m2:
-                    raw2 = m2.group(0)
-                try:
-                    return json.loads(raw2)
-                except json.JSONDecodeError:
-                    print(f"[extract] Retry also failed for {image_path.name}: {raw2[:400]}")
-                    return None
-            return None
+        if _retry:
+            print(f"[extract] JSON parse failed for {image_path.name}, retrying …")
+            strict_msg = {
+                "role": "user",
+                "content": "Your response was not valid JSON. Return ONLY the JSON object.",
+            }
+            retry_resp = client.chat.completions.create(
+                model=model_id,
+                messages=[system_msg, user_msg, strict_msg],
+                temperature=0.0,
+                max_tokens=768,
+            )
+            result2 = _parse_response(retry_resp.choices[0].message.content.strip())
+            if result2 is not None:
+                return result2
+            print(f"[extract] Retry also failed for {image_path.name}")
+        return None
 
     except Exception as exc:
         print(f"[extract] Exception for {image_path.name}: {exc}")
         return None
 
 
-def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
+def _extract_receipt_with_status(
+    client: OpenAI,
+    image_path: Path,
+    status_cb: Optional[Callable],
+) -> Optional[dict]:
     """
-    Two-step pipeline when olmOCR-2 is active:
-      1. olmOCR-2 extracts raw text from the image (visual OCR only, no logic).
-      2. Gemma parses the raw text into structured data (all logic stays with Gemma).
-    Falls back to Gemma direct-vision when olmOCR-2 is unavailable or the
-    two-step result is low confidence.
-    All date interpretation, categorization, and expense-period logic
-    is always performed by Gemma.
+    Two-stage pipeline with granular status callbacks for the Kanban board.
+    Stage 1: olmOCR raw text extraction (or skip if using Gemma direct).
+    Stage 2: Gemma unified distillation (extraction + summary + flags in one call).
+    Falls back to Gemma direct-vision when olmOCR-2 is unavailable or low confidence.
     """
+    def _cb(status: str, data: Optional[dict] = None):
+        if status_cb:
+            status_cb(status, data)
+
     if _active_model != _active_gemma_model:
-        # Step 1 — olmOCR-2: visual text extraction only
+        _cb("ocr")
         ocr_text = _extract_raw_ocr(client, image_path, _active_model)
         if ocr_text:
-            # Step 2 — Gemma: all logic (dates, amounts, categories)
-            data = _parse_ocr_with_gemma(client, ocr_text)
+            _cb("distilling")
+            data = _unified_distillation(client, ocr_text)
             if not _is_low_confidence(data):
                 if data is not None:
-                    data["_raw_ocr"] = ocr_text  # kept for debugging
+                    data["_raw_ocr"] = ocr_text
                 return data
             print(f"[extract] Two-step low-confidence for {image_path.name}, "
                   f"falling back to Gemma direct vision")
 
     # Fallback: Gemma analyzes the image directly
+    _cb("distilling")
     return _extract_with_model(client, image_path, _active_gemma_model)
 
 
-def gemma_review_expenses(
-    client: OpenAI,
-    results: list[dict],
-    log_cb: Optional[Callable] = None,
-) -> None:
-    """
-    Send all extracted receipts to the active Gemma model for a holistic review.
-    Writes a '_flag' key into any result dict that has a suspected issue.
-    Non-fatal — a failure here does not abort workbook generation.
-    """
-    def _log(msg: str):
-        if log_cb:
-            log_cb(msg)
-        else:
-            print(msg)
+def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
+    """Convenience wrapper — extract receipt data without status callbacks."""
+    return _extract_receipt_with_status(client, image_path, status_cb=None)
 
-    if not results:
-        return
 
-    compact = [
-        {
-            "index":       i,
-            "vendor":      r.get("vendor", ""),
-            "date":        r.get("date", ""),
-            "amount":      r.get("amount", 0),
-            "category":    r.get("_category", r.get("category", "")),
-            "description": r.get("expense_description", ""),
-        }
-        for i, r in enumerate(results)
-    ]
-
-    review_prompt = (
-        "You are an expense auditor. Review the following JSON array of receipts "
-        "and return a JSON array flagging suspicious entries.\n\n"
-        f"Receipts:\n{json.dumps(compact, indent=2)}\n\n"
-        "Flag when:\n"
-        "1. Amount is unusually high for the category (fuel > $200, materials > $500, misc > $300)\n"
-        "2. Duplicate vendor + date + amount combination exists\n"
-        "3. Likely OCR error (amount of 0, missing/garbled vendor, implausible date)\n"
-        f"4. Date is outside a 6-month window from today ({date.today().isoformat()})\n\n"
-        'Return ONLY a JSON array of objects: [{"index": N, "flag": "reason"}]. '
-        "Return [] if nothing is suspicious."
-    )
-
-    _log("[review] Sending receipts to Gemma for validation …")
-    try:
-        response = client.chat.completions.create(
-            model=_active_gemma_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expense auditor. Respond with valid JSON only.",
-                },
-                {"role": "user", "content": review_prompt},
-            ],
-            temperature=0.0,
-            max_tokens=1024,
-        )
-        raw = response.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        arr_match = re.search(r"\[.*?\]", raw, re.DOTALL)
-        if arr_match:
-            raw = arr_match.group(0)
-        elif not raw or not raw.startswith("["):
-            # Model returned prose instead of JSON (e.g. "No issues found.")
-            _log("[review] No flags — model returned prose response.")
-            return
-        flags: list[dict] = json.loads(raw)
-    except Exception as exc:
-        _log(f"[review] Review step skipped: {exc}")
-        return
-
-    flag_count = 0
-    for flag_obj in flags:
-        try:
-            idx  = int(flag_obj["index"])
-            note = str(flag_obj["flag"])
-            if 0 <= idx < len(results):
-                results[idx]["_flag"] = note
-                vendor = results[idx].get("vendor", f"#{idx + 1}")
-                _log(f"[review] FLAG #{idx + 1} ({vendor}): {note}")
-                flag_count += 1
-        except (KeyError, ValueError, TypeError):
-            continue
-
-    _log(f"[review] Complete — {flag_count} flag(s) found.")
-
+# ── Category classification ────────────────────────────────────────────────────
 
 def classify_category(data: dict) -> str:
     """Confirm AI category or fall back to vendor-keyword matching."""
     cat = (data.get("category") or "misc").lower().strip()
-    if cat in ("fuel", "materials", "misc"):
+    if cat == "materials":
+        return "mats"
+    if cat in ("fuel", "mats", "misc"):
         return cat
     vendor = (data.get("vendor") or "").lower()
     if any(kw in vendor for kw in FUEL_VENDORS):
         return "fuel"
-    if any(kw in vendor for kw in MATERIALS_VENDORS):
-        return "materials"
+    if any(kw in vendor for kw in MATS_VENDORS):
+        return "mats"
     return "misc"
+
+
+# ── Duplicate detection ────────────────────────────────────────────────────────
+
+def _detect_duplicates(results: list[dict]) -> None:
+    """Flag receipts that share the same vendor + date + amount combination."""
+    seen: dict[tuple, int] = {}
+    for i, r in enumerate(results):
+        key = (
+            (r.get("vendor") or "").lower().strip(),
+            r.get("date") or "",
+            round(float(r.get("amount") or 0), 2),
+        )
+        if key[2] == 0:
+            continue
+        if key in seen:
+            first = seen[key]
+            if not results[first].get("_flag"):
+                results[first]["_flag"] = "Potential duplicate entry"
+            if not r.get("_flag"):
+                r["_flag"] = f"Duplicate of receipt #{first + 1} (same vendor/date/amount)"
+        else:
+            seen[key] = i
 
 
 # ── Photo renaming ─────────────────────────────────────────────────────────────
@@ -540,22 +523,31 @@ def sanitize_filename_part(s: str) -> str:
     return s[:40]
 
 
+def _format_date_mmddyy(raw_date: str) -> str:
+    """Convert YYYY-MM-DD to MM-DD-YY for filenames. Returns sanitized fallback if unparseable."""
+    try:
+        d = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        return d.strftime("%m-%d-%y")
+    except (ValueError, TypeError):
+        return sanitize_filename_part(raw_date) or "unknown"
+
+
 def rename_receipt_image(img_path: Path, data: dict, category: str) -> Path:
     """
-    Naming convention:
-      fuel/materials → {category}_{YYYY-MM-DD}{ext}
-      misc           → misc_{YYYY-MM-DD}_{vendor}{ext}
+    New naming convention: MM-DD-YY_VendorDescription.ext
+    Examples: 12-30-24_Butchs_Grinders.jpg, 06-15-25_Shell.jpg
+    Dashes for date parts, underscores between words.
     Collisions get a numeric suffix: …_2, _3, …
     """
     raw_date = (data.get("date") or "unknown").strip()
-    date_str = raw_date if re.match(r"\d{4}-\d{2}-\d{2}", raw_date) else sanitize_filename_part(raw_date)
-    if category in ("fuel", "materials"):
-        stem = f"{category}_{date_str}"
-    else:
-        # misc: prefer the vendor name — expense_description can contain garbled OCR text
-        vendor_str = sanitize_filename_part(data.get("vendor") or data.get("expense_description") or "receipt")
-        stem = f"{category}_{date_str}_{vendor_str}"
-    ext      = img_path.suffix.lower()
+    date_str = _format_date_mmddyy(raw_date)
+
+    vendor_str = sanitize_filename_part(
+        data.get("vendor") or data.get("expense_description") or "receipt"
+    )
+
+    stem = f"{date_str}_{vendor_str}" if vendor_str else date_str
+    ext  = img_path.suffix.lower()
     new_path = img_path.parent / f"{stem}{ext}"
 
     if new_path.exists() and new_path.resolve() != img_path.resolve():
@@ -598,6 +590,56 @@ def compute_expense_period(results: list[dict]) -> str:
     return f"{fmt(min(dates))} - {fmt(max(dates))}"
 
 
+# ── Spreadsheet generation ─────────────────────────────────────────────────────
+
+def generate_spreadsheet(
+    results: list[dict],
+    output_dir: Path,
+    employee_name: str = "Duane Hamilton",
+    host_output_path: str = "",
+) -> Optional[Path]:
+    """
+    Build the themed workbook from processed results and save to output_dir.
+    Returns the output path, or None if no results.
+    If host_output_path is set, image paths in the workbook are rewritten
+    to use the host-side absolute path (for Docker deployments).
+    """
+    if not results:
+        return None
+
+    # Rewrite _image_path to host paths if configured
+    resolved = []
+    host_base = (host_output_path or HOST_OUTPUT_PATH).rstrip("/")
+    if host_base:
+        for r in results:
+            r2 = dict(r)
+            if r2.get("_image_path"):
+                fname = Path(r2["_image_path"]).name
+                r2["_image_path"] = str(Path(host_base) / fname)
+            resolved.append(r2)
+    else:
+        resolved = list(results)
+
+    by_category: dict[str, list] = defaultdict(list)
+    for r in resolved:
+        by_category[r.get("_category", "misc")].append(r)
+    for cat_list in by_category.values():
+        cat_list.sort(key=sort_key_for_receipt)
+
+    expense_period = compute_expense_period(resolved)
+
+    wb = build_themed_workbook(
+        sections=dict(by_category),
+        expense_period=expense_period,
+        employee_name=employee_name,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp   = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    output_path = output_dir / f"Reimbursements_{timestamp}.xlsx"
+    wb.save(output_path)
+    return output_path
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def process_receipts_batch(
@@ -608,16 +650,25 @@ def process_receipts_batch(
     job_name_default: str = "",
     job_number_default: str = "",
     dry_run: bool = False,
-    progress_callback: Optional[Callable] = None,
-    log_callback:      Optional[Callable] = None,
-    cancel_event:      Optional[threading.Event] = None,
+    auto_generate: bool = True,
+    use_folder_structure: bool = False,
+    progress_callback:       Optional[Callable] = None,
+    log_callback:            Optional[Callable] = None,
+    cancel_event:            Optional[threading.Event] = None,
+    receipt_status_callback: Optional[Callable] = None,
 ) -> dict:
     """
-    Full pipeline:
-      1. Gather images
-      2. Extract + classify + rename each image (respects cancel_event)
-      3. Sort by date per category
-      4. Build themed workbook (saved even on partial cancel)
+    Full pipeline (2-stage: OCR → Unified Distillation):
+      1. Gather images from receipts_folder (or Intake/ subfolder)
+      2. For each image: olmOCR raw text, then Gemma unified distillation
+         (extraction + AI summary + audit flags in a single LLM call)
+      3. Sequential classify + rename
+      4. Duplicate detection
+      5. Optionally generate workbook (auto_generate=True for CLI, False for web UI)
+
+    receipt_status_callback(idx, total, filename, status, data):
+      Called at each stage — used by the web UI Kanban board.
+      status: "queued" | "ocr" | "distilling" | "done" | "failed" | "retry"
     """
     def log(msg: str):
         if log_callback:
@@ -629,15 +680,31 @@ def process_receipts_batch(
         if progress_callback:
             progress_callback(cur, tot, fname)
 
+    def receipt_status(idx: int, tot: int, fname: str, status: str, data: Optional[dict]):
+        if receipt_status_callback:
+            receipt_status_callback(idx, tot, fname, status, data)
+
+    # ── Resolve intake folder ─────────────────────────────────────────────────
+    if use_folder_structure:
+        intake_dir   = receipts_folder / "Intake"
+        proc_dir     = receipts_folder / "Processing"
+        retry_dir    = receipts_folder / "Failed" / "Retry"
+        completed_dir = output_dir / "Completed"
+        for d in (intake_dir, proc_dir, retry_dir, completed_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        scan_dir = intake_dir
+    else:
+        scan_dir = receipts_folder
+
     images = sorted(
-        [p for p in receipts_folder.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS],
+        [p for p in scan_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS],
         key=lambda p: p.name,
     )
     total = len(images)
     if total == 0:
-        log("No receipt images found in receipts folder.")
+        log("No receipt images found.")
         return {"processed": 0, "skipped": [], "total": 0,
-                "output_path": None, "expense_period": ""}
+                "output_path": None, "expense_period": "", "results": []}
 
     log(f"Found {total} receipt image(s).  Primary model: {_active_model}")
     client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
@@ -645,85 +712,129 @@ def process_receipts_batch(
     results: list[dict] = []
     skipped: list[str]  = []
 
-    # ── Parallel extraction (up to MAX_PARALLEL_REQUESTS in-flight) ──────────
+    # ── Parallel extraction (Stage 1 OCR + Stage 2 Unified Distillation) ────
+    for i, img_path in enumerate(images, start=1):
+        receipt_status(i, total, img_path.name, "queued", None)
+
     futures_map: dict = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_REQUESTS) as executor:
         for i, img_path in enumerate(images, start=1):
             if cancel_event and cancel_event.is_set():
                 log("Processing stopped by user (before submission).")
                 break
-            futures_map[executor.submit(extract_receipt_data, client, img_path)] = (i, img_path)
+
+            # Move to Processing/ if using folder structure
+            if use_folder_structure:
+                proc_path = proc_dir / img_path.name
+                img_path.rename(proc_path)
+                img_path = proc_path
+
+            idx = i
+            img = img_path  # capture for closure
+
+            def make_status_cb(ridx: int, rname: str):
+                def cb(status: str, data: Optional[dict] = None):
+                    receipt_status(ridx, total, rname, status, data)
+                    progress(ridx, total, rname)
+                return cb
+
+            future = executor.submit(
+                _extract_receipt_with_status, client, img, make_status_cb(idx, img_path.name)
+            )
+            futures_map[future] = (idx, img_path)
 
         raw_results: list[tuple] = []
         for future in concurrent.futures.as_completed(futures_map):
-            idx, img_path = futures_map[future]
-            progress(idx, total, img_path.name)
+            ridx, img_path = futures_map[future]
             try:
                 data = future.result()
             except Exception as exc:
-                log(f"  [{idx}/{total}] ERROR — {img_path.name}: {exc}")
+                log(f"  [{ridx}/{total}] ERROR — {img_path.name}: {exc}")
                 data = None
-            raw_results.append((idx, img_path, data))
+            raw_results.append((ridx, img_path, data))
 
-    # ── Sequential classify + rename (avoids filename race conditions) ────────
+    # ── Sequential classify + rename ─────────────────────────────────────────
     raw_results.sort(key=lambda t: t[0])
-    for idx, img_path, data in raw_results:
+    for ridx, img_path, data in raw_results:
         if cancel_event and cancel_event.is_set():
             log("Processing stopped by user.")
             break
 
-        log(f"  [{idx}/{total}] Analyzing: {img_path.name}")
+        log(f"  [{ridx}/{total}] Analyzing: {img_path.name}")
 
-        if data is None:
-            log("    SKIPPED — AI extraction failed")
+        if data is None or _is_low_confidence(data):
+            reason = "AI extraction failed" if data is None else "low confidence extraction"
+            log(f"    SKIPPED — {reason}")
             skipped.append(img_path.name)
+            receipt_status(ridx, total, img_path.name, "failed", None)
+            if use_folder_structure:
+                # Move to Failed/Retry/
+                try:
+                    img_path.rename(retry_dir / img_path.name)
+                except Exception:
+                    pass
             continue
 
         category = classify_category(data)
         data["_category"] = category
 
-        if not data.get("job_name") and job_name_default:
-            data["job_name"] = job_name_default
-        if not data.get("job_number") and job_number_default:
-            data["job_number"] = job_number_default
+        # Schema enforcement: fuel receipts have no job_name or expense_description
+        if category == "fuel":
+            data["job_name"] = None
+            data["expense_description"] = None
+        else:
+            if not data.get("job_name") and job_name_default:
+                data["job_name"] = job_name_default
+            if not data.get("job_number") and job_number_default:
+                data["job_number"] = job_number_default
 
-        new_path = rename_receipt_image(img_path, data, category)
-        data["_new_filename"] = new_path.name
-        data["_file"]         = new_path.name
-        data["_image_path"]   = str(new_path)
+        # Promote first flag from unified distillation to the legacy _flag field
+        flags_list = data.get("flags") or []
+        if flags_list and not data.get("_flag"):
+            data["_flag"] = flags_list[0].get("flag", "")
 
-        log(f"    [{category.upper():9}] {data.get('vendor','?')} — ${data.get('amount',0):.2f}  →  {new_path.name}")
+        # Rename and optionally move to Completed/
+        dest_dir = completed_dir if use_folder_structure else img_path.parent
+        if use_folder_structure:
+            # Rename in-place in Processing/, then move to Completed/
+            renamed = rename_receipt_image(img_path, data, category)
+            final_path = dest_dir / renamed.name
+            try:
+                renamed.rename(final_path)
+            except Exception:
+                final_path = renamed
+        else:
+            final_path = rename_receipt_image(img_path, data, category)
+
+        data["_new_filename"] = final_path.name
+        data["_file"]         = final_path.name
+        data["_image_path"]   = str(final_path)
+
+        log(f"    [{category.upper():5}] {data.get('vendor','?')} — "
+            f"${data.get('amount',0):.2f}  →  {final_path.name}")
+        if data.get("_flag"):
+            log(f"    FLAG: {data['_flag']}")
+
+        receipt_status(ridx, total, img_path.name, "done", data)
         results.append(data)
 
     if not results:
         log("No receipts were successfully processed.")
         return {"processed": 0, "skipped": skipped, "total": total,
-                "output_path": None, "expense_period": ""}
+                "output_path": None, "expense_period": "", "results": []}
 
-    by_category: dict[str, list] = defaultdict(list)
-    for r in results:
-        by_category[r["_category"]].append(r)
-    for cat_list in by_category.values():
-        cat_list.sort(key=sort_key_for_receipt)
+    # ── Duplicate detection (code-based, across all receipts) ────────────────
+    _detect_duplicates(results)
 
     expense_period = compute_expense_period(results)
     log(f"\nExpense period: {expense_period or '(no parseable dates)'}")
 
-    if not dry_run:
-        gemma_review_expenses(client, results, log)
-
     output_path: Optional[Path] = None
-    if not dry_run:
-        wb = build_themed_workbook(
-            sections=dict(by_category),
-            expense_period=expense_period,
-            employee_name=employee_name,
-        )
-        timestamp   = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        output_path = output_dir / f"Reimbursements_{timestamp}.xlsx"
-        wb.save(output_path)
-        log(f"\nSaved: {output_path}")
-    else:
+    if auto_generate and not dry_run:
+        output_path = generate_spreadsheet(results, output_dir, employee_name)
+        if output_path:
+            log(f"\nSaved: {output_path}")
+    elif dry_run:
         log("\nDry run — workbook not saved.")
 
     processed = len(results)
@@ -736,6 +847,7 @@ def process_receipts_batch(
         "total":          total,
         "output_path":    output_path,
         "expense_period": expense_period,
+        "results":        results,
     }
 
 
@@ -746,33 +858,34 @@ def main():
         description="Process receipt images and generate a themed reimbursement spreadsheet."
     )
     parser.add_argument("spreadsheet", nargs="?", default="Reimbursement_sheet_1.xlsx")
-    parser.add_argument("--receipts",    default=RECEIPTS_FOLDER)
-    parser.add_argument("--output-dir",  default=OUTPUT_FOLDER)
-    parser.add_argument("--employee",    default="Duane Hamilton")
-    parser.add_argument("--job-name",    default="")
-    parser.add_argument("--job-number",  default="")
-    parser.add_argument("--dry-run",     action="store_true")
+    parser.add_argument("--receipts",           default=RECEIPTS_FOLDER)
+    parser.add_argument("--output-dir",         default=OUTPUT_FOLDER)
+    parser.add_argument("--employee",           default="Duane Hamilton")
+    parser.add_argument("--job-name",           default="")
+    parser.add_argument("--job-number",         default="")
+    parser.add_argument("--dry-run",            action="store_true")
+    parser.add_argument("--folder-structure",   action="store_true",
+                        help="Use Intake/Processing/Failed/Retry/Output/Completed/ structure")
     args = parser.parse_args()
 
-    template = Path(args.spreadsheet)
     receipts = Path(args.receipts)
     out_dir  = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not template.exists():
-        print(f"ERROR: Template not found: {template}"); sys.exit(1)
     if not receipts.exists():
         print(f"ERROR: Receipts folder not found: {receipts}"); sys.exit(1)
 
     initialize_models()
     process_receipts_batch(
-        template_path=template,
+        template_path=Path(args.spreadsheet),
         receipts_folder=receipts,
         output_dir=out_dir,
         employee_name=args.employee,
         job_name_default=args.job_name,
         job_number_default=args.job_number,
         dry_run=args.dry_run,
+        auto_generate=True,
+        use_folder_structure=args.folder_structure,
     )
 
 
