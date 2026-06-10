@@ -906,7 +906,10 @@ processBtn.addEventListener('click', async () => {
 
   try {
     const res = await fetch('/process', { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `Server error: ${res.status}`);
+    }
     const { job_id } = await res.json();
     startJobSSE(job_id);
   } catch (err) {
