@@ -109,9 +109,9 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "- date must be YYYY-MM-DD from the transaction date\n"
     "- summary: one sentence describing what was purchased at the vendor (no dollar amount)\n"
     "- flags: JSON array of flag objects for any issues found:\n"
-    '  * High amount: fuel > $200 → {{"flag": "Amount ${amount} exceeds $200 fuel threshold"}}\n'
-    '  * High amount: mats > $500 → {{"flag": "Amount ${amount} exceeds $500 mats threshold"}}\n'
-    '  * High amount: misc > $300 → {{"flag": "Amount ${amount} exceeds $300 misc threshold"}}\n'
+    '  * High amount: fuel > $200 → {{"flag": "Fuel total exceeds $200 threshold"}}\n'
+    '  * High amount: mats > $500 → {{"flag": "Materials total exceeds $500 threshold"}}\n'
+    '  * High amount: misc > $300 → {{"flag": "Misc total exceeds $300 threshold"}}\n'
     '  * OCR error: amount=0, missing vendor, garbled date → {{"flag": "OCR error: reason"}}\n'
     "  * Date outside 6-month window from {today} → "
     '{{"flag": "Date outside 6-month window"}}\n'
@@ -310,7 +310,11 @@ def _unified_distillation(
 ) -> Optional[dict]:
     """Stage 2: send raw OCR text to primary model; returns JSON with fields + summary + flags."""
     today = date.today().isoformat()
-    prompt = _UNIFIED_DISTILLATION_TEMPLATE.format(ocr_text=ocr_text, today=today)
+    try:
+        prompt = _UNIFIED_DISTILLATION_TEMPLATE.format(ocr_text=ocr_text, today=today)
+    except KeyError as ke:
+        print(f"[distill] Template format error — unescaped placeholder {ke}; falling back to raw OCR text")
+        prompt = f"Extract receipt data as JSON from this text:\n\n{ocr_text}"
     system_msg = {
         "role": "system",
         "content": "You are a receipt data extractor. Respond with valid JSON only.",
@@ -440,30 +444,37 @@ def _extract_receipt_with_status(
 ) -> Optional[dict]:
     """
     Two-stage pipeline with granular status callbacks for the Kanban board.
-    Stage 1: olmOCR raw text extraction (or skip if using Gemma direct).
-    Stage 2: Gemma unified distillation (extraction + summary + flags in one call).
-    Falls back to Gemma direct-vision when olmOCR-2 is unavailable or low confidence.
+    Any unhandled exception returns None so the caller logs it as a failed receipt.
     """
     def _cb(status: str, data: Optional[dict] = None):
-        if status_cb:
-            status_cb(status, data)
+        try:
+            if status_cb:
+                status_cb(status, data)
+        except Exception as cb_exc:
+            print(f"[extract] Status callback error ({status}): {cb_exc}")
 
-    if _active_secondary_model:
-        _cb("ocr")
-        ocr_text = _extract_raw_ocr(client, image_path, _active_secondary_model)
-        if ocr_text:
-            _cb("distilling")
-            data = _unified_distillation(client, ocr_text)
-            if not _is_low_confidence(data):
-                if data is not None:
-                    data["_raw_ocr"] = ocr_text
-                return data
-            print(f"[extract] Two-step low-confidence for {image_path.name}, "
-                  f"falling back to primary direct vision")
+    try:
+        if _active_secondary_model:
+            _cb("ocr")
+            ocr_text = _extract_raw_ocr(client, image_path, _active_secondary_model)
+            if ocr_text:
+                _cb("distilling")
+                data = _unified_distillation(client, ocr_text)
+                if not _is_low_confidence(data):
+                    if data is not None:
+                        data["_raw_ocr"] = ocr_text
+                    return data
+                print(f"[extract] Two-step low-confidence for {image_path.name}, "
+                      f"falling back to primary direct vision")
 
-    # Primary model analyzes the image directly
-    _cb("distilling")
-    return _extract_with_model(client, image_path, _active_gemma_model)
+        # Primary model analyzes the image directly
+        _cb("distilling")
+        return _extract_with_model(client, image_path, _active_gemma_model)
+
+    except Exception as exc:
+        print(f"[extract] Unhandled error for {image_path.name}: {exc}")
+        _cb("failed")
+        return None
 
 
 def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:

@@ -1059,11 +1059,31 @@ async function loadLMStudioModels() {
   }
 }
 
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    // Fallback for non-HTTPS / older browsers
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  }
+}
+
 document.getElementById('open-folder-btn').addEventListener('click', async () => {
   try {
     const res = await fetch('/open-folder', { method: 'POST' });
     const d   = await res.json();
-    showToast(d.docker ? `Output folder: ${d.path}` : d.ok ? `Opened: ${d.path}` : `Error: ${d.error || d.path}`, d.ok);
+    if (d.docker) {
+      const copied = await copyToClipboard(d.path);
+      showToast(copied ? `Path copied: ${d.path}` : `Output folder: ${d.path}`, true);
+    } else {
+      showToast(d.ok ? `Opened: ${d.path}` : `Error: ${d.error || d.path}`, d.ok);
+    }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
@@ -1071,7 +1091,12 @@ document.getElementById('open-watch-folder-btn').addEventListener('click', async
   try {
     const res = await fetch('/open-watch-folder', { method: 'POST' });
     const d   = await res.json();
-    showToast(d.docker ? `Watch inbox: ${d.path}` : d.ok ? `Opened: ${d.path}` : `Error: ${d.error || d.path}`, d.ok);
+    if (d.docker) {
+      const copied = await copyToClipboard(d.path);
+      showToast(copied ? `Path copied: ${d.path}` : `Watch inbox: ${d.path}`, true);
+    } else {
+      showToast(d.ok ? `Opened: ${d.path}` : `Error: ${d.error || d.path}`, d.ok);
+    }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
