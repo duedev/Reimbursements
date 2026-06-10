@@ -39,7 +39,7 @@
     header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; flex: 1; }
     header span { color: var(--accent); }
 
-    main { max-width: 1100px; margin: 28px auto; padding: 0 16px; display: grid; gap: 20px; }
+    main { margin: 28px auto; padding: 0 24px; display: grid; gap: 20px; }
 
     .card {
       background: var(--surface);
@@ -311,7 +311,7 @@
 
 <main>
   <!-- Upload card -->
-  <div class="card">
+  <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
     <div id="drop-zone">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -326,7 +326,7 @@
   </div>
 
   <!-- Config card -->
-  <div class="card">
+  <div class="card" id="config-card">
     <div class="card-title">Details &amp; Model</div>
     <div class="fields" style="margin-bottom:16px">
       <label>
@@ -335,23 +335,38 @@
       </label>
       <label>
         Job Name
-        <input type="text" id="job-name" placeholder="Default if blank on receipt">
+        <input type="text" id="job-name" placeholder="Optional">
       </label>
       <label>
         Job Number
-        <input type="text" id="job-number" placeholder="Default if blank on receipt">
+        <input type="text" id="job-number" placeholder="Optional">
       </label>
     </div>
-    <!-- Model selector -->
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-      Distillation Model
-    </div>
-    <div class="model-select-row">
-      <div class="model-active-dot" id="model-dot"></div>
-      <select id="model-select" title="Select Gemma model for distillation">
-        <option value="">Loading available models…</option>
-      </select>
-      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh</button>
+    <!-- Model selectors -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
+          Primary Model
+        </div>
+        <div class="model-select-row">
+          <div class="model-active-dot" id="model-dot"></div>
+          <select id="model-select" title="Primary model for extraction and distillation">
+            <option value="">Loading available models…</option>
+          </select>
+          <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
+          Secondary Model <span style="font-size:10px;text-transform:none;font-weight:400;letter-spacing:0">(OCR stage, optional)</span>
+        </div>
+        <div class="model-select-row">
+          <div class="model-active-dot" id="secondary-model-dot" style="background:var(--border)"></div>
+          <select id="secondary-model-select" title="Optional secondary model for the OCR stage">
+            <option value="">None — primary only</option>
+          </select>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -449,23 +464,23 @@
 
     <div class="folder-strip" style="margin-bottom:10px">
       <span>Output folder:</span>
-      <code id="folder-path">loading…</code>
+      <code id="folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
       <button class="copy-btn" id="open-folder-btn">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              style="display:inline;vertical-align:middle;margin-right:3px">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open Folder
+        </svg>Open
       </button>
     </div>
 
     <div class="folder-strip" style="margin-bottom:16px">
       <span>Watch inbox:</span>
-      <code id="watch-folder-path">loading…</code>
+      <code id="watch-folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
       <button class="copy-btn" id="open-watch-folder-btn">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              style="display:inline;vertical-align:middle;margin-right:3px">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open Folder
+        </svg>Open
       </button>
     </div>
 
@@ -583,7 +598,7 @@ window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 const receiptCards = {};
 
 function getCardEl(filename) {
-  return document.getElementById('kcard-' + CSS.escape(filename));
+  return document.getElementById('kcard-' + filename);
 }
 
 function setCounts() {
@@ -602,6 +617,7 @@ function makeCard(filename, status, data) {
   const div = document.createElement('div');
   div.id = 'kcard-' + filename;
   div.className = `k-card status-${status}`;
+  if (data && data.date) div.dataset.date = data.date;
 
   let inner = `<div class="k-filename">${esc(filename)}</div>`;
 
@@ -611,6 +627,19 @@ function makeCard(filename, status, data) {
   }[status] || status;
 
   inner += `<div class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</div>`;
+
+  // LLM tag: show which model is working on this card
+  if (status === 'ocr') {
+    const sec = document.getElementById('secondary-model-select')?.value;
+    const label = sec ? sec.split('/').pop().substring(0, 24) : 'OCR Model';
+    inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
+  } else if (status === 'distilling' || status === 'done' || status === 'failed') {
+    const primary = document.getElementById('active-model-label')?.textContent || '';
+    if (primary && primary !== 'Loading…' && primary !== 'No model') {
+      const label = primary.split('/').pop().substring(0, 24);
+      inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
+    }
+  }
 
   if (data && data.vendor) {
     inner += `<div class="k-vendor">${esc(data.vendor)} ${catBadge(data._category || data.category)}</div>`;
@@ -625,8 +654,8 @@ function makeCard(filename, status, data) {
   }
 
   if (status === 'failed') {
-    const idx = receiptCards[filename]?.index || 0;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt(${idx}, '${esc(filename)}')">&#8635; Retry via Gemma</button>`;
+    const idx = receiptCards[filename]?.index ?? 0;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt(${idx}, '${esc(filename)}')">&#8635; Retry</button>`;
   }
 
   div.innerHTML = inner;
@@ -639,13 +668,29 @@ function moveCard(filename, newStatus, data) {
     done: 'col-completed', failed: 'col-failed'
   };
 
-  // Remove from current column
-  const existing = getCardEl(filename);
-  if (existing) existing.remove();
+  // Remove from every column (not just the expected one — handles race conditions)
+  ['col-queued','col-processing','col-completed','col-failed'].forEach(id => {
+    const el = document.getElementById(id)?.querySelector(`#kcard-${CSS.escape(filename)}`);
+    if (el) el.remove();
+  });
 
   const newCard = makeCard(filename, newStatus, data);
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
-  col.appendChild(newCard);
+
+  // Completed column: insert oldest-first (aging to top)
+  if (newStatus === 'done' && data && data.date) {
+    const cards = [...col.querySelectorAll('.k-card')];
+    let insertBefore = null;
+    for (const card of cards) {
+      if (!card.dataset.date || data.date <= card.dataset.date) {
+        insertBefore = card;
+        break;
+      }
+    }
+    insertBefore ? col.insertBefore(newCard, insertBefore) : col.appendChild(newCard);
+  } else {
+    col.appendChild(newCard);
+  }
   setCounts();
 }
 
@@ -758,6 +803,8 @@ function setProcessing(on) {
   processBtn.disabled = on;
   processBtn.textContent = on ? 'Processing…' : 'Process Receipts';
   if (!on) stopBtn.classList.add('hidden');
+  document.getElementById('upload-card').classList.toggle('hidden', on);
+  document.getElementById('config-card').classList.toggle('hidden', on);
   if (on) {
     progressCard.classList.remove('hidden');
     generateCard.classList.add('hidden');
@@ -837,6 +884,8 @@ resetBtn.addEventListener('click', () => {
   downloadRow.classList.add('hidden');
   statusBadge.classList.add('hidden');
   stopBtn.classList.add('hidden');
+  document.getElementById('upload-card').classList.remove('hidden');
+  document.getElementById('config-card').classList.remove('hidden');
   processBtn.textContent = 'Process Receipts';
   processBtn.disabled = true;
 });
@@ -877,15 +926,20 @@ async function loadModels() {
   try {
     const res  = await fetch('/models/available');
     const data = await res.json();
-    const active = data.active_gemma || '';
+    const active          = data.active_gemma || '';
+    const activeSecondary = data.active_secondary || '';
 
     document.getElementById('active-model-label').textContent = active || 'No model';
     document.getElementById('gemma-status-dot').style.background = active ? 'var(--success)' : 'var(--border)';
     document.getElementById('model-dot').style.background = active ? 'var(--success)' : 'var(--border)';
+    document.getElementById('secondary-model-dot').style.background = activeSecondary ? 'var(--success)' : 'var(--border)';
 
-    const sel = modelSelect;
-    const prev = sel.value;
-    sel.innerHTML = '';
+    const sel  = modelSelect;
+    const sel2 = document.getElementById('secondary-model-select');
+    const prev  = sel.value;
+    const prev2 = sel2.value;
+    sel.innerHTML  = '';
+    sel2.innerHTML = '<option value="">None — primary only</option>';
 
     if (!data.models || data.models.length === 0) {
       sel.innerHTML = '<option value="">No models loaded in LM Studio</option>';
@@ -894,12 +948,17 @@ async function loadModels() {
 
     data.models.forEach(id => {
       const opt = document.createElement('option');
-      opt.value = id;
-      opt.textContent = id;
+      opt.value = id; opt.textContent = id;
       if (id === active) opt.selected = true;
       sel.appendChild(opt);
+
+      const opt2 = document.createElement('option');
+      opt2.value = id; opt2.textContent = id;
+      if (id === activeSecondary) opt2.selected = true;
+      sel2.appendChild(opt2);
     });
     if (!sel.value && prev) sel.value = prev;
+    if (!sel2.value && prev2) sel2.value = prev2;
   } catch (_) {
     modelSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
   }
@@ -920,10 +979,32 @@ modelSelect.addEventListener('change', async () => {
       document.getElementById('active-model-label').textContent = chosen;
       document.getElementById('model-dot').style.background = 'var(--success)';
       document.getElementById('gemma-status-dot').style.background = 'var(--success)';
-      showToast(`Model switched to ${chosen}`, true);
+      showToast(`Primary model: ${chosen}`, true);
     } else {
       showToast(`Could not load model: ${data.error}`, false);
       document.getElementById('model-dot').style.background = 'var(--danger)';
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  }
+});
+
+document.getElementById('secondary-model-select').addEventListener('change', async () => {
+  const chosen = document.getElementById('secondary-model-select').value;
+  document.getElementById('secondary-model-dot').style.background = 'var(--warning)';
+  try {
+    const res  = await fetch('/models/secondary', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ model: chosen }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('secondary-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
+      showToast(chosen ? `Secondary model: ${chosen}` : 'Secondary model cleared', true);
+    } else {
+      showToast(`Could not set secondary: ${data.error}`, false);
+      document.getElementById('secondary-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) {
     showToast(`Error: ${err.message}`, false);
