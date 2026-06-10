@@ -25,6 +25,7 @@ COLOR_SUBTOTAL_FG = "1F2937"   # near-black
 COLOR_TOTAL_BG    = "2C3E50"   # dark charcoal — grand total row
 COLOR_TOTAL_FG    = "FFFFFF"
 COLOR_NOTE_BG     = "FEF9C3"   # due-date note row
+COLOR_FLAG_BG     = "FEE2E2"   # light red — flagged review rows
 
 # ── Column positions (1-indexed) ───────────────────────────────────────────────
 COL_RECEIPT_NO = 1   # A
@@ -32,7 +33,8 @@ COL_DATE       = 2   # B
 COL_NAME       = 3   # C  (C+D merged in data rows)
 COL_JOB_NUMBER = 5   # E  (also "Expense Description" in misc)
 COL_AMOUNT     = 6   # F
-COL_FILENAME   = 7   # G  — new column
+COL_FILENAME   = 7   # G
+COL_FLAG       = 8   # H  — Review Notes (conditional)
 
 COLUMN_WIDTHS = {
     "A": 9.5,
@@ -46,7 +48,7 @@ COLUMN_WIDTHS = {
 
 ACCT_FORMAT = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 DATE_FORMAT  = "m/d/yy"
-LAST_COL     = 7   # G
+LAST_COL     = 7   # G (main styled bands never exceed G)
 
 
 # ── Style helpers ──────────────────────────────────────────────────────────────
@@ -137,7 +139,7 @@ def _write_section_banner(ws, row: int, label: str):
     ws.row_dimensions[row].height = 24
 
 
-def _write_col_headers(ws, row: int, headers: list[str]):
+def _write_col_headers(ws, row: int, headers: list[str], show_flags: bool = False):
     hdr_fill = _fill(COLOR_HEADER_BG)
     hdr_font = _font(bold=True, color=COLOR_HEADER_FG, size=11)
     hdr_border = _border("2E75B6")
@@ -151,11 +153,19 @@ def _write_col_headers(ws, row: int, headers: list[str]):
             continue  # D is the merged tail — skip writing value
         cell = ws.cell(row=row, column=col_idx, value=text)
         cell.alignment = _align(h="center", wrap=True)
+
+    if show_flags:
+        cell_h = ws.cell(row=row, column=COL_FLAG, value="Review Notes")
+        cell_h.font      = hdr_font
+        cell_h.fill      = hdr_fill
+        cell_h.border    = hdr_border
+        cell_h.alignment = _align(h="center", wrap=True)
+
     ws.row_dimensions[row].height = 32
 
 
 def _write_data_row(ws, row: int, receipt_no: int, data: dict,
-                    category: str, fill_color: str):
+                    category: str, fill_color: str, show_flags: bool = False):
     row_fill   = _fill(fill_color)
     row_font   = _font(size=11)
     row_border = _border()
@@ -223,6 +233,18 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     cell_g = ws.cell(row=row, column=COL_FILENAME, value=filename)
     cell_g.alignment = _align(h="left", wrap=False)
 
+    # H — Review Notes (only when flags column is active)
+    if show_flags:
+        flag_text = data.get("_flag") or ""
+        cell_h = ws.cell(row=row, column=COL_FLAG, value=flag_text or None)
+        if flag_text:
+            cell_h.fill   = _fill(COLOR_FLAG_BG)
+            cell_h.font   = _font(size=10, color="991B1B")
+        else:
+            cell_h.fill   = _fill(fill_color)
+        cell_h.alignment  = _align(h="left", wrap=True)
+        cell_h.border     = _border()
+
     ws.row_dimensions[row].height = 18
 
 
@@ -288,12 +310,20 @@ def build_themed_workbook(
 
     Returns a Workbook ready to be saved.
     """
+    has_flags = any(
+        d.get("_flag")
+        for receipts in sections.values()
+        for d in receipts
+    )
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Sheet1"
 
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
+    if has_flags:
+        ws.column_dimensions["H"].width = 40.0
 
     # ── Rows 1–4: form header ─────────────────────────────────────────────────
     _write_title(ws, 1)
@@ -332,14 +362,15 @@ def build_themed_workbook(
         _write_section_banner(ws, current_row, label)
         current_row += 1
 
-        _write_col_headers(ws, current_row, col_headers)
+        _write_col_headers(ws, current_row, col_headers, show_flags=has_flags)
         current_row += 1
 
         first_data_row = current_row
 
         for i, data in enumerate(receipts):
             fill_color = COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT
-            _write_data_row(ws, current_row, i + 1, data, category, fill_color)
+            _write_data_row(ws, current_row, i + 1, data, category, fill_color,
+                            show_flags=has_flags)
             current_row += 1
 
         last_data_row = current_row - 1  # may equal first_data_row - 1 if empty

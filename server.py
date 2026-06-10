@@ -12,9 +12,19 @@ from pathlib import Path
 from queue import Empty, Queue
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from process_receipts import initialize_models, process_receipts_batch
+import process_receipts as _pr
+from process_receipts import (
+    initialize_models,
+    process_receipts_batch,
+    _try_load_model,
+    OLMOCR_MODEL_ID,
+    GEMMA_SMALL_MODEL_ID,
+    GEMMA_LARGE_MODEL_ID,
+    OUTPUT_FOLDER,
+)
 
 TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(exist_ok=True)
@@ -124,6 +134,72 @@ async def events(job_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/models")
+async def get_models():
+    return JSONResponse({
+        "olmocr":      _pr._active_model,
+        "gemma":       _pr._active_gemma_model,
+        "gemma_small": GEMMA_SMALL_MODEL_ID,
+        "gemma_large": GEMMA_LARGE_MODEL_ID,
+    })
+
+
+class GemmaSwapRequest(BaseModel):
+    model: str  # "small" | "large" | full model id
+
+
+@app.post("/models/gemma")
+async def swap_gemma_model(body: GemmaSwapRequest):
+    if body.model == "small":
+        target = GEMMA_SMALL_MODEL_ID
+    elif body.model == "large":
+        target = GEMMA_LARGE_MODEL_ID
+    else:
+        target = body.model
+
+    ok = _try_load_model(target)
+    if ok:
+        _pr._active_gemma_model = target
+        return JSONResponse({"ok": True, "active_gemma": target})
+    return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
+
+
+@app.get("/open-output-folder")
+async def open_output_folder():
+    return JSONResponse({"path": str(OUTPUT_FOLDER)})
+
+
+@app.post("/watch/send-email")
+async def watch_send_email():
+    """Trigger an immediate report build + email from the watch-mode state."""
+    try:
+        from watch_mode import load_state, send_report
+        from openai import OpenAI
+        state  = load_state()
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        result = send_report(state, client=client)
+        status = 200 if result.get("ok") else 503
+        return JSONResponse(result, status_code=status)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/watch/status")
+async def watch_status():
+    """Return the current watch-mode state summary (receipt count, last emailed)."""
+    try:
+        from watch_mode import load_state, SMTP_HOST, EMAIL_TO
+        state = load_state()
+        return JSONResponse({
+            "receipts":       len(state.get("receipts", [])),
+            "last_emailed":   state.get("last_emailed"),
+            "smtp_configured": bool(SMTP_HOST and EMAIL_TO),
+        })
+    except Exception as exc:
+        return JSONResponse({"receipts": 0, "last_emailed": None, "smtp_configured": False,
+                             "error": str(exc)})
 
 
 @app.get("/download/{job_id}")

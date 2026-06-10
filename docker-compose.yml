@@ -5,5 +5,46 @@ services:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ./receipts:/data/receipts
+      - ./output:/data/output
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - RECEIPTS_FOLDER=/data/receipts
+      - OUTPUT_FOLDER=/data/output
+      - MAX_PARALLEL_REQUESTS=4
+      - GEMMA_SMALL_MODEL_ID=google/gemma-4-12b-qat
+      - GEMMA_LARGE_MODEL_ID=google/gemma-4-26b-a4b-qat
+      # To swap Gemma at runtime: POST /models/gemma {"model": "small"} or {"model": "large"}
+      # To force a specific model on startup, set: GEMMA_MODEL_ID=google/gemma-4-26b-a4b-qat
+
+  receipt-watcher:
+    build: .
+    profiles: ["watch"]
+    command: ["python", "watch_mode.py"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./watch_inbox:/data/watch_inbox
+      - ./watch_staged:/data/watch_staged
+      - ./watch_state:/data/watch_state
+      - ./output:/data/output
+    environment:
+      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - WATCH_INBOX=/data/watch_inbox
+      - WATCH_STAGED=/data/watch_staged
+      - WATCH_STATE=/data/watch_state
+      - OUTPUT_FOLDER=/data/output
+      - WATCH_INTERVAL=60
+      - WATCH_EMPLOYEE_NAME=Duane Hamilton
+      - MAX_PARALLEL_REQUESTS=4
+      - GEMMA_SMALL_MODEL_ID=google/gemma-4-12b-qat
+      - GEMMA_LARGE_MODEL_ID=google/gemma-4-26b-a4b-qat
+      # Email settings — fill these in to enable "Send Report Now"
+      - SMTP_HOST=
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_PASS=
+      - SMTP_FROM=
+      - EMAIL_TO=
+      - EMAIL_SUBJECT=Weekly Reimbursement Report
