@@ -6,16 +6,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./intake:/data/intake
-      - ./output:/data/output
+      - ${INTAKE_PATH:-./intake}:/data/intake
+      - ${OUTPUT_PATH:-./output}:/data/output
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
       - RECEIPTS_FOLDER=/data/intake
       - OUTPUT_FOLDER=/data/output
       - WATCH_INBOX=/data/intake
-      # Host-side paths resolve automatically from the directory you run docker-compose in
-      - HOST_OUTPUT_PATH=${PWD}/output
-      - HOST_INTAKE_PATH=${PWD}/intake
+      - HOST_INTAKE_PATH=${INTAKE_PATH:-${PWD}/intake}
+      - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - MAX_PARALLEL_REQUESTS=4
 
   receipt-watcher:
@@ -25,10 +24,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./intake:/data/watch_inbox
+      - ${INTAKE_PATH:-./intake}:/data/watch_inbox
       - ./processing:/data/processing
       - ./failed:/data/failed
-      - ./output:/data/output
+      - ${OUTPUT_PATH:-./output}:/data/output
       - ./watch_state:/data/watch_state
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
@@ -36,7 +35,7 @@ services:
       - WATCH_STAGED=/data/processing
       - WATCH_STATE=/data/watch_state
       - OUTPUT_FOLDER=/data/output
-      - HOST_OUTPUT_PATH=${PWD}/output
+      - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - WATCH_INTERVAL=60
       - WATCH_EMPLOYEE_NAME=Duane Hamilton
       - MAX_PARALLEL_REQUESTS=4
