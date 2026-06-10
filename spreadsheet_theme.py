@@ -13,21 +13,23 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ── Color palette ──────────────────────────────────────────────────────────────
-COLOR_TITLE_BG    = "2C3E50"   # dark charcoal — title + TOTAL rows
+COLOR_TITLE_BG    = "2C3E50"
 COLOR_TITLE_FG    = "FFFFFF"
-COLOR_SECTION_BG  = "1E40AF"   # dark blue — section banners
+COLOR_SECTION_BG  = "1E40AF"
 COLOR_SECTION_FG  = "FFFFFF"
-COLOR_HEADER_BG   = "3B82F6"   # steel blue — column header rows
+COLOR_HEADER_BG   = "3B82F6"
 COLOR_HEADER_FG   = "FFFFFF"
-COLOR_META_BG     = "EBF5FB"   # light blue — employee / period rows
-COLOR_ROW_PLAIN   = "FFFFFF"   # white — alternating data rows
-COLOR_ROW_ALT     = "F1F5F9"   # very light gray — alternating data rows
-COLOR_SUBTOTAL_BG = "FEF9C3"   # light yellow — subtotal rows
-COLOR_SUBTOTAL_FG = "1F2937"   # near-black
-COLOR_TOTAL_BG    = "2C3E50"   # dark charcoal — grand total row
+COLOR_META_BG     = "EBF5FB"
+COLOR_ROW_PLAIN   = "FFFFFF"
+COLOR_ROW_ALT     = "F1F5F9"
+COLOR_SUBTOTAL_BG = "FEF9C3"
+COLOR_SUBTOTAL_FG = "1F2937"
+COLOR_TOTAL_BG    = "2C3E50"
 COLOR_TOTAL_FG    = "FFFFFF"
-COLOR_NOTE_BG     = "FEF9C3"   # due-date note row
-COLOR_FLAG_BG     = "FEE2E2"   # light red — flagged review rows
+COLOR_NOTE_BG     = "FEF9C3"
+COLOR_FLAG_BG     = "FEE2E2"
+# Separator between receipts within a category section
+COLOR_RECEIPT_SEP = "B0B8C1"
 
 # ── Column positions (1-indexed) ───────────────────────────────────────────────
 COL_RECEIPT_NO = 1   # A
@@ -35,8 +37,9 @@ COL_DATE       = 2   # B
 COL_NAME       = 3   # C  (C+D merged in data rows)
 COL_JOB_NUMBER = 5   # E  (also "Expense Description" in misc)
 COL_AMOUNT     = 6   # F
-COL_FILENAME   = 7   # G
-COL_FLAG       = 8   # H  — Review Notes (conditional)
+COL_AI_SUMMARY = 7   # G  ← AI Summary (new: between data and image link)
+COL_FILENAME   = 8   # H  ← Filename / image link
+COL_FLAG       = 9   # I  ← Review Notes (conditional)
 
 COLUMN_WIDTHS = {
     "A": 9.5,
@@ -45,12 +48,13 @@ COLUMN_WIDTHS = {
     "D": 22.5,
     "E": 28.5,
     "F": 17.5,
-    "G": 36.0,
+    "G": 48.0,   # AI Summary — wide enough for a sentence
+    "H": 36.0,   # Filename
 }
 
 ACCT_FORMAT = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 DATE_FORMAT  = "m/d/yy"
-LAST_COL     = 7   # G (main styled bands never exceed G)
+LAST_COL     = 8   # H — main styled bands stop here
 
 
 # ── Style helpers ──────────────────────────────────────────────────────────────
@@ -63,9 +67,17 @@ def _font(bold: bool = False, color: str = "000000", size: int = 11) -> Font:
     return Font(bold=bold, color=color, size=size, name="Calibri")
 
 
-def _border(color: str = "CCCCCC") -> Border:
-    side = Side(style="thin", color=color)
-    return Border(left=side, right=side, top=side, bottom=side)
+def _border(color: str = "CCCCCC", bottom_color: str = None) -> Border:
+    thin = Side(style="thin", color=color)
+    bottom = Side(style="medium", color=bottom_color) if bottom_color else thin
+    return Border(left=thin, right=thin, top=thin, bottom=bottom)
+
+
+def _receipt_sep_border() -> Border:
+    """Medium bottom border used as a visual separator between receipts."""
+    thin   = Side(style="thin",   color="CCCCCC")
+    medium = Side(style="medium", color=COLOR_RECEIPT_SEP)
+    return Border(left=thin, right=thin, top=thin, bottom=medium)
 
 
 def _align(h: str = "center", v: str = "center", wrap: bool = True) -> Alignment:
@@ -90,7 +102,7 @@ def _flood(ws, row: int, fill: PatternFill, font: Font = None,
 # ── Row writers ────────────────────────────────────────────────────────────────
 
 def _write_title(ws, row: int):
-    ws.merge_cells(f"A{row}:G{row}")
+    ws.merge_cells(f"A{row}:H{row}")
     cell = ws.cell(row=row, column=1, value="Expense Reimbursement Form")
     cell.font = _font(bold=True, color=COLOR_TITLE_FG, size=16)
     cell.fill = _fill(COLOR_TITLE_BG)
@@ -123,7 +135,7 @@ def _write_meta_field(ws, row: int, label: str, value: str,
 def _write_note_row(ws, row: int, text: str):
     note_fill = _fill(COLOR_NOTE_BG)
     _flood(ws, row, note_fill)
-    ws.merge_cells(f"D{row}:G{row}")
+    ws.merge_cells(f"D{row}:H{row}")
     cell = ws.cell(row=row, column=4, value=text)
     cell.font = _font(bold=True, size=10, color="92400E")
     cell.fill = note_fill
@@ -132,7 +144,7 @@ def _write_note_row(ws, row: int, text: str):
 
 
 def _write_section_banner(ws, row: int, label: str):
-    ws.merge_cells(f"A{row}:G{row}")
+    ws.merge_cells(f"A{row}:H{row}")
     cell = ws.cell(row=row, column=1, value=f"  {label}")
     cell.font = _font(bold=True, color=COLOR_SECTION_FG, size=13)
     cell.fill = _fill(COLOR_SECTION_BG)
@@ -142,8 +154,8 @@ def _write_section_banner(ws, row: int, label: str):
 
 
 def _write_col_headers(ws, row: int, headers: list[str], show_flags: bool = False):
-    hdr_fill = _fill(COLOR_HEADER_BG)
-    hdr_font = _font(bold=True, color=COLOR_HEADER_FG, size=11)
+    hdr_fill   = _fill(COLOR_HEADER_BG)
+    hdr_font   = _font(bold=True, color=COLOR_HEADER_FG, size=11)
     hdr_border = _border("2E75B6")
 
     # Merge C+D
@@ -152,16 +164,16 @@ def _write_col_headers(ws, row: int, headers: list[str], show_flags: bool = Fals
 
     for col_idx, text in enumerate(headers, start=1):
         if col_idx == 4:
-            continue  # D is the merged tail — skip writing value
+            continue  # D is the merged tail
         cell = ws.cell(row=row, column=col_idx, value=text)
         cell.alignment = _align(h="center", wrap=True)
 
     if show_flags:
-        cell_h = ws.cell(row=row, column=COL_FLAG, value="Review Notes")
-        cell_h.font      = hdr_font
-        cell_h.fill      = hdr_fill
-        cell_h.border    = hdr_border
-        cell_h.alignment = _align(h="center", wrap=True)
+        cell_i = ws.cell(row=row, column=COL_FLAG, value="Review Notes")
+        cell_i.font      = hdr_font
+        cell_i.fill      = hdr_fill
+        cell_i.border    = hdr_border
+        cell_i.alignment = _align(h="center", wrap=True)
 
     ws.row_dimensions[row].height = 32
 
@@ -171,7 +183,8 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
                     hyperlink_target: Optional[str] = None):
     row_fill   = _fill(fill_color)
     row_font   = _font(size=11)
-    row_border = _border()
+    # Use a medium bottom border to visually separate receipts
+    row_border = _receipt_sep_border()
 
     _flood(ws, row, row_fill, row_font, row_border)
 
@@ -180,7 +193,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
 
     # A — Receipt No.
     cell_a = ws.cell(row=row, column=COL_RECEIPT_NO, value=receipt_no)
-    cell_a.font = _font(bold=True, size=11)
+    cell_a.font      = _font(bold=True, size=11)
     cell_a.alignment = _align(h="center")
 
     # B — Date
@@ -191,7 +204,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         try:
             date_val = datetime.strptime(raw_date, "%Y-%m-%d").date()
         except ValueError:
-            date_val = raw_date  # leave as month-name string
+            date_val = raw_date
     else:
         date_val = None
 
@@ -200,7 +213,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         cell_b.number_format = DATE_FORMAT
     cell_b.alignment = _align(h="center")
 
-    # C — Name (category-dependent label)
+    # C — Name (category-dependent)
     vendor   = (data.get("vendor") or "").strip()
     job_name = (data.get("job_name") or "").strip()
 
@@ -231,28 +244,34 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         cell_f.number_format = ACCT_FORMAT
     cell_f.alignment = _align(h="right")
 
-    # G — Filename (hyperlink to the image sheet cell when available)
-    filename = data.get("_new_filename") or data.get("_file") or ""
-    cell_g = ws.cell(row=row, column=COL_FILENAME, value=filename)
-    if hyperlink_target and filename:
-        cell_g.hyperlink = hyperlink_target
-        cell_g.font = Font(bold=False, color="1155CC", underline="single",
-                           name="Calibri", size=11)
-    cell_g.alignment = _align(h="left", wrap=False)
+    # G — AI Summary
+    ai_summary = (data.get("ai_summary") or "").strip()
+    cell_g = ws.cell(row=row, column=COL_AI_SUMMARY, value=ai_summary or None)
+    cell_g.font      = _font(size=10, color="4B5563")
+    cell_g.alignment = _align(h="left", wrap=True)
 
-    # H — Review Notes (only when flags column is active)
+    # H — Filename (hyperlink to image sheet when available)
+    filename = data.get("_new_filename") or data.get("_file") or ""
+    cell_h = ws.cell(row=row, column=COL_FILENAME, value=filename)
+    if hyperlink_target and filename:
+        cell_h.hyperlink = hyperlink_target
+        cell_h.font = Font(bold=False, color="1155CC", underline="single",
+                           name="Calibri", size=11)
+    cell_h.alignment = _align(h="left", wrap=False)
+
+    # I — Review Notes (only when flags column active)
     if show_flags:
         flag_text = data.get("_flag") or ""
-        cell_h = ws.cell(row=row, column=COL_FLAG, value=flag_text or None)
+        cell_i = ws.cell(row=row, column=COL_FLAG, value=flag_text or None)
         if flag_text:
-            cell_h.fill   = _fill(COLOR_FLAG_BG)
-            cell_h.font   = _font(size=10, color="991B1B")
+            cell_i.fill  = _fill(COLOR_FLAG_BG)
+            cell_i.font  = _font(size=10, color="991B1B")
         else:
-            cell_h.fill   = _fill(fill_color)
-        cell_h.alignment  = _align(h="left", wrap=True)
-        cell_h.border     = _border()
+            cell_i.fill  = _fill(fill_color)
+        cell_i.alignment = _align(h="left", wrap=True)
+        cell_i.border    = _receipt_sep_border()
 
-    ws.row_dimensions[row].height = 18
+    ws.row_dimensions[row].height = 20
 
 
 def _write_subtotal(ws, row: int, first_data: int, last_data: int):
@@ -266,14 +285,12 @@ def _write_subtotal(ws, row: int, first_data: int, last_data: int):
     ws.cell(row=row, column=COL_JOB_NUMBER).value = "Subtotal"
 
     cell_f = ws.cell(row=row, column=COL_AMOUNT)
-    # When last_data < first_data the category is empty; a SUM formula would
-    # include the subtotal row itself and produce a circular-reference error.
     if last_data >= first_data:
         cell_f.value = f"=SUM(F{first_data}:F{last_data})"
     else:
         cell_f.value = 0
     cell_f.number_format = ACCT_FORMAT
-    cell_f.alignment = _align(h="right")
+    cell_f.alignment     = _align(h="right")
     ws.row_dimensions[row].height = 20
 
 
@@ -293,25 +310,22 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
     cell_f = ws.cell(row=row, column=COL_AMOUNT,
                      value=f"=F{fuel_sub}+F{mat_sub}+F{misc_sub}")
     cell_f.number_format = ACCT_FORMAT
-    cell_f.alignment = _align(h="right")
+    cell_f.alignment     = _align(h="right")
     ws.row_dimensions[row].height = 24
 
 
 # ── Image sheet builder ────────────────────────────────────────────────────────
 
-_IMG_ROW_HEIGHT_PT = 14     # points per image-area row
-_IMG_MAX_W_PX      = 720    # max image width in pixels
-_IMG_MAX_H_PX      = 480    # max image height in pixels
-_IMG_ROWS          = 27     # rows reserved per image (≈27×14pt×1.33px/pt ≈ 504px)
+_IMG_ROW_HEIGHT_PT = 14
+_IMG_MAX_W_PX      = 720
+_IMG_MAX_H_PX      = 480
+_IMG_ROWS          = 27
 
 
 def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> list[str]:
     """
-    Add a new sheet with embedded receipt images for a single category.
-    Returns a list of cell references (e.g. ["A3", "A32"]) — one per receipt —
-    pointing to the metadata row for that receipt so the Summary sheet can
-    hyperlink directly to it.
-    Receipts are written oldest-first (caller is responsible for sort order).
+    Add a sheet with embedded receipt images for a single category.
+    Returns a list of anchor cell references (e.g. ["A3", "A32"]) for hyperlinks.
     """
     ws = wb.create_sheet(title=sheet_name)
 
@@ -322,7 +336,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
     ws.column_dimensions["E"].width = 38
 
     current_row = 1
-    anchors: list[str] = []  # cell refs returned to caller for hyperlinks
+    anchors: list[str] = []
 
     # Title row
     ws.merge_cells(f"A{current_row}:E{current_row}")
@@ -357,21 +371,21 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
         amount       = data.get("amount") or 0
         filename     = data.get("_new_filename") or data.get("_file") or ""
 
-        # Record this row as the anchor for Summary-sheet hyperlinks
         anchors.append(f"A{current_row}")
 
-        row_fill = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
+        row_fill   = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
+        row_border = _receipt_sep_border()
         row_values = [i + 1, date_val, vendor, f"${float(amount):.2f}", filename]
         for col_idx, val in enumerate(row_values, 1):
             cell = ws.cell(row=current_row, column=col_idx, value=val)
             cell.font      = _font(bold=(col_idx == 1), size=10)
             cell.fill      = row_fill
+            cell.border    = row_border
             cell.alignment = _align(h="center" if col_idx in (1, 4) else "left", wrap=False)
-            cell.border    = _border()
         ws.row_dimensions[current_row].height = 16
         current_row += 1
 
-        # Embed image below the metadata row
+        # Embed image below metadata row
         if img_path_str and Path(img_path_str).exists():
             try:
                 from io import BytesIO
@@ -380,8 +394,6 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
 
                 with PILImage.open(img_path_str) as pil_img:
                     orig_w, orig_h = pil_img.size
-                    # MPO (dual-camera JPEG) has no openpyxl content-type entry;
-                    # convert to plain JPEG so the workbook writer doesn't raise KeyError
                     if getattr(pil_img, "format", None) == "MPO":
                         buf = BytesIO()
                         pil_img.convert("RGB").save(buf, "JPEG", quality=92)
@@ -394,7 +406,6 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict]) -> l
                 img_w = int(orig_w * scale)
                 img_h = int(orig_h * scale)
 
-                # rows needed: px → pt (×0.75) ÷ row_height_pt
                 rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
 
                 xl_img        = XLImage(img_source)
@@ -435,20 +446,21 @@ def build_themed_workbook(
     Build a fresh themed workbook from receipt data.
 
     sections: {
-        "fuel":      [data_dicts, ...],   # pre-sorted oldest → newest
-        "materials": [data_dicts, ...],
-        "misc":      [data_dicts, ...],
+        "fuel": [data_dicts, ...],
+        "mats": [data_dicts, ...],
+        "misc": [data_dicts, ...],
     }
-    Each data_dict may include _image_path (full path to receipt image) so that
-    per-category image sheets are generated as additional tabs.
+    Each data_dict may include _image_path and ai_summary.
 
-    Build order:
-      1. Reserve "Summary" as the first sheet (tab position 0).
-      2. Build per-category image sheets — this tracks each receipt's anchor cell.
-      3. Fill in the Summary sheet with hyperlinks in the Filename column (G)
-         pointing to the corresponding anchor cell in the image sheet.
+    Layout:
+      Row 1: Title
+      Row 2: Employee name
+      Row 3: Expense period
+      Row 4: Due Thursday note
+      Row 5+: Category sections (no empty spacer row)
 
-    Returns a Workbook ready to be saved.
+    Columns:
+      A=Receipt#, B=Date, C+D=Name, E=Job#/Desc, F=Amount, G=AI Summary, H=Filename, I=Review Notes
     """
     has_flags = any(
         d.get("_flag")
@@ -458,20 +470,19 @@ def build_themed_workbook(
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Summary"  # Reserve position 0; filled in after image sheets are built
+    ws.title = "Summary"
 
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
     if has_flags:
-        ws.column_dimensions["H"].width = 40.0
+        ws.column_dimensions["I"].width = 40.0
 
-    # ── Build image sheets FIRST so we know each receipt's anchor cell ────────
+    # ── Build image sheets FIRST to get anchor cells for hyperlinks ───────────
     IMAGE_SHEET_DEFS = [
-        ("fuel",      "Fuel Receipts"),
-        ("materials", "Materials Receipts"),
-        ("misc",      "Misc Receipts"),
+        ("fuel",  "Fuel Receipts"),
+        ("mats",  "Mats Receipts"),
+        ("misc",  "Misc Receipts"),
     ]
-    # image_links[(category, receipt_idx)] = "#'SheetName'!A{row}"
     image_links: dict[tuple, str] = {}
     for category, sheet_name in IMAGE_SHEET_DEFS:
         receipts = sections.get(category, [])
@@ -480,35 +491,31 @@ def build_themed_workbook(
         for i, cell_ref in enumerate(anchors):
             image_links[(category, i)] = f"#'{safe_name}'!{cell_ref}"
 
-    # ── Now fill in the Summary sheet ─────────────────────────────────────────
-
-    # Rows 1–4: form header
+    # ── Fill in Summary sheet ─────────────────────────────────────────────────
+    # Rows 1-4: form header (no row 5 spacer)
     _write_title(ws, 1)
     _write_meta_field(ws, 2, "Employee:", employee_name)
     _write_meta_field(ws, 3, "Expense Period:", expense_period)
     _write_note_row(ws, 4, "**Due Thursday by 12 p.m.**")
 
-    # Row 5: thin spacer stripe
-    _flood(ws, 5, _fill("CBD5E1"))
-    ws.row_dimensions[5].height = 5
+    current_row = 5  # sections start immediately at row 5
 
-    current_row = 6
     subtotal_rows: dict[str, int] = {}
 
     SECTION_DEFS = [
         (
             "fuel",
-            ["Receipt\nNo.", "Date", "Job Name", "", "Job Number", "Amount", "Filename"],
+            ["Receipt\nNo.", "Date", "Job Name", "", "Job Number", "Amount", "AI Summary", "Filename"],
             "FUEL",
         ),
         (
-            "materials",
-            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Job Number", "Amount", "Filename"],
-            "MATERIALS",
+            "mats",
+            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Job Number", "Amount", "AI Summary", "Filename"],
+            "MATS",
         ),
         (
             "misc",
-            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Expense Description", "Amount", "Filename"],
+            ["Receipt\nNo.", "Date", "Store / Job Name", "", "Expense Description", "Amount", "AI Summary", "Filename"],
             "MISCELLANEOUS",
         ),
     ]
@@ -533,7 +540,7 @@ def build_themed_workbook(
             )
             current_row += 1
 
-        last_data_row = current_row - 1  # may equal first_data_row - 1 if empty
+        last_data_row = current_row - 1
         _write_subtotal(ws, current_row, first_data_row, last_data_row)
         subtotal_rows[category] = current_row
         current_row += 1
@@ -542,7 +549,7 @@ def build_themed_workbook(
     _write_total(
         ws, current_row,
         subtotal_rows["fuel"],
-        subtotal_rows["materials"],
+        subtotal_rows["mats"],
         subtotal_rows["misc"],
     )
 

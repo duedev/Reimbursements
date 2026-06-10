@@ -19,7 +19,6 @@ import os
 import shutil
 import smtplib
 import time
-from collections import defaultdict
 from datetime import datetime
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -34,14 +33,13 @@ from process_receipts import (
     MAX_PARALLEL_REQUESTS,
     OUTPUT_FOLDER,
     classify_category,
-    compute_expense_period,
     extract_receipt_data,
-    gemma_review_expenses,
+    generate_spreadsheet,
     initialize_models,
     rename_receipt_image,
     sort_key_for_receipt,
+    _detect_duplicates,
 )
-from spreadsheet_theme import build_themed_workbook
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 WATCH_INBOX    = Path(os.getenv("WATCH_INBOX",    "/data/watch_inbox"))
@@ -136,26 +134,12 @@ def build_report(state: dict, client: OpenAI | None = None) -> Path:
     if not results:
         raise ValueError("No receipts in state — nothing to build.")
 
-    if client:
-        gemma_review_expenses(client, results, print)
+    _detect_duplicates(results)
 
-    by_category: dict[str, list] = defaultdict(list)
-    for r in results:
-        by_category[r.get("_category", "misc")].append(r)
-    for cat_list in by_category.values():
-        cat_list.sort(key=sort_key_for_receipt)
-
-    expense_period = compute_expense_period(results)
-    employee_name  = state.get("employee_name", EMPLOYEE_NAME)
-
-    wb = build_themed_workbook(
-        sections=dict(by_category),
-        expense_period=expense_period,
-        employee_name=employee_name,
-    )
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    out_path = _OUTPUT_DIR / f"Watch_Reimbursements_{timestamp}.xlsx"
-    wb.save(out_path)
+    employee_name = state.get("employee_name", EMPLOYEE_NAME)
+    out_path = generate_spreadsheet(results, _OUTPUT_DIR, employee_name)
+    if not out_path:
+        raise ValueError("Spreadsheet generation returned no output.")
     print(f"[watch] Report saved: {out_path}")
     return out_path
 
