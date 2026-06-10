@@ -360,9 +360,9 @@
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
-      <p><strong>Drop receipt images here</strong></p>
-      <p style="margin-top:4px">or <strong>click to browse</strong> — JPG, PNG, WEBP, etc.</p>
-      <input type="file" id="file-input" multiple accept="image/*">
+      <p><strong>Drop receipt images or PDFs here</strong></p>
+      <p style="margin-top:4px">or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF, etc.</p>
+      <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
     </div>
     <div id="file-list"></div>
   </div>
@@ -373,15 +373,18 @@
     <div class="fields" style="margin-bottom:16px">
       <label>
         Employee Name
-        <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name">
+        <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name" list="employees-list" autocomplete="off">
+        <datalist id="employees-list"></datalist>
       </label>
       <label>
         Job Name
-        <input type="text" id="job-name" placeholder="Optional">
+        <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
+        <datalist id="job-names-list"></datalist>
       </label>
       <label>
         Job Number
-        <input type="text" id="job-number" placeholder="Optional">
+        <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
+        <datalist id="job-numbers-list"></datalist>
       </label>
     </div>
     <!-- Two model dropdowns -->
@@ -414,17 +417,20 @@
   <div class="btn-row">
     <button class="btn btn-primary" id="process-btn" disabled>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polygon points="5 3 19 12 5 21 5 3"/>
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
       </svg>
-      Process Receipts
+      Add to Queue
     </button>
-    <button class="btn hidden" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger)">
+    <button class="btn" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger);display:none">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
         <rect x="4" y="4" width="16" height="16" rx="2"/>
       </svg>
-      Stop
+      Cancel Queue
     </button>
     <span id="status-badge" class="status-badge hidden"></span>
+    <span id="queue-badge" style="font-size:12px;color:var(--muted);display:none">
+      <span id="queue-pending-count">0</span> pending
+    </span>
   </div>
 
   <!-- Progress card -->
@@ -473,7 +479,7 @@
     </div>
   </div>
 
-  <!-- Generate spreadsheet card (shown after processing completes) -->
+  <!-- Generate spreadsheet card (shown when completed results exist) -->
   <div class="card hidden" id="generate-card">
     <div class="card-title">Generate Spreadsheet</div>
     <div class="gen-summary" id="gen-summary"></div>
@@ -485,9 +491,9 @@
         </svg>
         Generate Spreadsheet
       </button>
-      <button class="btn btn-primary" id="reset-btn"
+      <button class="btn" id="reset-btn"
               style="background:var(--surface);border:1px solid var(--border)">
-        Process Another Batch
+        New Batch
       </button>
     </div>
     <div class="hidden" id="download-row" style="margin-top:14px">
@@ -545,9 +551,9 @@
       <div class="btn-row" style="flex:1;justify-content:flex-end">
         <button class="btn btn-primary hidden" id="process-intake-btn" style="gap:6px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="5 3 19 12 5 21 5 3"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
           </svg>
-          Process Intake Folder
+          Queue Intake Files
         </button>
         <button class="btn btn-amber hidden" id="send-email-btn">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -607,32 +613,31 @@
 
 <script>
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const dropZone        = document.getElementById('drop-zone');
-const fileInput       = document.getElementById('file-input');
-const fileList        = document.getElementById('file-list');
-const processBtn      = document.getElementById('process-btn');
-const stopBtn         = document.getElementById('stop-btn');
-const statusBadge     = document.getElementById('status-badge');
-const progressCard    = document.getElementById('progress-card');
-const progressBar     = document.getElementById('progress-bar');
-const progressLbl     = document.getElementById('progress-label');
-const currentFile     = document.getElementById('current-file');
-const logEl           = document.getElementById('log');
-const kanbanCard      = document.getElementById('kanban-card');
-const generateCard    = document.getElementById('generate-card');
-const generateBtn     = document.getElementById('generate-btn');
-const genSummary      = document.getElementById('gen-summary');
-const downloadRow     = document.getElementById('download-row');
-const downloadBtn     = document.getElementById('download-btn');
-const resetBtn        = document.getElementById('reset-btn');
-const uploadCard      = document.getElementById('upload-card');
-const configCard      = document.getElementById('config-card');
-const distillSelect   = document.getElementById('distill-model-select');
-const ocrSelect       = document.getElementById('ocr-model-select');
+const dropZone     = document.getElementById('drop-zone');
+const fileInput    = document.getElementById('file-input');
+const fileList     = document.getElementById('file-list');
+const processBtn   = document.getElementById('process-btn');
+const stopBtn      = document.getElementById('stop-btn');
+const statusBadge  = document.getElementById('status-badge');
+const progressCard = document.getElementById('progress-card');
+const progressBar  = document.getElementById('progress-bar');
+const progressLbl  = document.getElementById('progress-label');
+const currentFile  = document.getElementById('current-file');
+const logEl        = document.getElementById('log');
+const kanbanCard   = document.getElementById('kanban-card');
+const generateCard = document.getElementById('generate-card');
+const generateBtn  = document.getElementById('generate-btn');
+const genSummary   = document.getElementById('gen-summary');
+const downloadRow  = document.getElementById('download-row');
+const downloadBtn  = document.getElementById('download-btn');
+const resetBtn     = document.getElementById('reset-btn');
+const uploadCard   = document.getElementById('upload-card');
+const configCard   = document.getElementById('config-card');
+const distillSelect = document.getElementById('distill-model-select');
+const ocrSelect    = document.getElementById('ocr-model-select');
 
 let selectedFiles  = [];
-let currentJobId   = null;
-let totalReceipts  = 0;
+let completedCount = 0;
 let folderPaths    = {};
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -656,9 +661,13 @@ dropZone.addEventListener('drop', e => {
 fileInput.addEventListener('change', () => addFiles([...fileInput.files]));
 
 function addFiles(newFiles) {
-  const imgs = newFiles.filter(f => f.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|bmp|webp|tiff?)$/i.test(f.name));
+  const valid = newFiles.filter(f =>
+    f.type.startsWith('image/') ||
+    f.type === 'application/pdf' ||
+    /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|pdf)$/i.test(f.name)
+  );
   const existing = new Set(selectedFiles.map(f => f.name + f.size));
-  imgs.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
+  valid.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
   renderFileList();
 }
 
@@ -678,11 +687,10 @@ function renderFileList() {
 window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 
 // ── Kanban state ──────────────────────────────────────────────────────────────
-// Map: filename → {status, data}
 const receiptCards = {};
 
 function getCardEl(filename) {
-  return document.getElementById('kcard-' + filename);
+  return document.getElementById('kcard-' + CSS.escape(filename));
 }
 
 function setCounts() {
@@ -699,7 +707,6 @@ function catBadge(cat) {
 
 function shortModelName(model) {
   if (!model) return '';
-  // Return last path segment (after last /)
   const parts = model.split('/');
   return parts[parts.length - 1] || model;
 }
@@ -711,29 +718,21 @@ function makeCard(filename, status, data, model) {
   if (data && data.date) div.dataset.date = data.date;
 
   let inner = `<div class="k-filename">${esc(filename)}</div>`;
-
   const spinning = (status === 'ocr' || status === 'distilling');
-  const statusLabel = {
-    queued: 'Queued', ocr: 'OCR', distilling: 'Distilling', done: 'Done', failed: 'Failed'
-  }[status] || status;
+  const statusLabel = { queued:'Queued', ocr:'OCR', distilling:'Distilling', done:'Done', failed:'Failed' }[status] || status;
 
   inner += `<div class="k-status-row">`;
   inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
-  if (model && spinning) {
-    inner += `<span class="k-model-tag" title="${esc(model)}">${esc(shortModelName(model))}</span>`;
-  }
+  if (model && spinning) inner += `<span class="k-model-tag" title="${esc(model)}">${esc(shortModelName(model))}</span>`;
   inner += `</div>`;
 
-  // LLM tag: show which model is working on this card
   if (status === 'ocr') {
-    const sec = document.getElementById('secondary-model-select')?.value;
-    const label = sec ? sec.split('/').pop().substring(0, 24) : 'OCR Model';
+    const label = (document.getElementById('active-model-label')?.textContent || 'OCR Model').split('/').pop().substring(0, 24);
     inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
   } else if (status === 'distilling' || status === 'done' || status === 'failed') {
     const primary = document.getElementById('active-model-label')?.textContent || '';
     if (primary && primary !== 'Loading…' && primary !== 'No model') {
-      const label = primary.split('/').pop().substring(0, 24);
-      inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
+      inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(primary.split('/').pop().substring(0,24))}</div>`;
     }
   }
 
@@ -742,12 +741,8 @@ function makeCard(filename, status, data, model) {
     const amtStr = data.amount != null ? ` &bull; <span class="k-amount">$${parseFloat(data.amount).toFixed(2)}</span>` : '';
     inner += `<div class="k-meta">${esc(data.date || '')}${amtStr}</div>`;
     const summaryText = data.summary || data.ai_summary;
-    if (summaryText) {
-      inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
-    }
-    if (data._flag) {
-      inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
-    }
+    if (summaryText) inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
+    if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
   }
 
   if (status === 'failed') {
@@ -759,81 +754,22 @@ function makeCard(filename, status, data, model) {
 }
 
 function insertCardSorted(col, card) {
-  // Insert oldest (earliest date) at top, newest at bottom
-  // Cards without dates go at bottom
   const newDate = card.dataset.date || 'zzzz';
   const children = Array.from(col.children);
   let insertBefore = null;
   for (const child of children) {
-    const childDate = child.dataset.date || 'zzzz';
-    if (newDate < childDate) {
-      insertBefore = child;
-      break;
-    }
+    if (newDate < (child.dataset.date || 'zzzz')) { insertBefore = child; break; }
   }
-  if (insertBefore) {
-    col.insertBefore(card, insertBefore);
-  } else {
-    col.appendChild(card);
-  }
+  insertBefore ? col.insertBefore(card, insertBefore) : col.appendChild(card);
 }
 
 function moveCard(filename, newStatus, data, model) {
-  const colMap = {
-    queued: 'col-queued', ocr: 'col-processing', distilling: 'col-processing',
-    done: 'col-completed', failed: 'col-failed'
-  };
-
-  // Remove existing card from wherever it is
+  const colMap = { queued:'col-queued', ocr:'col-processing', distilling:'col-processing', done:'col-completed', failed:'col-failed' };
   const existing = getCardEl(filename);
   if (existing) existing.remove();
-
   const newCard = makeCard(filename, newStatus, data, model || '');
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
-
-  if (newStatus === 'done') {
-    insertCardSorted(col, newCard);
-  } else {
-    col.appendChild(newCard);
-  }
-  setCounts();
-}
-
-window.retryReceipt = async function(filename) {
-  if (!currentJobId) return;
-  moveCard(filename, 'distilling', receiptCards[filename]?.data, '');
-  try {
-    const res = await fetch(`/retry-receipt/${currentJobId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }),
-    });
-    const d = await res.json();
-    if (d.ok) {
-      receiptCards[filename] = { status: 'done', data: d.data };
-      moveCard(filename, 'done', d.data, '');
-    } else {
-      receiptCards[filename] = { ...receiptCards[filename], status: 'failed' };
-      moveCard(filename, 'failed', receiptCards[filename]?.data, '');
-      showToast(`Retry failed: ${d.error}`, false);
-    }
-  } catch (err) {
-    moveCard(filename, 'failed', receiptCards[filename]?.data, '');
-    showToast(`Retry error: ${err.message}`, false);
-  }
-};
-
-function initKanban(files) {
-  ['col-queued','col-processing','col-completed','col-failed'].forEach(id => {
-    document.getElementById(id).innerHTML = '';
-  });
-  Object.keys(receiptCards).forEach(k => delete receiptCards[k]);
-
-  files.forEach(f => {
-    receiptCards[f.name] = { status: 'queued', data: null };
-    moveCard(f.name, 'queued', null, '');
-  });
-  kanbanCard.classList.remove('hidden');
+  newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
 }
 
@@ -842,61 +778,102 @@ window.openKanbanFolder = async function(key) {
   const path = folderPaths[key] || folderPaths['output'];
   if (!path) return;
   try {
-    const res = await fetch('/open-folder-path', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    });
+    const res = await fetch('/open-folder-path', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({path}) });
     const d = await res.json();
     showToast(d.docker ? `Folder: ${d.path}` : d.ok ? `Opened: ${d.path}` : `Error: ${d.error}`, d.ok);
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 };
 
-// ── Shared SSE handler ────────────────────────────────────────────────────────
-function attachSSE(es) {
-  es.onmessage = e => {
+// ── Global SSE connection ─────────────────────────────────────────────────────
+let _sse = null;
+
+function connectSSE() {
+  if (_sse) { try { _sse.close(); } catch(_) {} }
+  _sse = new EventSource('/events');
+
+  _sse.onmessage = e => {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'log') {
+
+    if (msg.type === 'full_state') {
+      // Restore kanban from server state on (re)connect
+      const kanban = msg.kanban || {};
+      Object.entries(kanban).forEach(([fname, info]) => {
+        receiptCards[fname] = { status: info.status, data: info.data };
+        moveCard(fname, info.status, info.data || null, info.model || '');
+      });
+      if (Object.keys(kanban).length > 0) {
+        kanbanCard.classList.remove('hidden');
+        progressCard.classList.remove('hidden');
+      }
+      completedCount = msg.completed || 0;
+      _updateQueueBadge(msg.pending || 0);
+      _updateGenerateCard();
+
+    } else if (msg.type === 'kanban_update') {
+      const fname = msg.filename;
+      receiptCards[fname] = { status: msg.status, data: msg.data };
+      moveCard(fname, msg.status, msg.data || null, msg.model || '');
+      kanbanCard.classList.remove('hidden');
+      progressCard.classList.remove('hidden');
+
+    } else if (msg.type === 'batch_done') {
+      completedCount = msg.completed || 0;
+      _updateQueueBadge(msg.pending || 0);
+      _updateGenerateCard();
+      if (completedCount > 0) showToast(`Batch complete — ${completedCount} receipt(s) ready`, true);
+      loadIntakeCount();
+
+    } else if (msg.type === 'log') {
       appendLog(msg.message);
+
     } else if (msg.type === 'progress') {
       const pct = msg.total ? (msg.current / msg.total) * 100 : 0;
       progressBar.style.width = pct + '%';
       progressLbl.textContent = `${msg.current} / ${msg.total}`;
       currentFile.textContent = msg.filename;
-    } else if (msg.type === 'receipt_update') {
-      const fname = msg.filename;
-      receiptCards[fname] = { status: msg.status, data: msg.data };
-      moveCard(fname, msg.status, msg.data || null, msg.model || '');
-    } else if (msg.type === 'done') {
-      es.close();
-      progressBar.style.width = '100%';
-      setStatus('done', 'Complete');
-      showGenerateCard(msg);
-      setProcessing(false);
-      loadIntakeCount();
-    } else if (msg.type === 'error') {
-      es.close();
-      appendLog(`\nERROR: ${msg.message}\n`);
-      setStatus('error', 'Failed');
-      setProcessing(false);
+
+    } else if (msg.type === 'results_cleared') {
+      completedCount = 0;
+      _updateGenerateCard();
+      downloadRow.classList.add('hidden');
+      ['col-completed', 'col-failed'].forEach(id => {
+        document.getElementById(id).innerHTML = '';
+      });
+      Object.keys(receiptCards).forEach(k => {
+        if (['done','failed'].includes(receiptCards[k].status)) delete receiptCards[k];
+      });
+      setCounts();
     }
   };
-  es.onerror = () => { es.close(); setProcessing(false); };
+
+  _sse.onerror = () => {
+    // Reconnect automatically after 3 seconds
+    setTimeout(connectSSE, 3000);
+  };
 }
 
-function startJobSSE(jobId) {
-  currentJobId = jobId;
-  stopBtn.classList.remove('hidden');
-  stopBtn.disabled = false;
-  attachSSE(new EventSource(`/events/${jobId}`));
+function _updateQueueBadge(pending) {
+  const badge = document.getElementById('queue-badge');
+  const count = document.getElementById('queue-pending-count');
+  if (badge && count) {
+    count.textContent = pending;
+    badge.style.display = pending > 0 ? '' : 'none';
+  }
+  if (pending > 0) stopBtn.style.display = '';
 }
 
-// ── Process (upload) ──────────────────────────────────────────────────────────
+function _updateGenerateCard() {
+  if (completedCount > 0) {
+    generateCard.classList.remove('hidden');
+    genSummary.innerHTML = `<span class="gen-stat stat-ok">${completedCount} processed</span>`;
+  }
+}
+
+// ── Add to Queue (file upload) ────────────────────────────────────────────────
 processBtn.addEventListener('click', async () => {
   if (!selectedFiles.length) return;
-  setProcessing(true);
-  totalReceipts = selectedFiles.length;
-  initKanban(selectedFiles);
+  processBtn.disabled = true;
+  processBtn.innerHTML = '<span class="spinner"></span> Queuing…';
 
   const form = new FormData();
   selectedFiles.forEach(f => form.append('files', f, f.name));
@@ -905,21 +882,29 @@ processBtn.addEventListener('click', async () => {
   form.append('job_number', document.getElementById('job-number').value.trim());
 
   try {
-    const res = await fetch('/process', { method: 'POST', body: form });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      throw new Error(d.error || `Server error: ${res.status}`);
-    }
-    const { job_id } = await res.json();
-    startJobSSE(job_id);
+    const res = await fetch('/queue/add', { method: 'POST', body: form });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
+
+    _saveFields();
+    showToast(`${d.queued.length} file(s) added to queue`, true);
+    selectedFiles = [];
+    fileInput.value = '';
+    renderFileList();
+    progressCard.classList.remove('hidden');
+    kanbanCard.classList.remove('hidden');
   } catch (err) {
-    appendLog(`\nERROR: ${err.message}\n`);
-    setStatus('error', 'Upload failed');
-    setProcessing(false);
+    showToast(`Queue error: ${err.message}`, false);
+  } finally {
+    processBtn.disabled = selectedFiles.length === 0;
+    processBtn.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+      </svg> Add to Queue`;
   }
 });
 
-// ── Process intake folder ─────────────────────────────────────────────────────
+// ── Queue intake folder ───────────────────────────────────────────────────────
 const processIntakeBtn = document.getElementById('process-intake-btn');
 
 async function loadIntakeCount() {
@@ -934,107 +919,55 @@ async function loadIntakeCount() {
 }
 
 processIntakeBtn.addEventListener('click', async () => {
-  let files;
-  try {
-    const r = await fetch('/intake/files');
-    const d = await r.json();
-    files = (d.files || []).map(name => ({ name }));
-  } catch (err) {
-    showToast(`Error scanning intake folder: ${err.message}`, false);
-    return;
-  }
-  if (!files.length) {
-    showToast('No image files found in intake folder', false);
-    return;
-  }
-
-  setProcessing(true);
-  totalReceipts = files.length;
-  initKanban(files);
-
   const form = new FormData();
   form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
   form.append('job_name', document.getElementById('job-name').value.trim());
   form.append('job_number', document.getElementById('job-number').value.trim());
 
+  processIntakeBtn.disabled = true;
   try {
-    const res = await fetch('/process-intake', { method: 'POST', body: form });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      throw new Error(d.error || `Server error: ${res.status}`);
-    }
-    const { job_id } = await res.json();
-    startJobSSE(job_id);
-  } catch (err) {
-    appendLog(`\nERROR: ${err.message}\n`);
-    setStatus('error', 'Failed');
-    setProcessing(false);
-  }
-});
+    const res = await fetch('/queue/add-intake', { method: 'POST', body: form });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
 
-stopBtn.addEventListener('click', async () => {
-  if (!currentJobId) return;
-  stopBtn.disabled = true;
-  await fetch(`/cancel/${currentJobId}`, { method: 'POST' });
-});
-
-function setProcessing(on) {
-  processBtn.disabled = on;
-  processIntakeBtn.disabled = on;
-  if (on) {
-    processBtn.innerHTML = `<span class="spinner"></span> Processing…`;
-  } else {
-    processBtn.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polygon points="5 3 19 12 5 21 5 3"/>
-      </svg> Process Receipts`;
-  }
-  if (!on) stopBtn.classList.add('hidden');
-
-  // Hide upload + config while processing; show again on reset
-  if (on) {
-    uploadCard.classList.add('hidden');
-    configCard.classList.add('hidden');
+    _saveFields();
+    showToast(`${d.queued.length} file(s) queued from intake folder`, true);
     progressCard.classList.remove('hidden');
-    generateCard.classList.add('hidden');
-    downloadRow.classList.add('hidden');
-    logEl.textContent = '';
-    progressBar.style.width = '0%';
-    progressLbl.textContent = '0 / 0';
-    currentFile.textContent = '';
-    setStatus('running', 'Running');
+    kanbanCard.classList.remove('hidden');
+    loadIntakeCount();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    processIntakeBtn.disabled = false;
   }
-}
+});
 
-function setStatus(type, text) {
-  statusBadge.className = `status-badge badge-${type}`;
-  statusBadge.textContent = text;
-  statusBadge.classList.remove('hidden');
-}
-
-function showGenerateCard(msg) {
-  const ok    = msg.processed || 0;
-  const skip  = (msg.skipped || []).length;
-  const period = msg.expense_period || '';
-
-  let html = `<span class="gen-stat stat-ok">${ok} processed</span>`;
-  if (skip) html += `<span class="gen-stat stat-skip">${skip} skipped</span>`;
-  if (period) html += `<span class="gen-stat" style="color:var(--muted)">Period: ${esc(period)}</span>`;
-  genSummary.innerHTML = html;
-  generateCard.classList.remove('hidden');
-}
+// ── Cancel queue ──────────────────────────────────────────────────────────────
+stopBtn.addEventListener('click', async () => {
+  stopBtn.disabled = true;
+  try {
+    const res = await fetch('/queue/cancel', { method: 'POST' });
+    const d = await res.json();
+    showToast(`Queue cancelled (${d.cleared} item(s) removed)`, false);
+    stopBtn.style.display = 'none';
+    _updateQueueBadge(0);
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    stopBtn.disabled = false;
+  }
+});
 
 // ── Generate spreadsheet ──────────────────────────────────────────────────────
 generateBtn.addEventListener('click', async () => {
-  if (!currentJobId) return;
   generateBtn.disabled = true;
   generateBtn.innerHTML = '<span class="spinner"></span> Generating…';
 
   try {
-    const res = await fetch(`/generate-spreadsheet/${currentJobId}`, { method: 'POST' });
+    const res = await fetch('/generate-spreadsheet', { method: 'POST' });
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(err);
+      const txt = await res.text();
+      throw new Error(txt || `Server error: ${res.status}`);
     }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
@@ -1042,7 +975,6 @@ generateBtn.addEventListener('click', async () => {
     downloadBtn.download = 'Reimbursements.xlsx';
     downloadRow.classList.remove('hidden');
     showToast('Spreadsheet ready — click Download', true);
-    currentJobId = null;
   } catch (err) {
     showToast(`Generation failed: ${err.message}`, false);
   } finally {
@@ -1055,30 +987,33 @@ generateBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Reset ─────────────────────────────────────────────────────────────────────
-resetBtn.addEventListener('click', () => {
-  selectedFiles = [];
-  currentJobId  = null;
-  totalReceipts = 0;
-  fileInput.value = '';
-  errorLines = [];
-  document.getElementById('error-card').classList.add('hidden');
-  document.getElementById('error-log').textContent = '';
-  renderFileList();
-  uploadCard.classList.remove('hidden');
-  configCard.classList.remove('hidden');
-  progressCard.classList.add('hidden');
-  kanbanCard.classList.add('hidden');
-  generateCard.classList.add('hidden');
+// ── New Batch (clear completed results) ───────────────────────────────────────
+resetBtn.addEventListener('click', async () => {
+  await fetch('/results/clear', { method: 'POST' });
   downloadRow.classList.add('hidden');
-  statusBadge.classList.add('hidden');
-  stopBtn.classList.add('hidden');
-  processBtn.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <polygon points="5 3 19 12 5 21 5 3"/>
-    </svg> Process Receipts`;
-  processBtn.disabled = true;
+  // SSE results_cleared event handles kanban cleanup
 });
+
+// ── Retry ─────────────────────────────────────────────────────────────────────
+window.retryReceipt = async function(filename) {
+  moveCard(filename, 'distilling', receiptCards[filename]?.data, '');
+  try {
+    const res = await fetch('/retry-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      moveCard(filename, 'failed', receiptCards[filename]?.data, '');
+      showToast(`Retry failed: ${d.error || res.status}`, false);
+    }
+    // SSE kanban_update event handles the success / failure state update
+  } catch (err) {
+    moveCard(filename, 'failed', receiptCards[filename]?.data, '');
+    showToast(`Retry error: ${err.message}`, false);
+  }
+};
 
 // ── Log helpers ───────────────────────────────────────────────────────────────
 let errorLines = [];
@@ -1102,7 +1037,7 @@ function renderErrorPanel() {
   errorCard.classList.remove('hidden');
   errorCountBadge.textContent = errorLines.length;
   errorLogEl.textContent = errorLines.join('\n');
-  errorLogEl.scrollTop   = errorLogEl.scrollHeight;
+  errorLogEl.scrollTop = errorLogEl.scrollHeight;
 }
 
 document.getElementById('error-toggle').addEventListener('click', () => {
@@ -1110,6 +1045,38 @@ document.getElementById('error-toggle').addEventListener('click', () => {
   errorLogEl.style.display = errorPanelOpen ? '' : 'none';
   document.getElementById('error-chevron').style.transform = errorPanelOpen ? '' : 'rotate(-90deg)';
 });
+
+// ── Saved fields (persistent employee / job name / job number) ────────────────
+async function loadSavedFields() {
+  try {
+    const res = await fetch('/saved-fields');
+    if (!res.ok) return;
+    const d = await res.json();
+    _populateDL('employees-list',   d.employees   || []);
+    _populateDL('job-names-list',   d.job_names   || []);
+    _populateDL('job-numbers-list', d.job_numbers || []);
+  } catch (_) {}
+}
+
+function _populateDL(id, values) {
+  const dl = document.getElementById(id);
+  if (!dl) return;
+  dl.innerHTML = values.map(v => `<option value="${esc(v)}">`).join('');
+}
+
+async function _saveFields() {
+  const employee   = document.getElementById('employee').value.trim();
+  const job_name   = document.getElementById('job-name').value.trim();
+  const job_number = document.getElementById('job-number').value.trim();
+  try {
+    await fetch('/saved-fields', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ employee, job_name, job_number }),
+    });
+    loadSavedFields();
+  } catch (_) {}
+}
 
 // ── Model selectors ───────────────────────────────────────────────────────────
 async function loadModels() {
@@ -1120,13 +1087,11 @@ async function loadModels() {
     const activeOcr     = data.active_ocr     || '';
 
     document.getElementById('active-model-label').textContent = activeDistill || 'No model';
-    document.getElementById('gemma-status-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('ocr-model-dot').style.background = activeOcr ? 'var(--success)' : 'var(--border)';
+    document.getElementById('gemma-status-dot').style.background    = activeDistill ? 'var(--success)' : 'var(--border)';
+    document.getElementById('distill-model-dot').style.background   = activeDistill ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background       = activeOcr     ? 'var(--success)' : 'var(--border)';
 
     const models = data.models || [];
-
-    // Populate distillation dropdown
     const prevDistill = distillSelect.value;
     distillSelect.innerHTML = '';
     if (models.length === 0) {
@@ -1141,7 +1106,6 @@ async function loadModels() {
       if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
 
-    // Populate OCR dropdown (with "(none)" first)
     const prevOcr = ocrSelect.value;
     ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
     models.forEach(id => {
@@ -1151,8 +1115,6 @@ async function loadModels() {
       ocrSelect.appendChild(opt);
     });
     if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
-
-
   } catch (_) {
     distillSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
   }
@@ -1163,35 +1125,25 @@ distillSelect.addEventListener('change', async () => {
   if (!chosen) return;
   document.getElementById('distill-model-dot').style.background = 'var(--warning)';
   try {
-    const res  = await fetch('/models/distill', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: chosen }),
-    });
+    const res  = await fetch('/models/distill', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
     const data = await res.json();
     if (data.ok) {
       document.getElementById('active-model-label').textContent = chosen;
       document.getElementById('distill-model-dot').style.background = 'var(--success)';
-      document.getElementById('gemma-status-dot').style.background = 'var(--success)';
+      document.getElementById('gemma-status-dot').style.background  = 'var(--success)';
       showToast(`Distillation model: ${chosen}`, true);
     } else {
       showToast(`Could not load model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
     }
-  } catch (err) {
-    showToast(`Error: ${err.message}`, false);
-  }
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
 ocrSelect.addEventListener('change', async () => {
   const chosen = ocrSelect.value;
   document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--warning)' : 'var(--border)';
   try {
-    const res  = await fetch('/models/ocr', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: chosen }),
-    });
+    const res  = await fetch('/models/ocr', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
     const data = await res.json();
     if (data.ok) {
       document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
@@ -1200,9 +1152,7 @@ ocrSelect.addEventListener('change', async () => {
       showToast(`Could not load OCR model: ${data.error}`, false);
       document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
-  } catch (err) {
-    showToast(`Error: ${err.message}`, false);
-  }
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
 document.getElementById('refresh-models-btn').addEventListener('click', loadModels);
@@ -1258,10 +1208,7 @@ async function loadLMStudioModels() {
     const strip = document.getElementById('model-strip');
     if (data.ok && data.loaded.length > 0) {
       strip.innerHTML = data.loaded.map(id =>
-        `<div class="model-row">
-          <div class="model-dot loaded"></div>
-          <span class="model-name">${esc(id)}</span>
-        </div>`
+        `<div class="model-row"><div class="model-dot loaded"></div><span class="model-name">${esc(id)}</span></div>`
       ).join('');
     } else if (data.ok) {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
@@ -1355,12 +1302,13 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+connectSSE();
 loadWatchStatus();
 loadIntakeCount();
 loadLMStudioModels();
 loadModels();
 loadSettings();
-loadSettings();
+loadSavedFields();
 </script>
 </body>
 </html>
