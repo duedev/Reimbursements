@@ -288,7 +288,7 @@ def process_receipts_batch(
                 "output_path": None, "expense_period": ""}
 
     log(f"Found {total} receipt image(s).")
-    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="")
+    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
 
     # ── 2. Extract, classify, rename ──────────────────────────────────────────
     results: list[dict] = []
