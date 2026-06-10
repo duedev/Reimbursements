@@ -6,26 +6,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./intake:/data/intake
-      - ./output:/data/output
+      - ${INTAKE_PATH:-./intake}:/data/intake
+      - ${OUTPUT_PATH:-./output}:/data/output
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
-      # Intake folder — drop receipts here for batch processing
       - RECEIPTS_FOLDER=/data/intake
       - OUTPUT_FOLDER=/data/output
-      # Watch inbox points at the same intake folder so the UI shows correctly
       - WATCH_INBOX=/data/intake
-      # Host-side paths for "Open Folder" buttons — set these to the absolute
-      # host paths that map to the Docker volumes, e.g.:
-      #   HOST_OUTPUT_PATH=/Users/yourname/projects/Reimbursements/output
-      #   HOST_INTAKE_PATH=/Users/yourname/projects/Reimbursements/intake
-      - HOST_OUTPUT_PATH=
-      - HOST_INTAKE_PATH=
+      - HOST_INTAKE_PATH=${INTAKE_PATH:-${PWD}/intake}
+      - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - MAX_PARALLEL_REQUESTS=4
-      - GEMMA_SMALL_MODEL_ID=google/gemma-4-12b-qat
-      - GEMMA_LARGE_MODEL_ID=google/gemma-4-26b-a4b-qat
-      # Optional: force a specific model on startup (overrides small/large default)
-      # - GEMMA_MODEL_ID=google/gemma-4-26b-a4b-qat
 
   receipt-watcher:
     build: .
@@ -34,11 +24,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # Intake/ → Processing/ → Failed/Retry/ → Output/Completed/
-      - ./intake:/data/watch_inbox
+      - ${INTAKE_PATH:-./intake}:/data/watch_inbox
       - ./processing:/data/processing
       - ./failed:/data/failed
-      - ./output:/data/output
+      - ${OUTPUT_PATH:-./output}:/data/output
       - ./watch_state:/data/watch_state
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
@@ -46,12 +35,10 @@ services:
       - WATCH_STAGED=/data/processing
       - WATCH_STATE=/data/watch_state
       - OUTPUT_FOLDER=/data/output
-      - HOST_OUTPUT_PATH=
+      - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - WATCH_INTERVAL=60
       - WATCH_EMPLOYEE_NAME=Duane Hamilton
       - MAX_PARALLEL_REQUESTS=4
-      - GEMMA_SMALL_MODEL_ID=google/gemma-4-12b-qat
-      - GEMMA_LARGE_MODEL_ID=google/gemma-4-26b-a4b-qat
       # Email settings — fill in to enable "Send Report Now"
       - SMTP_HOST=
       - SMTP_PORT=587

@@ -554,6 +554,34 @@
     </div>
   </div>
 
+  <!-- Settings -->
+  <details class="card" id="settings-card" style="padding:0">
+    <summary style="padding:20px 24px;cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between">
+      <span class="card-title" style="margin:0">Settings</span>
+      <span style="font-size:12px;color:var(--muted)">Host folder paths</span>
+    </summary>
+    <div style="padding:0 24px 24px">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">
+        Enter the host machine paths that correspond to the intake and output folders inside Docker.
+        Used for folder shortcut buttons and clipboard copy.
+      </p>
+      <div class="fields" style="grid-template-columns:1fr 1fr">
+        <label>
+          Intake folder
+          <input type="text" id="setting-intake-path" placeholder="/Users/yourname/Desktop/receipts">
+        </label>
+        <label>
+          Output folder
+          <input type="text" id="setting-output-path" placeholder="/Users/yourname/Documents/output">
+        </label>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:12px;align-items:center">
+        <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
+        <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
+      </div>
+    </div>
+  </details>
+
   <!-- Error log -->
   <div class="card hidden" id="error-card" style="border-color:rgba(239,68,68,0.4)">
     <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
@@ -1220,10 +1248,52 @@ document.getElementById('send-email-btn').addEventListener('click', async () => 
   finally { btn.disabled = false; btn.textContent = 'Send Report Now'; }
 });
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const res = await fetch('/settings');
+    if (!res.ok) return;
+    const d = await res.json();
+    document.getElementById('setting-intake-path').value = d.host_intake_path || '';
+    document.getElementById('setting-output-path').value = d.host_output_path || '';
+  } catch (_) {}
+}
+
+document.getElementById('save-settings-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('save-settings-btn');
+  const msg = document.getElementById('settings-saved-msg');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host_intake_path: document.getElementById('setting-intake-path').value.trim(),
+        host_output_path: document.getElementById('setting-output-path').value.trim(),
+      }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = 'Saved ✓';
+      msg.style.color = 'var(--success)';
+      msg.style.opacity = '1';
+      setTimeout(() => { msg.style.opacity = '0'; }, 2500);
+      loadWatchStatus();
+    } else {
+      showToast(`Settings error: ${d.error}`, false);
+    }
+  } catch (err) {
+    showToast(`Settings error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadWatchStatus();
 loadLMStudioModels();
 loadModels();
+loadSettings();
 </script>
 </body>
 </html>
