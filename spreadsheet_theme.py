@@ -439,7 +439,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
                     orig_w, orig_h = pil_img.size
                     if getattr(pil_img, "format", None) == "MPO":
                         buf = BytesIO()
-                        pil_img.convert("RGB").save(buf, "JPEG", quality=92)
+                        pil_img.convert("RGB").save(buf, "JPEG", quality=85, optimize=True)
                         buf.seek(0)
                         img_source = buf
                     else:

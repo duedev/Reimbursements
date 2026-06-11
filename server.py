@@ -38,6 +38,7 @@ from process_receipts import (
     classify_category,
     sort_key_for_receipt,
     rename_receipt_image,
+    autocrop_image_file,
     _detect_duplicates,
     generate_spreadsheet,
     list_available_models,
@@ -345,6 +346,7 @@ def _run_worker() -> None:
                 data["_confidence"] = conf
 
                 IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                autocrop_image_file(path)
                 final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
                 data["_new_filename"] = final_path.name
                 data["_file"]         = fname

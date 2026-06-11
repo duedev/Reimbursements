@@ -35,7 +35,7 @@ except ImportError:
     HAS_PYMUPDF = False
 
 from openai import OpenAI
-from PIL import Image
+from PIL import Image, ImageChops
 
 from spreadsheet_theme import build_themed_workbook
 
@@ -250,18 +250,87 @@ def initialize_models() -> str:
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
 
+AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
+AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
+AUTOCROP_MAX_RATIO = 0.95   # skip crop that trims almost nothing
+AUTOCROP_MARGIN    = 0.02   # safety margin re-added around the detected bbox
+_AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as content
+
+
+def autocrop_receipt(img: Image.Image) -> Image.Image:
+    """Trim uniform background borders around a receipt photo.
+
+    Conservative by design: returns the original image unchanged whenever the
+    detected crop is suspiciously aggressive (<40% of the area kept), trims
+    almost nothing, or detection fails for any reason.
+    """
+    if not AUTOCROP_ENABLED:
+        return img
+    try:
+        gray = img.convert("L")
+        w, h = gray.size
+        if w < 64 or h < 64:
+            return img
+        # Background estimated from the median of the four 8x8 corner patches
+        samples = []
+        for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
+                    (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
+            samples.extend(gray.crop(box).tobytes())
+        samples.sort()
+        bg = samples[len(samples) // 2]
+
+        diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
+        mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
+        bbox = mask.getbbox()
+        if not bbox:
+            return img
+
+        mx = int(w * AUTOCROP_MARGIN)
+        my = int(h * AUTOCROP_MARGIN)
+        left   = max(0, bbox[0] - mx)
+        top    = max(0, bbox[1] - my)
+        right  = min(w, bbox[2] + mx)
+        bottom = min(h, bbox[3] + my)
+
+        kept = ((right - left) * (bottom - top)) / float(w * h)
+        if kept < AUTOCROP_MIN_RATIO or kept > AUTOCROP_MAX_RATIO:
+            return img
+        return img.crop((left, top, right, bottom))
+    except Exception:
+        return img
+
+
+def autocrop_image_file(path: Path) -> bool:
+    """Auto-crop a stored receipt image in place. Returns True if cropped."""
+    try:
+        with Image.open(path) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            img = raw.convert("RGB")
+            cropped = autocrop_receipt(img)
+            if cropped.size == img.size:
+                return False
+            if path.suffix.lower() in (".jpg", ".jpeg"):
+                cropped.save(path, format="JPEG", quality=85, optimize=True)
+            else:
+                cropped.save(path)
+        return True
+    except Exception:
+        return False
+
+
 def encode_image(path: Path) -> tuple[str, str]:
     raw = Image.open(path)
     if getattr(raw, "format", None) == "MPO":
         raw.seek(0)
-    img = raw.convert("RGB")
+    img = autocrop_receipt(raw.convert("RGB"))
     if max(img.size) > IMAGE_MAX_PX:
         ratio = IMAGE_MAX_PX / max(img.size)
         img = img.resize(
             (int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS,
         )
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=92)
+    img.save(buf, format="JPEG", quality=85, optimize=True)
     return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
 
@@ -947,6 +1016,7 @@ def process_receipts_batch(
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 
+        autocrop_image_file(img_path)
         if use_folder_structure:
             dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)
