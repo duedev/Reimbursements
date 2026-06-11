@@ -169,22 +169,17 @@ def _write_col_headers(ws, row: int, headers: list[str]):
 
 
 def _write_data_row(ws, row: int, receipt_no: int, data: dict,
-                    category: str, fill_color: str,
-                    hyperlink_target: Optional[str] = None):
+                    category: str, fill_color: str):
+    """Write one receipt data row.  Returns cell_a so the caller can attach a hyperlink."""
     row_fill   = _fill(fill_color)
     row_font   = _font(size=11)
-    # Use a medium bottom border to visually separate receipts
     row_border = _receipt_sep_border()
 
     _flood(ws, row, row_fill, row_font, row_border)
 
-    # A — # (receipt number, hyperlinked to image tab)
+    # A — # (receipt number; hyperlink added by caller after image sheets are built)
     cell_a = ws.cell(row=row, column=COL_RECEIPT_NO, value=receipt_no)
-    if hyperlink_target:
-        cell_a.hyperlink = hyperlink_target
-        cell_a.font = _font(bold=True, size=11, color="2563EB")
-    else:
-        cell_a.font = _font(bold=True, size=11)
+    cell_a.font      = _font(bold=True, size=11)
     cell_a.alignment = _align(h="center")
 
     # B — Date
@@ -243,6 +238,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     cell_h.border    = _receipt_sep_border()
 
     ws.row_dimensions[row].height = 30
+    return cell_a
 
 
 def _write_subtotal(ws, row: int, first_data: int, last_data: int):
@@ -307,6 +303,25 @@ def _autosize_columns(ws, min_width: float = 4.0, max_width: float = 55.0) -> No
         ws.column_dimensions[letter].width = min(max(width, min_width), max_width)
 
 
+# ── Summary row pre-calculator ────────────────────────────────────────────────
+
+def _calc_section_data_rows(sections: dict, start_row: int = 5) -> dict[str, list[int]]:
+    """Return the Summary row number for each receipt in each category.
+    Pure arithmetic — does not touch any worksheet."""
+    row    = start_row
+    result: dict[str, list[int]] = {}
+    for cat in ("fuel", "mats", "misc"):
+        row += 1  # section banner
+        row += 1  # column headers
+        rows: list[int] = []
+        for _ in sections.get(cat, []):
+            rows.append(row)
+            row += 1
+        result[cat] = rows
+        row += 1  # subtotal
+    return result
+
+
 # ── Image sheet builder ────────────────────────────────────────────────────────
 
 _IMG_ROW_HEIGHT_PT = 14
@@ -316,7 +331,8 @@ _IMG_ROWS          = 27
 
 
 def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
-                       category: str = "misc") -> list[str]:
+                       category: str = "misc",
+                       summary_data_rows: Optional[list[int]] = None) -> list[str]:
     """Add a sheet with embedded receipt images.  8-column layout mirrors Summary.
     Returns anchor cell refs (e.g. ["A3", "A35"]) for hyperlinks from the Summary sheet."""
     ws = wb.create_sheet(title=sheet_name)
@@ -357,14 +373,10 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
 
     for i, data in enumerate(receipts):
         img_path_str = data.get("_image_path", "")
-        raw_date     = data.get("date") or ""
-        vendor       = data.get("vendor") or ""
-        amount       = data.get("amount") or 0
-        job_name     = data.get("job_name") or ""
-        job_number   = data.get("job_number") or ""
-        ai_summary   = (data.get("ai_summary") or "").strip()
-        flag_text    = data.get("_flag") or ""
         filename     = data.get("_new_filename") or data.get("_file") or ""
+
+        # Summary row reference (None if pre-calc wasn't provided)
+        sr = summary_data_rows[i] if summary_data_rows and i < len(summary_data_rows) else None
 
         anchors.append(f"A{current_row}")
 
@@ -372,42 +384,43 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
         row_border = _receipt_sep_border()
         _flood(ws, current_row, row_fill, _font(size=10), row_border)
 
-        # A — #
+        # A — # (always literal; the Summary link comes from the hyperlink on the # cell)
         cell_a = ws.cell(row=current_row, column=1, value=i + 1)
         cell_a.font      = _font(bold=True, size=10)
         cell_a.alignment = _align(h="center")
 
-        # B — Date
-        cell_b = ws.cell(row=current_row, column=2, value=raw_date)
+        # B–H: formula refs to Summary if row is known, else fallback to literal value
+        def _fml(col: str, fallback):
+            if sr:
+                return f"=Summary!{col}{sr}"
+            return fallback
+
+        cell_b = ws.cell(row=current_row, column=2, value=_fml("B", data.get("date") or ""))
         cell_b.alignment = _align(h="center")
 
-        # C — Store
-        cell_c = ws.cell(row=current_row, column=3, value=vendor)
+        cell_c = ws.cell(row=current_row, column=3, value=_fml("C", data.get("vendor") or ""))
         cell_c.alignment = _align(h="center", wrap=True)
 
-        # D — Job Name
-        cell_d = ws.cell(row=current_row, column=4, value=job_name)
+        cell_d = ws.cell(row=current_row, column=4, value=_fml("D", data.get("job_name") or ""))
         cell_d.alignment = _align(h="center", wrap=True)
 
-        # E — Job Number
-        cell_e = ws.cell(row=current_row, column=5, value=job_number)
+        cell_e = ws.cell(row=current_row, column=5, value=_fml("E", data.get("job_number") or ""))
         cell_e.alignment = _align(h="center")
 
-        # F — Amount
-        cell_f = ws.cell(row=current_row, column=6)
-        if amount:
-            cell_f.value = float(amount)
-            cell_f.number_format = ACCT_FORMAT
+        cell_f = ws.cell(row=current_row, column=6, value=_fml("F", data.get("amount") or ""))
+        if not sr and data.get("amount"):
+            cell_f.value = float(data["amount"])
+        cell_f.number_format = ACCT_FORMAT
         cell_f.alignment = _align(h="right")
 
-        # G — Summary
-        cell_g = ws.cell(row=current_row, column=7, value=ai_summary or None)
+        cell_g = ws.cell(row=current_row, column=7,
+                         value=_fml("G", (data.get("ai_summary") or "").strip() or None))
         cell_g.font      = _font(size=9, color="4B5563")
         cell_g.alignment = _align(h="center", wrap=True)
 
-        # H — Notes / Flag
-        cell_h = ws.cell(row=current_row, column=8, value=flag_text or None)
-        if flag_text:
+        cell_h = ws.cell(row=current_row, column=8, value=_fml("H", data.get("_flag") or None))
+        flag_text = data.get("_flag") or ""
+        if flag_text and not sr:
             cell_h.fill = _fill(COLOR_FLAG_BG)
             cell_h.font = _font(size=9, color="991B1B")
         cell_h.alignment = _align(h="left", wrap=True)
@@ -496,81 +509,58 @@ def build_themed_workbook(
     ws = wb.active
     ws.title = "Summary"
 
-    # ── Build image sheets FIRST to get anchor cells for hyperlinks ───────────
-    IMAGE_SHEET_DEFS = [
-        ("fuel",  "Fuel"),
-        ("mats",  "Materials"),
-        ("misc",  "Miscellaneous"),
-    ]
-    image_links: dict[tuple, str] = {}
-    for cat, sheet_name in IMAGE_SHEET_DEFS:
-        receipts  = sections.get(cat, [])
-        anchors   = _build_image_sheet(wb, sheet_name, receipts, category=cat)
-        safe_name = sheet_name.replace("'", "''")
-        for i, cell_ref in enumerate(anchors):
-            image_links[(cat, i)] = f"#'{safe_name}'!{cell_ref}"
+    # ── Pass 1: Calculate which Summary row each receipt lands on ─────────────
+    summary_row_map = _calc_section_data_rows(sections, start_row=5)
 
-    # ── Fill in Summary sheet ─────────────────────────────────────────────────
-    # Rows 1-4: form header (no row 5 spacer)
+    # ── Pass 2: Write Summary sheet ───────────────────────────────────────────
     _write_title(ws, 1)
     _write_meta_field(ws, 2, "Employee:", employee_name)
     _write_meta_field(ws, 3, "Expense Period:", expense_period)
     _write_note_row(ws, 4, "**Due Thursday by 12 p.m.**")
 
-    current_row = 5  # sections start immediately at row 5
-
+    current_row = 5
     subtotal_rows: dict[str, int] = {}
+    # Store cell_a for each receipt so we can add hyperlinks after image sheets are built
+    summary_link_cells: dict[tuple, object] = {}
 
     SECTION_DEFS = [
-        (
-            "fuel",
-            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
-            "Fuel",
-        ),
-        (
-            "mats",
-            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
-            "Materials",
-        ),
-        (
-            "misc",
-            ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"],
-            "Miscellaneous",
-        ),
+        ("fuel", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Fuel"),
+        ("mats", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Materials"),
+        ("misc", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Miscellaneous"),
     ]
 
     for category, col_headers, label in SECTION_DEFS:
         receipts = sections.get(category, [])
-
         _write_section_banner(ws, current_row, label)
         current_row += 1
-
         _write_col_headers(ws, current_row, col_headers)
         current_row += 1
-
         first_data_row = current_row
-
         for i, data in enumerate(receipts):
             fill_color = COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT
-            _write_data_row(
-                ws, current_row, i + 1, data, category, fill_color,
-                hyperlink_target=image_links.get((category, i)),
-            )
+            cell_a = _write_data_row(ws, current_row, i + 1, data, category, fill_color)
+            summary_link_cells[(category, i)] = cell_a
             current_row += 1
-
         last_data_row = current_row - 1
         _write_subtotal(ws, current_row, first_data_row, last_data_row)
         subtotal_rows[category] = current_row
         current_row += 1
 
-    # ── Grand total row ───────────────────────────────────────────────────────
-    _write_total(
-        ws, current_row,
-        subtotal_rows["fuel"],
-        subtotal_rows["mats"],
-        subtotal_rows["misc"],
-    )
-
+    _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"], subtotal_rows["misc"])
     _autosize_columns(ws)
+
+    # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
+    IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]
+    for cat, sheet_name in IMAGE_SHEET_DEFS:
+        receipts        = sections.get(cat, [])
+        cat_sr          = summary_row_map.get(cat, [])
+        anchors         = _build_image_sheet(wb, sheet_name, receipts, cat, cat_sr)
+        safe_name       = sheet_name.replace("'", "''")
+        for i, anchor in enumerate(anchors):
+            cell_a = summary_link_cells.get((cat, i))
+            if cell_a and anchor:
+                # Internal hyperlink — no leading #, just 'SheetName'!CellRef
+                cell_a.hyperlink = f"'{safe_name}'!{anchor}"
+                cell_a.font = _font(bold=True, size=11, color="2563EB")
 
     return wb

@@ -62,9 +62,22 @@ _active_distill_model: str = GEMMA_MODEL_ID
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
     "marathon", "speedway", "sunoco", "citgo", "texaco", "pilot", "loves",
-    "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
-    "gas station", "fuel station", "petro",
+    "love's", "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
+    "gas station", "fuel station", "petro", "petroleum", "flying j",
+    "bucees", "buc-ee", "racetrac", "racetrack", "cenex", "sinclair",
+    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill", "sunoco",
+    "kum & go", "sheetz", "thorntons", "mapco", "gulf", "hess",
+    "conoco", "phillips 66", "pdq", "getgo", "flash foods", "moto mart",
+    "pantry", "road ranger", "git n go", "corner store",
 }
+
+FUEL_KEYWORDS = {
+    "gas", "gasoline", "diesel", "petrol", "fuel", "pump", "gallon",
+    "gallons", "unleaded", "regular", "premium", "e85", "fill-up",
+    "fill up", "fueling", "service station", "gas pump", "octane",
+    "auto fuel", "motor fuel",
+}
+
 MATS_VENDORS = {
     "home depot", "lowes", "lowe's", "menards", "ace hardware", "true value",
     "harbor freight", "fastenal", "grainger", "blueprint", "print shop",
@@ -474,17 +487,30 @@ def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
 # ── Category classification ────────────────────────────────────────────────────
 
 def classify_category(data: dict) -> str:
-    cat = (data.get("category") or "misc").lower().strip()
-    if cat == "materials":
-        return "mats"
-    if cat in ("fuel", "mats", "misc"):
-        return cat
-    vendor = (data.get("vendor") or "").lower()
-    if any(kw in vendor for kw in FUEL_VENDORS):
+    model_cat = (data.get("category") or "misc").lower().strip()
+    if model_cat == "materials":
+        model_cat = "mats"
+    if model_cat not in ("fuel", "mats", "misc"):
+        model_cat = "misc"
+
+    vendor   = (data.get("vendor") or "").lower()
+    summary  = (data.get("ai_summary") or data.get("summary") or "").lower()
+    expense  = (data.get("expense_description") or "").lower()
+    combined = f"{vendor} {summary} {expense}"
+
+    # Fuel: vendor-name match is a strong signal (score +3), keyword in any field (+1)
+    fuel_score = sum(3 for kw in FUEL_VENDORS if kw in vendor)
+    fuel_score += sum(1 for kw in FUEL_KEYWORDS if kw in combined)
+
+    if fuel_score >= 3:
         return "fuel"
+    if model_cat == "fuel" and fuel_score >= 1:
+        return "fuel"
+
     if any(kw in vendor for kw in MATS_VENDORS):
         return "mats"
-    return "misc"
+
+    return model_cat
 
 
 # ── Duplicate detection ────────────────────────────────────────────────────────

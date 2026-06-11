@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import os
 import shutil
@@ -625,6 +626,28 @@ async def events_global():
 
 # ── Intake listing ─────────────────────────────────────────────────────────────
 
+@app.get("/receipt-image")
+async def get_receipt_image(filename: str = ""):
+    """Serve a receipt image by filename for UI previews (searches output/receipts dirs)."""
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        return JSONResponse({"error": "invalid"}, status_code=400)
+    ext_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif",  ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+    search: list[Path] = [IMAGES_FOLDER, INTAKE_FOLDER]
+    try:
+        search += [d for d in IMAGES_FOLDER.iterdir() if d.is_dir()]
+    except Exception:
+        pass
+    for folder in search:
+        p = folder / filename
+        if p.exists() and p.is_file():
+            mt = ext_map.get(p.suffix.lower(), "image/jpeg")
+            return FileResponse(str(p), media_type=mt)
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @app.get("/intake/files")
 async def list_intake_files():
     """List image/PDF files currently in the intake folder."""
@@ -661,12 +684,17 @@ async def check_duplicates():
         if not vendor or not amt:
             continue
         key = (vendor, dt, amt)
+        img_file = r.get("_new_filename") or r.get("_file") or ""
         groups.setdefault(key, []).append({
-            "index":    i,
-            "filename": r.get("_file") or r.get("_new_filename", ""),
-            "vendor":   r.get("vendor", ""),
-            "date":     dt,
-            "amount":   amt,
+            "index":      i,
+            "filename":   r.get("_file") or r.get("_new_filename", ""),
+            "img_file":   img_file,   # for UI image preview
+            "vendor":     r.get("vendor", ""),
+            "date":       dt,
+            "amount":     amt,
+            "summary":    r.get("ai_summary") or r.get("summary") or "",
+            "job_name":   r.get("job_name") or "",
+            "job_number": r.get("job_number") or "",
         })
 
     dup_groups = [v for v in groups.values() if len(v) > 1]
@@ -738,6 +766,16 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
 
     if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
+
+    # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
+    # so excluded items don't leave stale duplicate flags on the remaining receipts
+    results_copy = copy.deepcopy(results_copy)
+    _dup_kw = ("potential duplicate", "duplicate of")
+    for r in results_copy:
+        flag = (r.get("_flag") or "").lower()
+        if any(kw in flag for kw in _dup_kw):
+            r["_flag"] = ""
+    _detect_duplicates(results_copy)
 
     employee = _last_context.get("employee", "Employee")
 

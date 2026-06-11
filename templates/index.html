@@ -395,6 +395,20 @@
       border-radius: 6px; font-size: 12px; cursor: pointer; }
     .dup-option:hover { background: rgba(255,255,255,0.04); }
     .dup-option input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; flex-shrink:0; }
+    .dup-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 10px; }
+    .dup-card { background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden; }
+    .dup-card img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block;
+      background: var(--bg); }
+    .dup-card .dup-card-body { padding: 8px 10px; font-size: 11px; }
+    .dup-card .dup-card-fname { font-family: ui-monospace,monospace; font-size: 10px;
+      color: var(--muted); margin-bottom: 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dup-card .dup-card-meta { color: var(--text); margin-bottom: 3px; }
+    .dup-card .dup-card-summary { color: var(--muted); font-style: italic; line-height: 1.4; }
+    .dup-card.excluded { opacity: 0.4; }
+    .mr-preview { width: 100%; max-height: 200px; object-fit: contain; border-radius: 8px;
+      margin-bottom: 16px; background: rgba(0,0,0,0.3); display: block; }
+    .mr-preview-wrap { text-align: center; margin-bottom: 16px; }
   </style>
 </head>
 <body>
@@ -674,6 +688,9 @@
     <h3>&#9998; Manual Review</h3>
     <p class="modal-sub">Automatic extraction was incomplete for <strong id="mr-filename-label"></strong>.
       Fill in what you know — all fields optional. The entry will be flagged as a manual review.</p>
+    <div class="mr-preview-wrap" id="mr-preview-wrap" style="display:none">
+      <img id="mr-preview-img" class="mr-preview" src="" alt="Receipt image">
+    </div>
     <div class="modal-fields">
       <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
       <label>Date <input type="text" id="mr-date" placeholder="YYYY-MM-DD"></label>
@@ -701,10 +718,10 @@
 
 <!-- ── Duplicate Review Dialog ─────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="dup-modal">
-  <div class="modal-box">
+  <div class="modal-box" style="width:640px">
     <h3>&#9888; Possible Duplicate Receipts</h3>
-    <p class="modal-sub">The following receipts share the same vendor, date, and amount.
-      Check the ones you want to <strong>exclude</strong> from the spreadsheet, then click Generate.</p>
+    <p class="modal-sub">Receipts below share the same vendor, date, and amount.
+      Check the ones to <strong>exclude</strong> from the spreadsheet — unchecked items will be included.</p>
     <div id="dup-groups-container"></div>
     <div class="btn-row" style="margin-top:16px">
       <button class="btn btn-success" id="dup-generate-btn">Generate Spreadsheet</button>
@@ -1205,6 +1222,15 @@ window.openManualReview = function(filename) {
   document.getElementById('mr-job-name').value   = data.job_name   || '';
   document.getElementById('mr-job-number').value = data.job_number || '';
   document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
+
+  // Load receipt image preview
+  const imgFile = data._new_filename || data._file || filename;
+  const previewWrap = document.getElementById('mr-preview-wrap');
+  const previewImg  = document.getElementById('mr-preview-img');
+  previewImg.src = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+  previewImg.onload  = () => { previewWrap.style.display = ''; };
+  previewImg.onerror = () => { previewWrap.style.display = 'none'; };
+
   document.getElementById('manual-review-modal').classList.remove('hidden');
 };
 
@@ -1258,15 +1284,36 @@ function _showDupDialog(groups) {
     const box = document.createElement('div');
     box.className = 'dup-group';
     const first = group[0];
-    box.innerHTML = `<h4>${esc(first.vendor)} &bull; ${esc(first.date)} &bull; $${parseFloat(first.amount).toFixed(2)}</h4>`;
-    group.forEach((item) => {
-      const label = document.createElement('label');
-      label.className = 'dup-option';
-      label.innerHTML = `
-        <input type="checkbox" class="dup-check" data-gi="${gi}" data-file="${esc(item.filename)}">
-        <span>${esc(item.filename)}</span>`;
-      box.appendChild(label);
+    box.innerHTML = `<h4>Possible duplicates — ${esc(first.vendor)} &bull; ${esc(first.date)} &bull; $${parseFloat(first.amount).toFixed(2)}</h4>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Check items to <strong style="color:var(--danger)">exclude</strong> from the spreadsheet.</p>`;
+
+    // Image comparison cards
+    const cards = document.createElement('div');
+    cards.className = 'dup-cards';
+    group.forEach((item, idx) => {
+      const imgFile = item.img_file || item.filename;
+      const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+      const card = document.createElement('div');
+      card.className = 'dup-card';
+      card.dataset.gi   = gi;
+      card.dataset.file = item.filename;
+      card.innerHTML = `
+        <img src="${imgUrl}" alt="${esc(item.filename)}" loading="lazy"
+             onerror="this.style.display='none'">
+        <div class="dup-card-body">
+          <div class="dup-card-fname">${esc(item.filename)}</div>
+          <div class="dup-card-meta"><strong>${esc(item.vendor)}</strong> &bull; $${parseFloat(item.amount).toFixed(2)}</div>
+          <div class="dup-card-meta">${esc(item.date)}${item.job_name ? ' &bull; ' + esc(item.job_name) : ''}</div>
+          ${item.summary ? `<div class="dup-card-summary">"${esc(item.summary)}"</div>` : ''}
+          <label class="dup-option" style="margin-top:8px;border:1px solid var(--border);border-radius:6px">
+            <input type="checkbox" class="dup-check" data-gi="${gi}" data-file="${esc(item.filename)}"
+                   onchange="this.closest('.dup-card').classList.toggle('excluded',this.checked)">
+            <span style="color:var(--danger);font-weight:600">Exclude this receipt</span>
+          </label>
+        </div>`;
+      cards.appendChild(card);
     });
+    box.appendChild(cards);
     container.appendChild(box);
   });
   document.getElementById('dup-modal').classList.remove('hidden');
