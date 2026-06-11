@@ -8,14 +8,33 @@ services:
     volumes:
       - ${INTAKE_PATH:-./intake}:/data/intake
       - ${OUTPUT_PATH:-./output}:/data/output
+      - ${EXPORT_PATH:-./export}:/data/export
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
       - RECEIPTS_FOLDER=/data/intake
       - OUTPUT_FOLDER=/data/output
+      - EXPORT_FOLDER=/data/export
       - WATCH_INBOX=/data/intake
       - HOST_INTAKE_PATH=${INTAKE_PATH:-${PWD}/intake}
       - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
+      - HOST_EXPORT_PATH=${EXPORT_PATH:-${PWD}/export}
       # MAX_PARALLEL_REQUESTS=4
+      # Scheduled export (also configurable from the web UI Settings card).
+      # Point EXPORT_PATH at a Dropbox/Drive/OneDrive sync folder for
+      # automatic cloud upload without any API keys.
+      - SCHEDULE_ENABLED=${SCHEDULE_ENABLED:-0}
+      - SCHEDULE_TIME=${SCHEDULE_TIME:-17:00}
+      - SCHEDULE_DAYS=${SCHEDULE_DAYS:-thu}
+      - SCHEDULE_EMAIL=${SCHEDULE_EMAIL:-0}
+      - SCHEDULE_DROPBOX_TOKEN=${SCHEDULE_DROPBOX_TOKEN:-}
+      # Email settings — used by scheduled export and "Send Report Now"
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - EMAIL_TO=${EMAIL_TO:-}
+      - EMAIL_SUBJECT=${EMAIL_SUBJECT:-Weekly Reimbursement Report}
 
   receipt-watcher:
     build: .

@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import concurrent.futures
 import threading
 import urllib.request
@@ -34,7 +35,7 @@ except ImportError:
     HAS_PYMUPDF = False
 
 from openai import OpenAI
-from PIL import Image
+from PIL import Image, ImageChops
 
 from spreadsheet_theme import build_themed_workbook
 
@@ -47,7 +48,6 @@ GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
-HOST_OUTPUT_PATH     = os.getenv("HOST_OUTPUT_PATH", "")
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 PDF_EXTENSIONS       = {".pdf"}
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
@@ -69,7 +69,7 @@ FUEL_VENDORS = {
     "love's", "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
     "gas station", "fuel station", "petro", "petroleum", "flying j",
     "bucees", "buc-ee", "racetrac", "racetrack", "cenex", "sinclair",
-    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill", "sunoco",
+    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill",
     "kum & go", "sheetz", "thorntons", "mapco", "gulf", "hess",
     "conoco", "phillips 66", "pdq", "getgo", "flash foods", "moto mart",
     "pantry", "road ranger", "git n go", "corner store",
@@ -249,18 +249,87 @@ def initialize_models() -> str:
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
 
+AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
+AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
+AUTOCROP_MAX_RATIO = 0.95   # skip crop that trims almost nothing
+AUTOCROP_MARGIN    = 0.02   # safety margin re-added around the detected bbox
+_AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as content
+
+
+def autocrop_receipt(img: Image.Image) -> Image.Image:
+    """Trim uniform background borders around a receipt photo.
+
+    Conservative by design: returns the original image unchanged whenever the
+    detected crop is suspiciously aggressive (<40% of the area kept), trims
+    almost nothing, or detection fails for any reason.
+    """
+    if not AUTOCROP_ENABLED:
+        return img
+    try:
+        gray = img.convert("L")
+        w, h = gray.size
+        if w < 64 or h < 64:
+            return img
+        # Background estimated from the median of the four 8x8 corner patches
+        samples = []
+        for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
+                    (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
+            samples.extend(gray.crop(box).tobytes())
+        samples.sort()
+        bg = samples[len(samples) // 2]
+
+        diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
+        mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
+        bbox = mask.getbbox()
+        if not bbox:
+            return img
+
+        mx = int(w * AUTOCROP_MARGIN)
+        my = int(h * AUTOCROP_MARGIN)
+        left   = max(0, bbox[0] - mx)
+        top    = max(0, bbox[1] - my)
+        right  = min(w, bbox[2] + mx)
+        bottom = min(h, bbox[3] + my)
+
+        kept = ((right - left) * (bottom - top)) / float(w * h)
+        if kept < AUTOCROP_MIN_RATIO or kept > AUTOCROP_MAX_RATIO:
+            return img
+        return img.crop((left, top, right, bottom))
+    except Exception:
+        return img
+
+
+def autocrop_image_file(path: Path) -> bool:
+    """Auto-crop a stored receipt image in place. Returns True if cropped."""
+    try:
+        with Image.open(path) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            img = raw.convert("RGB")
+            cropped = autocrop_receipt(img)
+            if cropped.size == img.size:
+                return False
+            if path.suffix.lower() in (".jpg", ".jpeg"):
+                cropped.save(path, format="JPEG", quality=85, optimize=True)
+            else:
+                cropped.save(path)
+        return True
+    except Exception:
+        return False
+
+
 def encode_image(path: Path) -> tuple[str, str]:
     raw = Image.open(path)
     if getattr(raw, "format", None) == "MPO":
         raw.seek(0)
-    img = raw.convert("RGB")
+    img = autocrop_receipt(raw.convert("RGB"))
     if max(img.size) > IMAGE_MAX_PX:
         ratio = IMAGE_MAX_PX / max(img.size)
         img = img.resize(
             (int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS,
         )
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=92)
+    img.save(buf, format="JPEG", quality=85, optimize=True)
     return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
 
@@ -364,6 +433,65 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
         return text if text else None
     except Exception as exc:
         print(f"[ocr] Extraction failed for {image_path.name}: {exc}")
+        return None
+
+
+# ── PaddleOCR fallback ─────────────────────────────────────────────────────────
+# Local CPU OCR used when the LM Studio OCR stage fails or is unreachable.
+# The recognized text feeds the same distillation stage as LM Studio OCR.
+
+PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "1").lower() not in ("0", "false", "no")
+
+_paddle_engine = None          # PaddleOCR instance, or False after init failure
+_paddle_lock = threading.Lock()
+
+
+def _get_paddle_engine():
+    """Lazy PaddleOCR singleton. Returns None when disabled or unavailable."""
+    global _paddle_engine
+    if not PADDLEOCR_ENABLED:
+        return None
+    if _paddle_engine is not None:
+        return _paddle_engine or None
+    with _paddle_lock:
+        if _paddle_engine is not None:
+            return _paddle_engine or None
+        try:
+            from paddleocr import PaddleOCR
+            try:  # PaddleOCR 3.x
+                _paddle_engine = PaddleOCR(use_textline_orientation=True, lang="en")
+            except TypeError:  # PaddleOCR 2.x
+                _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
+            print("[paddle] PaddleOCR fallback engine initialised")
+        except Exception as exc:
+            print(f"[paddle] PaddleOCR unavailable: {exc}")
+            _paddle_engine = False
+    return _paddle_engine or None
+
+
+def _extract_paddle_ocr(image_path: Path) -> Optional[str]:
+    """Run PaddleOCR on an image, returning recognized lines joined by newlines."""
+    engine = _get_paddle_engine()
+    if engine is None:
+        return None
+    try:
+        lines: list[str] = []
+        if hasattr(engine, "predict"):  # 3.x API
+            for res in engine.predict(str(image_path)) or []:
+                texts = res.get("rec_texts") if isinstance(res, dict) else getattr(res, "rec_texts", None)
+                if texts:
+                    lines.extend(t for t in texts if t)
+        else:  # 2.x API
+            for page in engine.ocr(str(image_path)) or []:
+                for entry in page or []:
+                    try:
+                        lines.append(entry[1][0])
+                    except (IndexError, TypeError):
+                        pass
+        text = "\n".join(lines).strip()
+        return text or None
+    except Exception as exc:
+        print(f"[paddle] OCR failed for {image_path.name}: {exc}")
         return None
 
 
@@ -495,22 +623,70 @@ def _extract_receipt_with_status(
         if status_cb:
             status_cb(status, data, model)
 
+    t_start = time.perf_counter()
+
+    def _finish(data: Optional[dict], ocr_seconds: float = 0.0,
+                distill_seconds: float = 0.0) -> Optional[dict]:
+        if data is not None:
+            data["_proc_seconds"] = round(time.perf_counter() - t_start, 1)
+            if ocr_seconds:
+                data["_ocr_seconds"] = round(ocr_seconds, 1)
+            if distill_seconds:
+                data["_distill_seconds"] = round(distill_seconds, 1)
+        return data
+
+    def _distill_text(ocr_text: str, ocr_seconds: float,
+                      engine: str = "") -> Optional[dict]:
+        _cb("distilling", model=_active_distill_model)
+        t_distill = time.perf_counter()
+        data = _unified_distillation(client, ocr_text)
+        distill_seconds = time.perf_counter() - t_distill
+        if _is_low_confidence(data):
+            return None
+        data["_raw_ocr"] = ocr_text
+        if engine:
+            data["_ocr_engine"] = engine
+        return _finish(data, ocr_seconds, distill_seconds)
+
     try:
         if _active_ocr_model and _active_ocr_model != _active_distill_model:
             _cb("ocr", model=_active_ocr_model)
+            t_ocr = time.perf_counter()
             ocr_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
-            if ocr_text:
-                _cb("distilling", model=_active_distill_model)
-                data = _unified_distillation(client, ocr_text)
-                if not _is_low_confidence(data):
+            ocr_seconds = time.perf_counter() - t_ocr
+            if not ocr_text:
+                # LM Studio OCR stage failed/unreachable — try local PaddleOCR
+                _cb("ocr", model="paddleocr")
+                t_ocr = time.perf_counter()
+                ocr_text = _extract_paddle_ocr(image_path)
+                ocr_seconds = time.perf_counter() - t_ocr
+                if ocr_text:
+                    data = _distill_text(ocr_text, ocr_seconds, engine="paddleocr")
                     if data is not None:
-                        data["_raw_ocr"] = ocr_text
+                        return data
+                ocr_text = None
+            if ocr_text:
+                data = _distill_text(ocr_text, ocr_seconds)
+                if data is not None:
                     return data
                 print(f"[extract] Two-step low-confidence for {image_path.name}, "
                       "falling back to direct vision")
 
         _cb("distilling", model=_active_distill_model)
-        return _extract_with_model(client, image_path, _active_distill_model)
+        t_distill = time.perf_counter()
+        data = _extract_with_model(client, image_path, _active_distill_model)
+        if data is not None:
+            return _finish(data, distill_seconds=time.perf_counter() - t_distill)
+
+        # Direct vision failed too — last resort: PaddleOCR text + distillation
+        # (covers vision-incapable distill models while the text API still works)
+        _cb("ocr", model="paddleocr")
+        t_ocr = time.perf_counter()
+        ocr_text = _extract_paddle_ocr(image_path)
+        if ocr_text:
+            return _distill_text(ocr_text, time.perf_counter() - t_ocr,
+                                 engine="paddleocr")
+        return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")
         return None
@@ -743,7 +919,6 @@ def generate_spreadsheet(
     results: list[dict],
     output_dir: Path,
     employee_name: str = "Duane Hamilton",
-    host_output_path: str = "",
 ) -> Optional[Path]:
     if not results:
         return None
@@ -776,7 +951,6 @@ def generate_spreadsheet(
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def process_receipts_batch(
-    template_path: Path,
     receipts_folder: Path,
     output_dir: Path,
     employee_name: str = "Duane Hamilton",
@@ -928,6 +1102,7 @@ def process_receipts_batch(
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 
+        autocrop_image_file(img_path)
         if use_folder_structure:
             dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)
@@ -987,7 +1162,6 @@ def process_receipts_batch(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("spreadsheet", nargs="?", default="Reimbursement_sheet_1.xlsx")
     parser.add_argument("--receipts",         default=RECEIPTS_FOLDER)
     parser.add_argument("--output-dir",       default=OUTPUT_FOLDER)
     parser.add_argument("--employee",         default="Duane Hamilton")
@@ -1006,7 +1180,6 @@ def main():
 
     initialize_models()
     process_receipts_batch(
-        template_path=Path(args.spreadsheet),
         receipts_folder=receipts,
         output_dir=out_dir,
         employee_name=args.employee,

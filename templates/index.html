@@ -98,7 +98,23 @@
     }
     header .tagline { font-size: 11px; color: var(--muted); display: block; font-weight: 400; letter-spacing: 0; margin-top: -1px; }
 
-    main { width: 100%; max-width: 1500px; margin: 0 auto; padding: 24px 18px 56px; display: grid; gap: 20px; }
+    main { width: 100%; max-width: 1280px; margin: 0 auto; padding: 24px 18px 56px; display: grid; gap: 20px; }
+
+    /* Side-by-side card pairs on wide screens */
+    .row-2col { display: grid; gap: 20px; align-items: start; }
+    @media (min-width: 1100px) { .row-2col { grid-template-columns: 1fr 1fr; } }
+
+    /* Host folder paths banner */
+    .paths-banner {
+      max-width: 1280px; margin: 14px auto 0; padding: 0 18px;
+      display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center;
+      font-size: 12px; color: var(--muted);
+    }
+    .paths-banner .path-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .paths-banner code {
+      cursor: pointer; text-decoration: underline dotted;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
+    }
 
     .card {
       background: var(--surface);
@@ -260,7 +276,17 @@
       transition: color 0.15s, background 0.15s;
     }
     .col-folder-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-    .kanban-cards { padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 60px; }
+    .kanban-cards {
+      padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 60px;
+      max-height: 560px; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    .kanban-cards::-webkit-scrollbar { width: 8px; }
+    .kanban-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+    .kanban-cards::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    .k-proc-time { margin-top: 4px; font-size: 10.5px; color: var(--muted); }
+    .saved-time-stat { cursor: pointer; }
+    .saved-time-stat:hover { filter: brightness(1.25); text-decoration: underline dotted; }
 
     @keyframes cardIn {
       from { opacity: 0; transform: translateY(6px); }
@@ -576,6 +602,9 @@
     }
     .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
     .theme-toggle svg { width: 14px; height: 14px; }
+    .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 10px; transition: color 0.15s; }
+    .gh-link:hover { color: var(--text); }
+    .gh-link svg { width: 20px; height: 20px; }
 
     /* Section collapse */
     .section-toggle {
@@ -590,7 +619,7 @@
 
     /* ── Insights dashboard ────────────────────────────────────────────────── */
     .insights-grid {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px;
     }
     @media (max-width: 760px) { .insights-grid { grid-template-columns: 1fr 1fr; } }
     .stat-tile {
@@ -688,6 +717,11 @@
   <h1>Receipt <span>Processor</span>
     <span class="tagline">Local-AI expense reports — nothing leaves your machine</span>
   </h1>
+  <a class="gh-link" href="https://github.com/duedev/Reimbursements" target="_blank" rel="noopener" title="View source on GitHub">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  </a>
   <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
     <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
@@ -702,7 +736,23 @@
   </button>
 </header>
 
+<!-- Host folder paths — the real folders on your computer -->
+<div class="paths-banner" id="paths-banner">
+  <span class="path-item">&#128194; Drop receipts in:
+    <code id="watch-folder-path" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
+    <button class="copy-btn" id="open-watch-folder-btn" title="Open folder">Open</button>
+  </span>
+  <span class="path-item">&#128202; Reports:
+    <code id="folder-path" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
+    <button class="copy-btn" id="open-folder-btn" title="Open folder">Open</button>
+  </span>
+  <span class="path-item hidden" id="export-path-item">&#9729;&#65039; Auto-export:
+    <code id="export-folder-path" title="Click to copy" onclick="copyFolderPath('export-folder-path')">—</code>
+  </span>
+</div>
+
 <main>
+  <div class="row-2col">
   <!-- Upload card (hidden while processing) -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
@@ -716,6 +766,13 @@
       <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
     </div>
     <div id="file-list"></div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--muted)">
+      <span><span class="watch-count" id="intake-count" style="font-size:15px">—</span>
+        files in intake folder (auto-queued)</span>
+      <button class="btn btn-amber hidden" id="send-email-btn" style="margin-left:auto;height:32px;padding:0 14px;font-size:12px">
+        &#9993; Send Report Now
+      </button>
+    </div>
   </div>
 
   <!-- Config card (hidden while processing) -->
@@ -771,7 +828,17 @@
     <div style="margin-top:10px;text-align:right">
       <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
     </div>
+    <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
+      Loaded in LM Studio
+    </div>
+    <div class="model-strip" id="model-strip">
+      <div class="model-row">
+        <div class="model-dot"></div>
+        <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
+      </div>
+    </div>
   </div>
+  </div><!-- /row-2col -->
 
   <!-- Action row -->
   <div class="btn-row">
@@ -886,6 +953,7 @@
         <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
         <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
       </div>
       <div class="charts-row">
         <div class="chart-box">
@@ -905,6 +973,7 @@
     </div>
   </div>
 
+  <div class="row-2col">
   <!-- Generate spreadsheet card (shown when completed results exist) -->
   <div class="card hidden" id="generate-card">
     <div class="card-title">Generate Spreadsheet</div>
@@ -940,59 +1009,6 @@
     </div>
   </div>
 
-  <!-- Watch-mode / Output card -->
-  <div class="card" id="watch-card">
-    <div class="card-title">Watch Mode / Output</div>
-
-    <div class="folder-strip" style="margin-bottom:10px">
-      <span>Output folder:</span>
-      <code id="folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
-      <button class="copy-btn" id="open-folder-btn">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             style="display:inline;vertical-align:middle;margin-right:3px">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open
-      </button>
-    </div>
-
-    <div class="folder-strip" style="margin-bottom:16px">
-      <span>Watch inbox:</span>
-      <code id="watch-folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
-      <button class="copy-btn" id="open-watch-folder-btn">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             style="display:inline;vertical-align:middle;margin-right:3px">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open
-      </button>
-    </div>
-
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-      LM Studio Models
-    </div>
-    <div class="model-strip" id="model-strip">
-      <div class="model-row">
-        <div class="model-dot"></div>
-        <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
-      </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px">
-      <div>
-        <div class="watch-count" id="intake-count">—</div>
-        <div class="watch-label">files in intake folder (auto-queued)</div>
-      </div>
-      <div class="btn-row" style="flex:1;justify-content:flex-end">
-        <button class="btn btn-amber hidden" id="send-email-btn">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round"
-              d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
-          </svg>
-          Send Report Now
-        </button>
-      </div>
-    </div>
-  </div>
-
   <!-- Report history -->
   <div class="card hidden" id="reports-card">
     <div class="card-title" style="display:flex;align-items:center">
@@ -1001,6 +1017,7 @@
     </div>
     <div id="reports-list"></div>
   </div>
+  </div><!-- /row-2col -->
 
   <!-- Settings -->
   <details class="card" id="settings-card" style="padding:0">
@@ -1026,6 +1043,40 @@
           <input type="text" id="setting-output-path" placeholder="/Users/yourname/Documents/output">
         </label>
       </div>
+      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Scheduled export</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+          Automatically generate the spreadsheet into the export folder on a schedule.
+          Point the export folder at a Dropbox / Google Drive / OneDrive sync folder for
+          automatic cloud upload — or add a Dropbox token / enable email below.
+        </p>
+        <div class="fields" style="grid-template-columns:auto auto 1fr;align-items:end;gap:12px">
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row">
+            <input type="checkbox" id="sched-enabled" style="width:auto"> Enabled
+          </label>
+          <label>
+            Time
+            <input type="time" id="sched-time" value="17:00" style="width:110px">
+          </label>
+          <label>
+            Days <span style="color:var(--muted);font-weight:400">(e.g. thu &middot; mon,fri &middot; daily &middot; weekdays)</span>
+            <input type="text" id="sched-days" value="thu">
+          </label>
+        </div>
+        <div class="fields" style="grid-template-columns:1fr auto;align-items:end;gap:12px;margin-top:10px">
+          <label>
+            Dropbox access token <span style="color:var(--muted);font-weight:400">(optional — leave blank to keep saved token)</span>
+            <input type="password" id="sched-dropbox" placeholder="sl.B...">
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;padding-bottom:8px">
+            <input type="checkbox" id="sched-email" style="width:auto"> Email report
+          </label>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn" id="sched-run-now-btn" style="height:32px;padding:0 14px;font-size:12px">Run now</button>
+          <span id="sched-status" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+      </div>
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
@@ -1049,6 +1100,11 @@
     <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
   </div>
 </main>
+
+<footer style="text-align:center; padding: 18px 0 28px; color: var(--muted); font-size: 12px;">
+  <a href="https://github.com/duedev/Reimbursements" target="_blank" rel="noopener"
+     style="color: inherit; text-decoration: none;">Receipt Processor — open source on GitHub</a>
+</footer>
 
 <!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="manual-review-modal">
@@ -1281,6 +1337,10 @@ function makeCard(filename, status, data, model, errorMsg) {
       inner += `<div class="k-summary">${ed('ai_summary', `"${esc(summaryText || 'add summary…')}"`)}</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    if (status === 'done' && data._proc_seconds) {
+      const engine = data._ocr_engine ? ` &bull; ${esc(data._ocr_engine)}` : '';
+      inner += `<div class="k-proc-time" title="Processing time">&#9201; ${data._proc_seconds}s${engine}</div>`;
+    }
   }
 
   // Image view button (available on all cards that have a resolvable file)
@@ -1382,6 +1442,7 @@ function connectSSE() {
       moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '');
       kanbanCard.classList.remove('hidden');
       progressCard.classList.remove('hidden');
+      if (msg.status === 'done' || msg.status === 'failed') scheduleStats();
 
     } else if (msg.type === 'batch_done') {
       completedCount = msg.completed || 0;
@@ -1462,7 +1523,7 @@ function _updateGenerateCard() {
       : `~${minsSaved} min`;
     genSummary.innerHTML =
       `<span class="gen-stat stat-ok">${completedCount} processed</span>` +
-      `<span class="gen-stat" style="color:var(--accent)" title="Estimated at 5 min/receipt for manual entry">&#9200; You saved ${timeTxt} of manual data entry</span>`;
+      `<span class="gen-stat saved-time-stat" id="saved-time-stat" style="color:var(--accent)" onclick="celebrate()" title="Estimated at 5 min/receipt for manual entry — click to celebrate again 🎉">&#9200; You saved ${timeTxt} of manual data entry</span>`;
   }
 }
 
@@ -1555,7 +1616,10 @@ async function _doGenerate(excludeFilenames = []) {
     const res = await fetch('/generate-spreadsheet', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ exclude_filenames: excludeFilenames }),
+      body: JSON.stringify({
+        exclude_filenames: excludeFilenames,
+        employee: document.getElementById('employee').value.trim(),
+      }),
     });
     if (!res.ok) {
       const txt = await res.text();
@@ -2043,8 +2107,7 @@ async function loadWatchStatus() {
       el.dataset.hostPath = display;
     }
     if (statusRes.ok) {
-      const { receipts, smtp_configured } = await statusRes.json();
-      document.getElementById('watch-count').textContent = receipts;
+      const { smtp_configured } = await statusRes.json();
       if (smtp_configured) document.getElementById('send-email-btn').classList.remove('hidden');
     }
     if (watchFolderRes.ok) {
@@ -2137,8 +2200,80 @@ async function loadSettings() {
     const d = await res.json();
     document.getElementById('setting-intake-path').value = d.host_intake_path || '';
     document.getElementById('setting-output-path').value = d.host_output_path || '';
+    if (d.host_export_path) {
+      const el = document.getElementById('export-folder-path');
+      el.textContent = d.host_export_path;
+      el.dataset.hostPath = d.host_export_path;
+      document.getElementById('export-path-item').classList.remove('hidden');
+    }
+  } catch (_) {}
+  loadSchedule();
+}
+
+async function loadSchedule() {
+  try {
+    const res = await fetch('/schedule');
+    if (!res.ok) return;
+    const s = await res.json();
+    document.getElementById('sched-enabled').checked = !!s.enabled;
+    document.getElementById('sched-time').value = s.time || '17:00';
+    document.getElementById('sched-days').value = s.days || 'thu';
+    document.getElementById('sched-email').checked = !!s.email;
+    _renderSchedStatus(s);
   } catch (_) {}
 }
+
+function _renderSchedStatus(s) {
+  const el = document.getElementById('sched-status');
+  const parts = [];
+  if (s.next_run) parts.push(`Next run: ${s.next_run.replace('T', ' ')}`);
+  if (s.last_run) {
+    parts.push(s.last_run.ok
+      ? `Last: ${s.last_run.filename} ✓ (${(s.last_run.delivered || []).join(', ')})`
+      : `Last failed: ${s.last_run.error || 'unknown error'}`);
+  }
+  if (!s.enabled && !parts.length) parts.push('Disabled');
+  el.textContent = parts.join(' · ');
+}
+
+async function _saveSchedule() {
+  const res = await fetch('/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enabled: document.getElementById('sched-enabled').checked,
+      time:    document.getElementById('sched-time').value.trim() || '17:00',
+      days:    document.getElementById('sched-days').value.trim() || 'thu',
+      email:   document.getElementById('sched-email').checked,
+      dropbox_token: document.getElementById('sched-dropbox').value.trim(),
+    }),
+  });
+  const d = await res.json();
+  if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
+  document.getElementById('sched-dropbox').value = '';
+  _renderSchedStatus(d);
+}
+
+document.getElementById('sched-run-now-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('sched-run-now-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const res = await fetch('/schedule/run-now', { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) {
+      showToast(`Exported ${d.filename} (${(d.delivered || []).join(', ')})`, true);
+    } else {
+      showToast(`Export failed: ${d.error}`, false);
+    }
+    loadSchedule();
+  } catch (err) {
+    showToast(`Export error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run now';
+  }
+});
 
 document.getElementById('save-settings-btn').addEventListener('click', async () => {
   const btn = document.getElementById('save-settings-btn');
@@ -2154,6 +2289,7 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
       }),
     });
     const d = await res.json();
+    await _saveSchedule();
     if (d.ok) {
       msg.textContent = 'Saved ✓';
       msg.style.color = 'var(--success)';
@@ -2259,6 +2395,12 @@ window.removeSavedItem = async function(listKey, value, panelId) {
 const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8b5cf6' };
 const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+let _statsTimer = null;
+function scheduleStats() {
+  clearTimeout(_statsTimer);
+  _statsTimer = setTimeout(loadStats, 400);
+}
+
 async function loadStats() {
   try {
     const res = await fetch('/stats');
@@ -2272,6 +2414,8 @@ async function loadStats() {
     document.getElementById('st-count').textContent   = s.count;
     document.getElementById('st-avg').textContent     = fmtMoney(s.average);
     document.getElementById('st-flagged').textContent = s.flagged;
+    document.getElementById('st-proc').textContent =
+      s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
 
     renderDonut(s.by_category, s.total);
     renderTimeline(s.timeline);

@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from queue import Empty, Queue
 from uuid import uuid4
@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 import process_receipts as _pr
+import scheduler
 from process_receipts import (
     initialize_models,
     _extract_receipt_with_status,
@@ -38,6 +39,7 @@ from process_receipts import (
     classify_category,
     sort_key_for_receipt,
     rename_receipt_image,
+    autocrop_image_file,
     _detect_duplicates,
     generate_spreadsheet,
     list_available_models,
@@ -49,9 +51,10 @@ from process_receipts import (
     PDF_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
-    HOST_OUTPUT_PATH,
     RECEIPTS_FOLDER,
 )
+
+HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 
 # ── Folder / config paths ──────────────────────────────────────────────────────
 
@@ -181,7 +184,8 @@ def _safe_receipt_data(data) -> dict:
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
               "expense_description", "summary", "ai_summary", "_flag", "_category",
               "_new_filename", "_file", "flags", "_confidence", "_error",
-              "_amount_verified"):
+              "_amount_verified", "_proc_seconds", "_ocr_seconds",
+              "_distill_seconds", "_ocr_engine"):
         if k in data:
             out[k] = data[k]
     return out
@@ -344,6 +348,7 @@ def _run_worker() -> None:
                 data["_confidence"] = conf
 
                 IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                autocrop_image_file(path)
                 final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
                 data["_new_filename"] = final_path.name
                 data["_file"]         = fname
@@ -524,6 +529,39 @@ def _run_stall_checker() -> None:
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
+# ── Scheduled export ───────────────────────────────────────────────────────────
+
+_schedule_wakeup: asyncio.Event = asyncio.Event()
+
+
+def _get_schedule_config() -> scheduler.ScheduleConfig:
+    try:
+        return scheduler.parse_schedule(_load_config().get("schedule") or {})
+    except scheduler.ScheduleError:
+        return scheduler.ScheduleConfig(enabled=False)
+
+
+def _schedule_results_snapshot() -> tuple[list[dict], str]:
+    with _results_lock:
+        results = copy.deepcopy(_results)
+        employee = _last_context.get("employee", "Employee")
+    _detect_duplicates(results)
+    return results, employee
+
+
+def _on_schedule_result(report: dict) -> None:
+    cfg = _load_config()
+    cfg.setdefault("schedule", {})["last_run"] = report
+    _save_config(cfg)
+    if report.get("ok"):
+        msg = (f"Scheduled export complete: {report.get('filename')} "
+               f"({', '.join(report.get('delivered', []))})")
+    else:
+        msg = f"Scheduled export failed: {report.get('error')}"
+    _broadcast({"type": "log", "message": msg})
+    print(f"[schedule] {msg}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _restore_state()
@@ -531,7 +569,12 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_run_worker,        daemon=True).start()
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
+    sched_task = asyncio.create_task(scheduler.run_scheduler(
+        _get_schedule_config, _schedule_results_snapshot,
+        _on_schedule_result, _schedule_wakeup,
+    ))
     yield
+    sched_task.cancel()
     _worker_cancel.set()
 
 
@@ -853,6 +896,7 @@ async def list_intake_files():
 
 class GenerateRequest(BaseModel):
     exclude_filenames: list[str] = []
+    employee: str = ""
 
 
 @app.get("/results/check-duplicates")
@@ -966,7 +1010,16 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             r["_flag"] = ""
     _detect_duplicates(results_copy)
 
-    employee = _last_context.get("employee", "Employee")
+    employee = (body.employee or "").strip()
+    if employee:
+        with _results_lock:
+            _last_context["employee"] = employee
+    else:
+        employee = (
+            _last_context.get("employee")
+            or _load_config().get("default_employee")
+            or "Employee"
+        )
 
     def _build():
         return generate_spreadsheet(
@@ -997,7 +1050,8 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     )
 
 
-# Legacy alias — same behaviour as global endpoint
+# DEPRECATED legacy alias — the frontend no longer calls this; kept one release
+# for external scripts. Remove after 2026-12.
 @app.post("/generate-spreadsheet/{job_id}")
 async def make_spreadsheet_legacy(job_id: str):
     return await make_spreadsheet()
@@ -1019,6 +1073,7 @@ def _compute_stats(results: list[dict]) -> dict:
     by_day: dict[str, float] = {}
     flagged = 0
     verified = 0
+    proc_times: list[float] = []
 
     for r in results:
         amt = _amt(r)
@@ -1042,6 +1097,12 @@ def _compute_stats(results: list[dict]) -> dict:
             flagged += 1
         if r.get("_amount_verified"):
             verified += 1
+        try:
+            secs = float(r.get("_proc_seconds") or 0)
+            if secs > 0:
+                proc_times.append(secs)
+        except (TypeError, ValueError):
+            pass
 
     top_vendors = sorted(
         ({"vendor": k, **v} for k, v in by_vendor.items()),
@@ -1058,6 +1119,8 @@ def _compute_stats(results: list[dict]) -> dict:
         "by_category":  by_category,
         "top_vendors":  top_vendors,
         "timeline":     timeline,
+        "proc_total_seconds": round(sum(proc_times), 1),
+        "proc_avg_seconds":   round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
     }
 
 
@@ -1540,6 +1603,8 @@ async def get_settings():
     return JSONResponse({
         "host_intake_path": cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", ""),
         "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
+        "host_export_path": cfg.get("host_export_path") or os.getenv("HOST_EXPORT_PATH", ""),
+        "docker": Path("/.dockerenv").exists(),
     })
 
 
@@ -1553,6 +1618,76 @@ async def save_settings(body: SettingsRequest):
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Scheduled export endpoints ─────────────────────────────────────────────────
+
+class ScheduleRequest(BaseModel):
+    enabled: bool = False
+    time: str = "17:00"
+    days: str = "thu"
+    dropbox_token: str = ""
+    email: bool = False
+
+
+def _schedule_status() -> dict:
+    cfg = _get_schedule_config()
+    saved = _load_config().get("schedule") or {}
+    nxt = scheduler.next_run(cfg, datetime.now())
+    return {
+        "enabled":        cfg.enabled,
+        "time":           cfg.time_str,
+        "days":           cfg.days_str,
+        "email":          cfg.email,
+        "dropbox":        bool(cfg.dropbox_token),
+        "export_folder":  str(scheduler.EXPORT_FOLDER),
+        "next_run":       nxt.isoformat(timespec="minutes") if nxt else None,
+        "last_run":       saved.get("last_run"),
+    }
+
+
+@app.get("/schedule")
+async def get_schedule():
+    return JSONResponse(_schedule_status())
+
+
+@app.post("/schedule")
+async def set_schedule(body: ScheduleRequest):
+    try:
+        new = {
+            "enabled": body.enabled,
+            "time":    body.time.strip(),
+            "days":    body.days.strip(),
+            "email":   body.email,
+            "dropbox_token": body.dropbox_token.strip(),
+        }
+        scheduler.parse_schedule(new)  # validate before persisting
+    except scheduler.ScheduleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    cfg = _load_config()
+    saved = cfg.get("schedule") or {}
+    if not new["dropbox_token"]:  # blank input keeps any previously saved token
+        new["dropbox_token"] = saved.get("dropbox_token", "")
+    new["last_run"] = saved.get("last_run")
+    cfg["schedule"] = new
+    _save_config(cfg)
+    _schedule_wakeup.set()
+    return JSONResponse({"ok": True, **_schedule_status()})
+
+
+@app.post("/schedule/run-now")
+async def schedule_run_now():
+    cfg = _get_schedule_config()
+    results, employee = _schedule_results_snapshot()
+
+    def _run():
+        return scheduler.run_export(cfg, results, employee)
+
+    report = await asyncio.get_event_loop().run_in_executor(None, _run)
+    report["ran_at"] = datetime.now().isoformat(timespec="seconds")
+    _on_schedule_result(report)
+    status = 200 if report.get("ok") else 400
+    return JSONResponse(report, status_code=status)
 
 
 # ── Saved fields ───────────────────────────────────────────────────────────────

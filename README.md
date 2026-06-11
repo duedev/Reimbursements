@@ -6,6 +6,10 @@
 
 Drop in photos or PDFs of receipts. The app extracts the vendor, date, amount, and category using a local vision model, renames and organizes the files, tracks everything on a live Kanban board, and produces a formatted, print-ready Excel reimbursement form. No cloud APIs, no subscription fees — 100% local AI.
 
+**New here or not technical?** Start with the [Tutorial](TUTORIAL.md) — it walks through Docker, LM Studio, first launch, and daily use in plain language.
+
+For architecture notes, model selection guidance, and roadmap considerations, see the [Technical Advisory](ADVISORY.md).
+
 ---
 
 ## Features
