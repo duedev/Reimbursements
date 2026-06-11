@@ -54,6 +54,7 @@ from process_receipts import (
     SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
     RECEIPTS_FOLDER,
+    CONFIG_FILE,
 )
 
 HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
@@ -63,7 +64,9 @@ HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
 OUT_FOLDER    = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
-CONFIG_FILE   = OUT_FOLDER / ".app_config.json"
+# CONFIG_FILE is the single authoritative app-config path, defined once in
+# process_receipts and imported here so the server, watcher, and scheduler all
+# read/write the same file (see process_receipts.CONFIG_FILE).
 STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snapshot
 
 # ── Stall checker config ───────────────────────────────────────────────────────
@@ -376,6 +379,18 @@ def _drain_once() -> bool:
             fname = item["filename"]
             path  = Path(item["path"])
 
+            # Pipeline order: autocrop → compress → OCR/extraction.
+            # Crop + compress the stored file BEFORE extraction so every OCR path
+            # (LM Studio vision AND the PaddleOCR fallback, which reads the file
+            # from disk) sees the same cleaned-up image. compress_image_file may
+            # rewrite the file with a new suffix (e.g. .png → .jpg), so we capture
+            # the path it returns and feed THAT to extraction. Handing the stale
+            # pre-compress path to the worker is what raised
+            # "[Errno 2] No such file or directory" after the resize.
+            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+            path = _optimize_stored_image(path, fname)
+            item["path"] = str(path)
+
             def make_cb(fn: str):
                 def cb(status: str, data=None, model: str = "") -> None:
                     _update_kanban(fn, status, data, model)
@@ -437,8 +452,10 @@ def _drain_once() -> bool:
             conf, _ = _compute_confidence(data)
             data["_confidence"] = conf
 
+            # File was already autocropped + compressed before extraction (see the
+            # submit loop above); item["path"] points at that resized file.
             IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
-            path = _optimize_stored_image(path, fname)
+            path = Path(item["path"])
             final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
             data["_new_filename"] = final_path.name
             data["_file"]         = fname

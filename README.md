@@ -262,19 +262,29 @@ Receipt image / PDF
         ▼
   ┌─────────────┐
   │  Ingest     │  PDF → per-page JPEGs (PyMuPDF, 2× zoom)
-  │             │  Image resize to max 1568px, JPEG encode, base64
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Autocrop   │  Pipeline order: autocrop → compress → OCR/extraction.
+  │  → Compress │  Trim borders, then resize/normalize to an optimized JPEG so
+  │             │  every OCR path (LM Studio AND PaddleOCR) reads the same image.
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
   │  Stage 1    │  (Optional — only when a separate OCR model is configured)
-  │  OCR        │  Dedicated model transcribes all visible text verbatim
+  │  OCR        │  Dedicated model transcribes all visible text verbatim.
+  │             │  Falls back to local PaddleOCR if LM Studio's OCR stage is down.
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │  Stage 2    │  Vision or OCR-text → structured JSON via distillation model
-  │  Distill    │  Extracts: date, vendor, amount, category, summary, flags
+  │  Stage 2    │  Vision or OCR-text → structured JSON via distillation model.
+  │  Distill    │  Extracts: date, vendor, amount, category, summary, flags.
+  │             │  If LM Studio is unreachable, a local regex parser turns the
+  │             │  PaddleOCR text into fields (flagged for manual review) instead
+  │             │  of failing the receipt.
   └──────┬──────┘
          │
          ├── Low confidence? (missing vendor or amount) ──► Failed
