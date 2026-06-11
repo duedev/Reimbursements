@@ -362,6 +362,14 @@
       background: rgba(239,68,68,0.08); border-radius: 4px; padding: 3px 6px;
       line-height: 1.4; }
 
+    /* Image view button on kanban cards */
+    .k-img-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 4px; padding: 2px 7px; font-size: 11px; cursor: pointer;
+      margin-top: 5px; display: inline-block; transition: color 0.15s, border-color 0.15s;
+    }
+    .k-img-btn:hover { color: var(--text); border-color: var(--accent); }
+
     /* Create (manual entry) button */
     .k-create-btn {
       display: inline-flex; align-items: center; gap: 4px;
@@ -458,10 +466,6 @@
 
 <header>
   <h1>Receipt <span>Processor</span></h1>
-  <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
-    <div class="model-active-dot" id="gemma-status-dot"></div>
-    <span id="active-model-label" style="font-family:ui-monospace,monospace;font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Loading…</span>
-  </div>
 </header>
 
 <main>
@@ -909,19 +913,8 @@ function makeCard(filename, status, data, model, errorMsg) {
 
   inner += `<div class="k-status-row">`;
   inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
-  if (model && spinning) inner += `<span class="k-model-tag" title="${esc(model)}">${esc(shortModelName(model))}</span>`;
   if (data && data._confidence != null) inner += confBadge(data._confidence);
   inner += `</div>`;
-
-  if (status === 'ocr') {
-    const label = (document.getElementById('active-model-label')?.textContent || 'OCR Model').split('/').pop().substring(0, 24);
-    inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
-  } else if (status === 'distilling') {
-    const primary = document.getElementById('active-model-label')?.textContent || '';
-    if (primary && primary !== 'Loading…' && primary !== 'No model') {
-      inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(primary.split('/').pop().substring(0,24))}</div>`;
-    }
-  }
 
   if (data && data.vendor) {
     inner += `<div class="k-vendor">${esc(data.vendor)} ${catBadge(data._category || data.category)}</div>`;
@@ -932,12 +925,23 @@ function makeCard(filename, status, data, model, errorMsg) {
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
   }
 
+  // Image view button (available on all cards that have a resolvable file)
+  const imgFile = (data && (data._new_filename || data._file)) || filename;
+  const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+  inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}')" title="View receipt image">&#128247; View</button>`;
+
   if (status === 'failed') {
     const errText = errorMsg || (data && data._error) || '';
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
     inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
     inner += `<button class="k-create-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Create</button>`;
+    inner += `</div>`;
+  }
+
+  if (status === 'done') {
+    inner += `<div style="margin-top:6px">`;
+    inner += `<button class="k-create-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Edit</button>`;
     inner += `</div>`;
   }
 
@@ -1110,7 +1114,8 @@ processBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
 
     _saveFields();
-    showToast(`${d.queued.length} file(s) added to queue`, true);
+    const skippedMsg = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
+    showToast(`${d.queued.length} file(s) added to queue${skippedMsg}`, true);
     selectedFiles = [];
     fileInput.value = '';
     renderFileList();
@@ -1154,7 +1159,8 @@ processIntakeBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
 
     _saveFields();
-    showToast(`${d.queued.length} file(s) queued from intake folder`, true);
+    const skippedMsg2 = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
+    showToast(`${d.queued.length} file(s) queued from intake folder${skippedMsg2}`, true);
     progressCard.classList.remove('hidden');
     kanbanCard.classList.remove('hidden');
     loadIntakeCount();
@@ -1295,6 +1301,8 @@ window.openManualReview = function(filename) {
   _mrFilename = filename;
   document.getElementById('mr-filename-label').textContent = filename;
   const card = receiptCards[filename];
+  const isEdit = card?.status === 'done';
+  document.querySelector('#manual-review-modal h3').textContent = isEdit ? '✎ Edit Receipt' : '✎ Manual Review';
   const data = card?.data || {};
   document.getElementById('mr-vendor').value     = data.vendor     || '';
   document.getElementById('mr-date').value       = toDateInputValue(data.date || '');
@@ -1503,10 +1511,8 @@ async function loadModels() {
     const activeDistillKey = activeDistill && !distillThinking ? activeDistill + '::no-think' : activeDistill;
     const activeOcrKey     = activeOcr     && !ocrThinking     ? activeOcr     + '::no-think' : activeOcr;
 
-    document.getElementById('active-model-label').textContent = activeDistill || 'No model';
-    document.getElementById('gemma-status-dot').style.background    = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('distill-model-dot').style.background   = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('ocr-model-dot').style.background       = activeOcr     ? 'var(--success)' : 'var(--border)';
+    document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background     = activeOcr     ? 'var(--success)' : 'var(--border)';
 
     const models = data.models || [];
     const prevDistill = distillSelect.value;
@@ -1558,12 +1564,10 @@ distillSelect.addEventListener('change', async () => {
     const res  = await fetch('/models/distill', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('active-model-label').textContent = chosen;
       document.getElementById('distill-model-dot').style.background = 'var(--success)';
-      document.getElementById('gemma-status-dot').style.background  = 'var(--success)';
-      showToast(`Distillation model: ${chosen}`, true);
+      showToast(`Distillation model: ${chosen.replace('::no-think','')}${chosen.endsWith('::no-think') ? ' (no thinking)' : ''}`, true);
     } else {
-      showToast(`Could not load model: ${data.error}`, false);
+      showToast(`Could not set model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
