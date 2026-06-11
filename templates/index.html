@@ -24,6 +24,30 @@
       --muted:    #94a3b8;
       --amber:    #d97706;
     }
+    [data-theme="light"] {
+      --bg:       #f1f5f9;
+      --surface:  #ffffff;
+      --surface2: #f8fafc;
+      --border:   #cbd5e1;
+      --accent:   #2563eb;
+      --accent-h: #1d4ed8;
+      --success:  #16a34a;
+      --danger:   #dc2626;
+      --warning:  #d97706;
+      --text:     #0f172a;
+      --muted:    #64748b;
+      --amber:    #b45309;
+    }
+    [data-theme="light"] input[type=text], [data-theme="light"] select {
+      background: #ffffff; color: #0f172a;
+    }
+    [data-theme="light"] select option { background: #ffffff; }
+    [data-theme="light"] #log { background: rgba(0,0,0,0.05); color: #334155; }
+    [data-theme="light"] .k-card { background: #f8fafc; }
+    [data-theme="light"] .toast-ok  { background: #dcfce7; color: #166534; }
+    [data-theme="light"] .toast-err { background: #fee2e2; color: #991b1b; }
+    [data-theme="light"] .modal-box { background: var(--surface); }
+    [data-theme="light"] .saved-manage-panel { background: #f1f5f9; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
@@ -460,12 +484,52 @@
     }
     .saved-item-row button:hover { color: var(--danger); }
     .saved-item-empty { color: var(--muted); padding: 4px 6px; text-align: center; font-size: 11px; }
+
+    /* Theme toggle */
+    .theme-toggle {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--muted); cursor: pointer; padding: 6px 10px;
+      font-size: 13px; transition: color 0.15s, border-color 0.15s, background 0.15s;
+      display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+    }
+    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
+    .theme-toggle svg { width: 14px; height: 14px; }
+
+    /* Section collapse */
+    .section-toggle {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 11px; padding: 2px 6px; border-radius: 4px;
+      transition: color 0.15s, background 0.15s; margin-left: auto;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .section-toggle:hover { color: var(--text); background: rgba(255,255,255,0.07); }
+    .section-toggle svg { width: 12px; height: 12px; transition: transform 0.2s; }
+    .section-toggle.collapsed svg { transform: rotate(-90deg); }
+
+    /* Unstick button */
+    .btn-unstick {
+      background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3);
+      color: var(--warning); height: 38px; padding: 0 14px; font-size: 13px;
+    }
+    .btn-unstick:not(:disabled):hover { background: rgba(245,158,11,0.2); }
   </style>
 </head>
 <body>
 
 <header>
   <h1>Receipt <span>Processor</span></h1>
+  <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
+    <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+    </svg>
+    <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+      <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+      <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+    </svg>
+    <span id="theme-label">Light</span>
+  </button>
 </header>
 
 <main>
@@ -553,6 +617,12 @@
       </svg>
       Cancel Queue
     </button>
+    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Re-queue items stuck in processing">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      Restart Stalled
+    </button>
     <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
       &#10005; Clear Board
     </button>
@@ -564,18 +634,35 @@
 
   <!-- Progress card -->
   <div class="card hidden" id="progress-card">
-    <div class="card-title">Processing</div>
-    <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
-    <div class="progress-meta">
-      <span id="progress-label">0 / 0</span>
-      <span id="current-file"></span>
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
+      Processing
+      <button class="section-toggle" id="progress-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
     </div>
-    <div id="log"></div>
+    <div id="progress-body">
+      <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-meta">
+        <span id="progress-label">0 / 0</span>
+        <span id="current-file"></span>
+      </div>
+      <div id="log"></div>
+    </div>
   </div>
 
   <!-- Kanban board (hidden until processing starts) -->
   <div class="card hidden" id="kanban-card">
-    <div class="card-title">Receipt Progress</div>
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('kanban-body','kanban-toggle')">
+      Receipt Progress
+      <button class="section-toggle" id="kanban-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="kanban-body">
     <div class="kanban-board">
       <div class="kanban-col">
         <div class="kanban-col-header">
@@ -606,6 +693,7 @@
         <div class="kanban-cards" id="col-failed"></div>
       </div>
     </div>
+    </div><!-- /kanban-body -->
   </div>
 
   <!-- Generate spreadsheet card (shown when completed results exist) -->
@@ -795,6 +883,35 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const html = document.documentElement;
+  const isLight = html.getAttribute('data-theme') === 'light';
+  html.setAttribute('data-theme', isLight ? 'dark' : 'light');
+  localStorage.setItem('theme', isLight ? 'dark' : 'light');
+  _applyThemeIcons(!isLight);
+}
+function _applyThemeIcons(isDark) {
+  document.getElementById('theme-icon-moon').style.display = isDark ? '' : 'none';
+  document.getElementById('theme-icon-sun').style.display  = isDark ? 'none' : '';
+  document.getElementById('theme-label').textContent = isDark ? 'Light' : 'Dark';
+}
+(function() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+  _applyThemeIcons(saved === 'dark');
+})();
+
+// ── Section collapse ───────────────────────────────────────────────────────────
+function toggleSection(bodyId, toggleId) {
+  const body   = document.getElementById(bodyId);
+  const toggle = document.getElementById(toggleId);
+  if (!body) return;
+  const isCollapsed = body.style.display === 'none';
+  body.style.display = isCollapsed ? '' : 'none';
+  if (toggle) toggle.classList.toggle('collapsed', !isCollapsed);
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
@@ -882,6 +999,9 @@ function setCounts() {
   document.getElementById('cnt-processing').textContent = document.getElementById('col-processing').children.length;
   document.getElementById('cnt-completed').textContent  = document.getElementById('col-completed').children.length;
   document.getElementById('cnt-failed').textContent     = document.getElementById('col-failed').children.length;
+  // Show unstick button when items are in processing
+  const processingCount = document.getElementById('col-processing').children.length;
+  document.getElementById('unstick-btn').classList.toggle('hidden', processingCount === 0);
 }
 
 function catBadge(cat) {
@@ -1050,6 +1170,9 @@ function connectSSE() {
       });
       setCounts();
 
+    } else if (msg.type === 'stall_recovered') {
+      showToast(`Stalled item re-queued: ${msg.filename}`, true);
+
     } else if (msg.type === 'kanban_cleared') {
       completedCount = 0;
       _updateGenerateCard();
@@ -1184,6 +1307,25 @@ stopBtn.addEventListener('click', async () => {
     showToast(`Error: ${err.message}`, false);
   } finally {
     stopBtn.disabled = false;
+  }
+});
+
+// ── Unstick stalled items ─────────────────────────────────────────────────────
+document.getElementById('unstick-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('unstick-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/queue/unstick', { method: 'POST' });
+    const d   = await res.json();
+    if (d.count > 0) {
+      showToast(`${d.count} stalled item(s) re-queued`, true);
+    } else {
+      showToast('No stalled items found', true);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
   }
 });
 
