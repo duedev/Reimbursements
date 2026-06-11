@@ -853,6 +853,7 @@ async def list_intake_files():
 
 class GenerateRequest(BaseModel):
     exclude_filenames: list[str] = []
+    employee: str = ""
 
 
 @app.get("/results/check-duplicates")
@@ -966,7 +967,16 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             r["_flag"] = ""
     _detect_duplicates(results_copy)
 
-    employee = _last_context.get("employee", "Employee")
+    employee = (body.employee or "").strip()
+    if employee:
+        with _results_lock:
+            _last_context["employee"] = employee
+    else:
+        employee = (
+            _last_context.get("employee")
+            or _load_config().get("default_employee")
+            or "Employee"
+        )
 
     def _build():
         return generate_spreadsheet(
