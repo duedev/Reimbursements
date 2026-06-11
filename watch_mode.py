@@ -144,6 +144,44 @@ def build_report(state: dict, client: OpenAI | None = None) -> Path:
     return out_path
 
 
+def send_workbook_email(workbook_path: Path, receipt_count: int) -> dict:
+    """Email an existing workbook via the configured SMTP account.
+
+    Shared by watch-mode reports and the scheduled-export task in scheduler.py.
+    """
+    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
+        return {"ok": False, "error": "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO."}
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"]    = SMTP_FROM or SMTP_USER
+        msg["To"]      = EMAIL_TO
+        msg["Subject"] = EMAIL_SUBJECT
+
+        body = MIMEText(
+            f"Please find attached the reimbursement report generated on "
+            f"{datetime.now().strftime('%B %d, %Y')}.\n\n"
+            f"Receipts processed: {receipt_count}\n",
+            "plain",
+        )
+        msg.attach(body)
+
+        with open(workbook_path, "rb") as f:
+            part = MIMEApplication(f.read(), Name=workbook_path.name)
+        part["Content-Disposition"] = f'attachment; filename="{workbook_path.name}"'
+        msg.attach(part)
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+            smtp.starttls()
+            smtp.login(SMTP_USER, SMTP_PASS)
+            smtp.sendmail(SMTP_FROM or SMTP_USER, EMAIL_TO, msg.as_string())
+
+        print(f"[watch] Email sent to {EMAIL_TO}")
+        return {"ok": True, "filename": workbook_path.name}
+    except Exception as exc:
+        return {"ok": False, "error": f"Email failed: {exc}"}
+
+
 def send_report(state: dict, client: OpenAI | None = None) -> dict:
     """
     Build the Excel and email it. Returns {"ok": bool, "filename": str, "error": str}.
@@ -159,37 +197,11 @@ def send_report(state: dict, client: OpenAI | None = None) -> dict:
     except Exception as exc:
         return {"ok": False, "error": f"Report generation failed: {exc}"}
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"]    = SMTP_FROM or SMTP_USER
-        msg["To"]      = EMAIL_TO
-        msg["Subject"] = EMAIL_SUBJECT
-
-        body = MIMEText(
-            f"Please find attached the reimbursement report generated on "
-            f"{datetime.now().strftime('%B %d, %Y')}.\n\n"
-            f"Receipts processed: {len(state.get('receipts', []))}\n",
-            "plain",
-        )
-        msg.attach(body)
-
-        with open(out_path, "rb") as f:
-            part = MIMEApplication(f.read(), Name=out_path.name)
-        part["Content-Disposition"] = f'attachment; filename="{out_path.name}"'
-        msg.attach(part)
-
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-            smtp.starttls()
-            smtp.login(SMTP_USER, SMTP_PASS)
-            smtp.sendmail(SMTP_FROM or SMTP_USER, EMAIL_TO, msg.as_string())
-
-        print(f"[watch] Email sent to {EMAIL_TO}")
+    result = send_workbook_email(out_path, len(state.get("receipts", [])))
+    if result.get("ok"):
         state["last_emailed"] = datetime.now().date().isoformat()
         save_state(state)
-        return {"ok": True, "filename": out_path.name}
-
-    except Exception as exc:
-        return {"ok": False, "error": f"Email failed: {exc}"}
+    return result
 
 
 # ── Watch loop ─────────────────────────────────────────────────────────────────

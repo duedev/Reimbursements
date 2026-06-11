@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from queue import Empty, Queue
 from uuid import uuid4
@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 import process_receipts as _pr
+import scheduler
 from process_receipts import (
     initialize_models,
     _extract_receipt_with_status,
@@ -527,6 +528,39 @@ def _run_stall_checker() -> None:
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
+# ── Scheduled export ───────────────────────────────────────────────────────────
+
+_schedule_wakeup: asyncio.Event = asyncio.Event()
+
+
+def _get_schedule_config() -> scheduler.ScheduleConfig:
+    try:
+        return scheduler.parse_schedule(_load_config().get("schedule") or {})
+    except scheduler.ScheduleError:
+        return scheduler.ScheduleConfig(enabled=False)
+
+
+def _schedule_results_snapshot() -> tuple[list[dict], str]:
+    with _results_lock:
+        results = copy.deepcopy(_results)
+        employee = _last_context.get("employee", "Employee")
+    _detect_duplicates(results)
+    return results, employee
+
+
+def _on_schedule_result(report: dict) -> None:
+    cfg = _load_config()
+    cfg.setdefault("schedule", {})["last_run"] = report
+    _save_config(cfg)
+    if report.get("ok"):
+        msg = (f"Scheduled export complete: {report.get('filename')} "
+               f"({', '.join(report.get('delivered', []))})")
+    else:
+        msg = f"Scheduled export failed: {report.get('error')}"
+    _broadcast({"type": "log", "message": msg})
+    print(f"[schedule] {msg}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _restore_state()
@@ -534,7 +568,12 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_run_worker,        daemon=True).start()
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
+    sched_task = asyncio.create_task(scheduler.run_scheduler(
+        _get_schedule_config, _schedule_results_snapshot,
+        _on_schedule_result, _schedule_wakeup,
+    ))
     yield
+    sched_task.cancel()
     _worker_cancel.set()
 
 
@@ -1562,6 +1601,8 @@ async def get_settings():
     return JSONResponse({
         "host_intake_path": cfg.get("host_intake_path") or os.getenv("HOST_INTAKE_PATH", ""),
         "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
+        "host_export_path": cfg.get("host_export_path") or os.getenv("HOST_EXPORT_PATH", ""),
+        "docker": Path("/.dockerenv").exists(),
     })
 
 
@@ -1575,6 +1616,76 @@ async def save_settings(body: SettingsRequest):
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Scheduled export endpoints ─────────────────────────────────────────────────
+
+class ScheduleRequest(BaseModel):
+    enabled: bool = False
+    time: str = "17:00"
+    days: str = "thu"
+    dropbox_token: str = ""
+    email: bool = False
+
+
+def _schedule_status() -> dict:
+    cfg = _get_schedule_config()
+    saved = _load_config().get("schedule") or {}
+    nxt = scheduler.next_run(cfg, datetime.now())
+    return {
+        "enabled":        cfg.enabled,
+        "time":           cfg.time_str,
+        "days":           cfg.days_str,
+        "email":          cfg.email,
+        "dropbox":        bool(cfg.dropbox_token),
+        "export_folder":  str(scheduler.EXPORT_FOLDER),
+        "next_run":       nxt.isoformat(timespec="minutes") if nxt else None,
+        "last_run":       saved.get("last_run"),
+    }
+
+
+@app.get("/schedule")
+async def get_schedule():
+    return JSONResponse(_schedule_status())
+
+
+@app.post("/schedule")
+async def set_schedule(body: ScheduleRequest):
+    try:
+        new = {
+            "enabled": body.enabled,
+            "time":    body.time.strip(),
+            "days":    body.days.strip(),
+            "email":   body.email,
+            "dropbox_token": body.dropbox_token.strip(),
+        }
+        scheduler.parse_schedule(new)  # validate before persisting
+    except scheduler.ScheduleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    cfg = _load_config()
+    saved = cfg.get("schedule") or {}
+    if not new["dropbox_token"]:  # blank input keeps any previously saved token
+        new["dropbox_token"] = saved.get("dropbox_token", "")
+    new["last_run"] = saved.get("last_run")
+    cfg["schedule"] = new
+    _save_config(cfg)
+    _schedule_wakeup.set()
+    return JSONResponse({"ok": True, **_schedule_status()})
+
+
+@app.post("/schedule/run-now")
+async def schedule_run_now():
+    cfg = _get_schedule_config()
+    results, employee = _schedule_results_snapshot()
+
+    def _run():
+        return scheduler.run_export(cfg, results, employee)
+
+    report = await asyncio.get_event_loop().run_in_executor(None, _run)
+    report["ran_at"] = datetime.now().isoformat(timespec="seconds")
+    _on_schedule_result(report)
+    status = 200 if report.get("ok") else 400
+    return JSONResponse(report, status_code=status)
 
 
 # ── Saved fields ───────────────────────────────────────────────────────────────

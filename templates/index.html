@@ -1045,6 +1045,40 @@
           <input type="text" id="setting-output-path" placeholder="/Users/yourname/Documents/output">
         </label>
       </div>
+      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Scheduled export</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+          Automatically generate the spreadsheet into the export folder on a schedule.
+          Point the export folder at a Dropbox / Google Drive / OneDrive sync folder for
+          automatic cloud upload — or add a Dropbox token / enable email below.
+        </p>
+        <div class="fields" style="grid-template-columns:auto auto 1fr;align-items:end;gap:12px">
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row">
+            <input type="checkbox" id="sched-enabled" style="width:auto"> Enabled
+          </label>
+          <label>
+            Time
+            <input type="time" id="sched-time" value="17:00" style="width:110px">
+          </label>
+          <label>
+            Days <span style="color:var(--muted);font-weight:400">(e.g. thu &middot; mon,fri &middot; daily &middot; weekdays)</span>
+            <input type="text" id="sched-days" value="thu">
+          </label>
+        </div>
+        <div class="fields" style="grid-template-columns:1fr auto;align-items:end;gap:12px;margin-top:10px">
+          <label>
+            Dropbox access token <span style="color:var(--muted);font-weight:400">(optional — leave blank to keep saved token)</span>
+            <input type="password" id="sched-dropbox" placeholder="sl.B...">
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;padding-bottom:8px">
+            <input type="checkbox" id="sched-email" style="width:auto"> Email report
+          </label>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn" id="sched-run-now-btn" style="height:32px;padding:0 14px;font-size:12px">Run now</button>
+          <span id="sched-status" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+      </div>
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
@@ -2170,7 +2204,73 @@ async function loadSettings() {
     document.getElementById('setting-intake-path').value = d.host_intake_path || '';
     document.getElementById('setting-output-path').value = d.host_output_path || '';
   } catch (_) {}
+  loadSchedule();
 }
+
+async function loadSchedule() {
+  try {
+    const res = await fetch('/schedule');
+    if (!res.ok) return;
+    const s = await res.json();
+    document.getElementById('sched-enabled').checked = !!s.enabled;
+    document.getElementById('sched-time').value = s.time || '17:00';
+    document.getElementById('sched-days').value = s.days || 'thu';
+    document.getElementById('sched-email').checked = !!s.email;
+    _renderSchedStatus(s);
+  } catch (_) {}
+}
+
+function _renderSchedStatus(s) {
+  const el = document.getElementById('sched-status');
+  const parts = [];
+  if (s.next_run) parts.push(`Next run: ${s.next_run.replace('T', ' ')}`);
+  if (s.last_run) {
+    parts.push(s.last_run.ok
+      ? `Last: ${s.last_run.filename} ✓ (${(s.last_run.delivered || []).join(', ')})`
+      : `Last failed: ${s.last_run.error || 'unknown error'}`);
+  }
+  if (!s.enabled && !parts.length) parts.push('Disabled');
+  el.textContent = parts.join(' · ');
+}
+
+async function _saveSchedule() {
+  const res = await fetch('/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enabled: document.getElementById('sched-enabled').checked,
+      time:    document.getElementById('sched-time').value.trim() || '17:00',
+      days:    document.getElementById('sched-days').value.trim() || 'thu',
+      email:   document.getElementById('sched-email').checked,
+      dropbox_token: document.getElementById('sched-dropbox').value.trim(),
+    }),
+  });
+  const d = await res.json();
+  if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
+  document.getElementById('sched-dropbox').value = '';
+  _renderSchedStatus(d);
+}
+
+document.getElementById('sched-run-now-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('sched-run-now-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const res = await fetch('/schedule/run-now', { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) {
+      showToast(`Exported ${d.filename} (${(d.delivered || []).join(', ')})`, true);
+    } else {
+      showToast(`Export failed: ${d.error}`, false);
+    }
+    loadSchedule();
+  } catch (err) {
+    showToast(`Export error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run now';
+  }
+});
 
 document.getElementById('save-settings-btn').addEventListener('click', async () => {
   const btn = document.getElementById('save-settings-btn');
@@ -2186,6 +2286,7 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
       }),
     });
     const d = await res.json();
+    await _saveSchedule();
     if (d.ok) {
       msg.textContent = 'Saved ✓';
       msg.style.color = 'var(--success)';
