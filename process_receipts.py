@@ -357,7 +357,8 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
                 {"type": "text", "text": OLMOCR_RAW_PROMPT},
             ]}],
             temperature=0.0, max_tokens=2048,
-            extra_body=thinking_body,
+            frequency_penalty=0.1,
+            extra_body={**thinking_body, "repeat_penalty": 1.1},
         )
         text = response.choices[0].message.content.strip()
         return text if text else None
@@ -397,8 +398,9 @@ def _unified_distillation(
         resp = client.chat.completions.create(
             model=_active_distill_model,
             messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=768,
-            extra_body=thinking_body,
+            temperature=0.0, max_tokens=1024,
+            frequency_penalty=0.15,
+            extra_body={**thinking_body, "repeat_penalty": 1.1},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -409,8 +411,9 @@ def _unified_distillation(
                 model=_active_distill_model,
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
-                temperature=0.0, max_tokens=768,
-                extra_body=thinking_body,
+                temperature=0.0, max_tokens=1024,
+                frequency_penalty=0.15,
+                extra_body={**thinking_body, "repeat_penalty": 1.1},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
@@ -452,8 +455,9 @@ def _extract_with_model(
         ]}
         resp = client.chat.completions.create(
             model=model_id, messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=768,
-            extra_body=thinking_body,
+            temperature=0.0, max_tokens=1024,
+            frequency_penalty=0.15,
+            extra_body={**thinking_body, "repeat_penalty": 1.1},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -464,8 +468,9 @@ def _extract_with_model(
                 model=model_id,
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
-                temperature=0.0, max_tokens=768,
-                extra_body=thinking_body,
+                temperature=0.0, max_tokens=1024,
+                frequency_penalty=0.15,
+                extra_body={**thinking_body, "repeat_penalty": 1.1},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:

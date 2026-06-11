@@ -55,6 +55,11 @@ OUT_FOLDER    = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
 CONFIG_FILE   = OUT_FOLDER / ".app_config.json"
 
+# ── Stall checker config ───────────────────────────────────────────────────────
+
+STALL_TIMEOUT_SECS  = int(os.getenv("STALL_TIMEOUT_SECS",  "180"))  # 3 min
+STALL_CHECK_INTERVAL = int(os.getenv("STALL_CHECK_INTERVAL", "60"))   # 1 min
+
 # ── Global state ───────────────────────────────────────────────────────────────
 
 _work_queue: deque = deque()
@@ -75,6 +80,14 @@ _worker_cancel = threading.Event()
 
 _subscribers: list[Queue] = []
 _sub_lock = threading.Lock()
+
+# Item metadata cache — preserves queue item data for stall recovery
+_item_cache: dict[str, dict] = {}
+_item_cache_lock = threading.Lock()
+
+# Status change timestamps — used by stall checker
+_status_timestamps: dict[str, float] = {}
+_status_ts_lock = threading.Lock()
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
@@ -143,6 +156,8 @@ def _remove_subscriber(q: Queue) -> None:
 def _update_kanban(filename: str, status: str, data, model: str = "") -> None:
     with _kanban_lock:
         _kanban[filename] = {"status": status, "data": _safe_receipt_data(data), "model": model}
+    with _status_ts_lock:
+        _status_timestamps[filename] = time.time()
 
 
 def _is_active_in_kanban(filename: str) -> bool:
@@ -163,6 +178,12 @@ def _safe_receipt_data(data) -> dict:
         if k in data:
             out[k] = data[k]
     return out
+
+
+def _cache_item(item: dict) -> None:
+    """Cache queue item data for stall recovery."""
+    with _item_cache_lock:
+        _item_cache[item["filename"]] = item
 
 
 # ── Background worker ──────────────────────────────────────────────────────────
@@ -309,6 +330,7 @@ def _run_watcher() -> None:
                             "job_name":   _last_context.get("job_name", ""),
                             "job_number": _last_context.get("job_number", ""),
                         }
+                        _cache_item(item)
                         with _work_lock:
                             _work_queue.append(item)
                         _update_kanban(p.name, "queued", None)
@@ -335,6 +357,7 @@ def _run_watcher() -> None:
                                     "job_name":   _last_context.get("job_name", ""),
                                     "job_number": _last_context.get("job_number", ""),
                                 }
+                                _cache_item(item)
                                 with _work_lock:
                                     _work_queue.append(item)
                                 _update_kanban(page_path.name, "queued", None)
@@ -363,13 +386,74 @@ def _run_watcher() -> None:
         time.sleep(5)
 
 
+# ── Stall checker ─────────────────────────────────────────────────────────────
+
+def _run_stall_checker() -> None:
+    """Periodically detect items stuck in ocr/distilling and re-queue them."""
+    while not _worker_cancel.is_set():
+        _worker_cancel.wait(timeout=STALL_CHECK_INTERVAL)
+        if _worker_cancel.is_set():
+            break
+
+        now = time.time()
+        stalled: list[str] = []
+
+        with _kanban_lock:
+            for fname, entry in list(_kanban.items()):
+                if entry["status"] not in ("ocr", "distilling"):
+                    continue
+                with _status_ts_lock:
+                    ts = _status_timestamps.get(fname, now)
+                if now - ts > STALL_TIMEOUT_SECS:
+                    stalled.append(fname)
+
+        for fname in stalled:
+            with _item_cache_lock:
+                cached = _item_cache.get(fname)
+
+            if not cached:
+                # Last resort: look in intake folder
+                candidate = INTAKE_FOLDER / fname
+                if candidate.exists():
+                    cached = {
+                        "filename":   fname,
+                        "path":       str(candidate),
+                        "employee":   _last_context.get("employee", "Employee"),
+                        "job_name":   _last_context.get("job_name", ""),
+                        "job_number": _last_context.get("job_number", ""),
+                    }
+
+            if not cached:
+                _update_kanban(fname, "failed", {"_error": "Stalled — image path unavailable for retry"})
+                _broadcast({
+                    "type": "kanban_update", "filename": fname,
+                    "status": "failed",
+                    "data": {"_error": "Stalled — image path unavailable for retry"},
+                    "model": "",
+                })
+                _broadcast({"type": "log", "message": f"[stall] {fname} stuck with no recoverable path — marked failed"})
+                continue
+
+            item = dict(cached)
+            with _work_lock:
+                _work_queue.appendleft(item)
+            _update_kanban(fname, "queued", None)
+            _broadcast({
+                "type": "kanban_update", "filename": fname,
+                "status": "queued", "data": {}, "model": "",
+            })
+            _broadcast({"type": "stall_recovered", "filename": fname})
+            _broadcast({"type": "log", "message": f"[stall] {fname} was stuck — re-queued automatically"})
+
+
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=initialize_models, daemon=True).start()
-    threading.Thread(target=_run_worker,       daemon=True).start()
-    threading.Thread(target=_run_watcher,      daemon=True).start()
+    threading.Thread(target=initialize_models,  daemon=True).start()
+    threading.Thread(target=_run_worker,        daemon=True).start()
+    threading.Thread(target=_run_watcher,       daemon=True).start()
+    threading.Thread(target=_run_stall_checker, daemon=True).start()
     yield
     _worker_cancel.set()
 
@@ -436,6 +520,7 @@ async def queue_add(
                         "job_name":   job_name,
                         "job_number": job_number,
                     }
+                    _cache_item(item)
                     with _work_lock:
                         _work_queue.append(item)
                     _update_kanban(page_path.name, "queued", None)
@@ -460,6 +545,7 @@ async def queue_add(
                 "job_name":   job_name,
                 "job_number": job_number,
             }
+            _cache_item(item)
             with _work_lock:
                 _work_queue.append(item)
             _update_kanban(dest.name, "queued", None)
@@ -526,6 +612,7 @@ async def queue_add_intake(
                 "job_name":   job_name,
                 "job_number": job_number,
             }
+            _cache_item(item)
             with _work_lock:
                 _work_queue.append(item)
             _update_kanban(p.name, "queued", None)
@@ -552,6 +639,7 @@ async def queue_add_intake(
                         "job_name":   job_name,
                         "job_number": job_number,
                     }
+                    _cache_item(item)
                     with _work_lock:
                         _work_queue.append(item)
                     _update_kanban(page_path.name, "queued", None)
@@ -898,6 +986,7 @@ async def retry_receipt(body: RetryRequest):
         "job_name":   _last_context.get("job_name", ""),
         "job_number": _last_context.get("job_number", ""),
     }
+    _cache_item(item)
     with _work_lock:
         _work_queue.appendleft(item)
 
@@ -927,6 +1016,45 @@ async def queue_clear_all():
 
     _broadcast({"type": "kanban_cleared"})
     return JSONResponse({"ok": True, "cleared": cleared})
+
+
+@app.post("/queue/unstick")
+async def queue_unstick():
+    """Manually re-queue all items currently stuck in ocr or distilling status."""
+    with _kanban_lock:
+        stalled = [
+            fname for fname, entry in _kanban.items()
+            if entry["status"] in ("ocr", "distilling")
+        ]
+
+    unstuck: list[str] = []
+    for fname in stalled:
+        with _item_cache_lock:
+            cached = _item_cache.get(fname)
+        if not cached:
+            candidate = INTAKE_FOLDER / fname
+            if candidate.exists():
+                cached = {
+                    "filename":   fname,
+                    "path":       str(candidate),
+                    "employee":   _last_context.get("employee", "Employee"),
+                    "job_name":   _last_context.get("job_name", ""),
+                    "job_number": _last_context.get("job_number", ""),
+                }
+        if not cached:
+            continue
+        item = dict(cached)
+        with _work_lock:
+            _work_queue.appendleft(item)
+        _update_kanban(fname, "queued", None)
+        _broadcast({
+            "type": "kanban_update", "filename": fname,
+            "status": "queued", "data": {}, "model": "",
+        })
+        _broadcast({"type": "log", "message": f"[unstick] {fname} manually re-queued"})
+        unstuck.append(fname)
+
+    return JSONResponse({"ok": True, "unstuck": unstuck, "count": len(unstuck)})
 
 
 @app.post("/kanban/remove")
