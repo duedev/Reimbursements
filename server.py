@@ -40,11 +40,13 @@ from process_receipts import (
     sort_key_for_receipt,
     rename_receipt_image,
     autocrop_image_file,
+    compress_image_file,
     _detect_duplicates,
     generate_spreadsheet,
     list_available_models,
     _try_load_model,
     pdf_to_images,
+    APP_VERSION,
     GEMMA_SMALL_MODEL_ID,
     GEMMA_LARGE_MODEL_ID,
     IMAGE_EXTENSIONS,
@@ -86,6 +88,11 @@ _seen_intake: set[str] = set()
 _seen_lock   = threading.Lock()
 
 _worker_cancel = threading.Event()
+
+# Reference to the background worker thread + a guard so a crashed worker can be
+# revived (by the stall checker, the lifespan startup, or a manual queue nudge).
+_worker_thread: threading.Thread | None = None
+_worker_start_lock = threading.Lock()
 
 _subscribers: list[Queue] = []
 _sub_lock = threading.Lock()
@@ -132,6 +139,33 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
     if value not in lst:
         lst.insert(0, value)
     cfg[list_key] = lst[:20]
+
+
+def _processing_settings() -> dict:
+    """Current image-processing settings as the UI sees them."""
+    return {
+        "autocrop":     _pr.AUTOCROP_ENABLED,
+        "compress":     _pr.COMPRESS_ENABLED,
+        "paddleocr":    _pr.PADDLEOCR_ENABLED,
+        "jpeg_quality": _pr.JPEG_QUALITY,
+    }
+
+
+def _apply_processing_config(cfg: dict | None = None) -> dict:
+    """Push persisted image-processing settings into the process_receipts module."""
+    proc = (cfg if cfg is not None else _load_config()).get("processing") or {}
+    if "autocrop" in proc:
+        _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
+    if "compress" in proc:
+        _pr.COMPRESS_ENABLED = bool(proc["compress"])
+    if "paddleocr" in proc:
+        _pr.PADDLEOCR_ENABLED = bool(proc["paddleocr"])
+    if proc.get("jpeg_quality") is not None:
+        try:
+            _pr.JPEG_QUALITY = max(40, min(95, int(proc["jpeg_quality"])))
+        except (TypeError, ValueError):
+            pass
+    return _processing_settings()
 
 
 # ── SSE broadcast helpers ──────────────────────────────────────────────────────
@@ -264,124 +298,178 @@ def _restore_state() -> None:
 
 # ── Background worker ──────────────────────────────────────────────────────────
 
+def _ensure_worker_alive() -> bool:
+    """(Re)start the background worker thread if it isn't running.
+
+    A single unhandled error used to kill the worker for good, leaving items stuck
+    in the queue until a full container restart. The worker loop now self-heals, and
+    this watchdog brings it back if the thread ever dies anyway. Returns True when a
+    new worker thread was started.
+    """
+    global _worker_thread
+    if _worker_cancel.is_set():
+        return False
+    with _worker_start_lock:
+        if _worker_thread is not None and _worker_thread.is_alive():
+            return False
+        _worker_thread = threading.Thread(target=_run_worker, daemon=True)
+        _worker_thread.start()
+        return True
+
+
+def _optimize_stored_image(path: Path, fname: str) -> Path:
+    """Auto-crop + compress a processed receipt image, logging the size reduction.
+
+    Returns the resulting path (compression may convert PNGs etc. to ``.jpg``).
+    """
+    try:
+        before = path.stat().st_size
+    except OSError:
+        before = 0
+    autocrop_image_file(path)
+    new_path = compress_image_file(path)
+    try:
+        after = new_path.stat().st_size
+    except OSError:
+        after = before
+    if before and after and after < before:
+        pct = round((1 - after / before) * 100)
+        _broadcast({
+            "type": "log",
+            "message": f"[image] {fname}: {before // 1024} KB → {after // 1024} KB (−{pct}%)",
+        })
+    return new_path
+
+
 def _run_worker() -> None:
+    """Drain the work queue forever, surviving per-batch errors."""
     while not _worker_cancel.is_set():
-        with _work_lock:
-            batch = list(_work_queue) if _work_queue else []
-            if batch:
-                _work_queue.clear()
+        try:
+            if not _drain_once():
+                time.sleep(0.4)
+        except Exception as exc:
+            _broadcast({"type": "log", "message": f"[worker] recovered from error: {exc}"})
+            time.sleep(1)
 
-        if not batch:
-            time.sleep(0.4)
-            continue
 
-        _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+def _drain_once() -> bool:
+    """Process one batch from the queue. Returns False when the queue was empty."""
+    with _work_lock:
+        batch = list(_work_queue) if _work_queue else []
+        if batch:
+            _work_queue.clear()
 
-        futures_map: dict = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS or None) as ex:
-            for item in batch:
-                if _worker_cancel.is_set():
-                    break
-                fname = item["filename"]
-                path  = Path(item["path"])
+    if not batch:
+        return False
 
-                def make_cb(fn: str):
-                    def cb(status: str, data=None, model: str = "") -> None:
-                        _update_kanban(fn, status, data, model)
-                        _broadcast({
-                            "type":     "kanban_update",
-                            "filename": fn,
-                            "status":   status,
-                            "data":     _safe_receipt_data(data),
-                            "model":    model,
-                        })
-                    return cb
+    _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
+    client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
 
-                future = ex.submit(_extract_receipt_with_status, client, path, make_cb(fname))
-                futures_map[future] = item
+    futures_map: dict = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS or None) as ex:
+        for item in batch:
+            if _worker_cancel.is_set():
+                break
+            fname = item["filename"]
+            path  = Path(item["path"])
 
-            for future in concurrent.futures.as_completed(futures_map):
-                if _worker_cancel.is_set():
-                    break
-                item  = futures_map[future]
-                fname = item["filename"]
-                path  = Path(item["path"])
-                try:
-                    data = future.result()
-                except Exception as exc:
-                    data = None
-                    _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
-
-                if data is None or _is_low_confidence(data) or _has_ocr_flag(data):
-                    fail_reason = _get_fail_reason(data)
-                    partial: dict = {}
-                    if data is not None:
-                        partial = dict(data)
-                        partial["_flag"]   = "Manual review required — incomplete extraction"
-                        partial["_error"]  = fail_reason
-                        partial["_file"]   = fname
-                        conf, _            = _compute_confidence(data)
-                        partial["_confidence"] = conf
-                    _update_kanban(fname, "failed", partial)
+            def make_cb(fn: str):
+                def cb(status: str, data=None, model: str = "") -> None:
+                    _update_kanban(fn, status, data, model)
                     _broadcast({
                         "type":     "kanban_update",
-                        "filename": fname,
-                        "status":   "failed",
-                        "data":     _safe_receipt_data(partial),
-                        "model":    "",
-                        "error":    fail_reason,
+                        "filename": fn,
+                        "status":   status,
+                        "data":     _safe_receipt_data(data),
+                        "model":    model,
                     })
-                    continue
+                return cb
 
-                category = classify_category(data)
-                data["_category"]  = category
-                data["job_name"]   = item.get("job_name") or None
-                data["job_number"] = item.get("job_number") or None
-                audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
-                flags = data.get("flags") or []
-                if flags and not data.get("_flag"):
-                    data["_flag"] = flags[0].get("flag", "")
-                if audit_flag and not data.get("_flag"):
-                    data["_flag"] = audit_flag
-                conf, _ = _compute_confidence(data)
-                data["_confidence"] = conf
+            future = ex.submit(_extract_receipt_with_status, client, path, make_cb(fname))
+            futures_map[future] = item
 
-                IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
-                autocrop_image_file(path)
-                final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
-                data["_new_filename"] = final_path.name
-                data["_file"]         = fname
-                data["_image_path"]   = str(final_path)
+        for future in concurrent.futures.as_completed(futures_map):
+            if _worker_cancel.is_set():
+                break
+            item  = futures_map[future]
+            fname = item["filename"]
+            path  = Path(item["path"])
+            try:
+                data = future.result()
+            except Exception as exc:
+                data = None
+                _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
 
-                with _results_lock:
-                    _results.append(data)
-                    _last_context.update({
-                        "employee":   item.get("employee", "Employee"),
-                        "job_name":   item.get("job_name", ""),
-                        "job_number": item.get("job_number", ""),
-                    })
-
-                _update_kanban(fname, "done", data)
+            if data is None or _is_low_confidence(data) or _has_ocr_flag(data):
+                fail_reason = _get_fail_reason(data)
+                partial: dict = {}
+                if data is not None:
+                    partial = dict(data)
+                    partial["_flag"]   = "Manual review required — incomplete extraction"
+                    partial["_error"]  = fail_reason
+                    partial["_file"]   = fname
+                    conf, _            = _compute_confidence(data)
+                    partial["_confidence"] = conf
+                _update_kanban(fname, "failed", partial)
                 _broadcast({
                     "type":     "kanban_update",
                     "filename": fname,
-                    "status":   "done",
-                    "data":     _safe_receipt_data(data),
+                    "status":   "failed",
+                    "data":     _safe_receipt_data(partial),
                     "model":    "",
+                    "error":    fail_reason,
                 })
-                _broadcast({
-                    "type":    "log",
-                    "message": f"[{category.upper()}] {data.get('vendor','?')} — ${data.get('amount', 0):.2f}",
+                continue
+
+            category = classify_category(data)
+            data["_category"]  = category
+            data["job_name"]   = item.get("job_name") or None
+            data["job_number"] = item.get("job_number") or None
+            audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
+            flags = data.get("flags") or []
+            if flags and not data.get("_flag"):
+                data["_flag"] = flags[0].get("flag", "")
+            if audit_flag and not data.get("_flag"):
+                data["_flag"] = audit_flag
+            conf, _ = _compute_confidence(data)
+            data["_confidence"] = conf
+
+            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+            path = _optimize_stored_image(path, fname)
+            final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
+            data["_new_filename"] = final_path.name
+            data["_file"]         = fname
+            data["_image_path"]   = str(final_path)
+
+            with _results_lock:
+                _results.append(data)
+                _last_context.update({
+                    "employee":   item.get("employee", "Employee"),
+                    "job_name":   item.get("job_name", ""),
+                    "job_number": item.get("job_number", ""),
                 })
 
-        with _results_lock:
-            _detect_duplicates(_results)
-            n_done = len(_results)
-        with _work_lock:
-            n_pending = len(_work_queue)
-        _persist_state()
-        _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending})
+            _update_kanban(fname, "done", data)
+            _broadcast({
+                "type":     "kanban_update",
+                "filename": fname,
+                "status":   "done",
+                "data":     _safe_receipt_data(data),
+                "model":    "",
+            })
+            _broadcast({
+                "type":    "log",
+                "message": f"[{category.upper()}] {data.get('vendor','?')} — ${data.get('amount', 0):.2f}",
+            })
+
+    with _results_lock:
+        _detect_duplicates(_results)
+        n_done = len(_results)
+    with _work_lock:
+        n_pending = len(_work_queue)
+    _persist_state()
+    _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending})
+    return True
 
 
 # ── Background watcher ─────────────────────────────────────────────────────────
@@ -476,6 +564,10 @@ def _run_stall_checker() -> None:
         if _worker_cancel.is_set():
             break
 
+        # Revive the worker if it died, so a crashed thread never strands the queue.
+        if _ensure_worker_alive():
+            _broadcast({"type": "log", "message": "[watchdog] worker thread restarted"})
+
         now = time.time()
         stalled: list[str] = []
 
@@ -565,8 +657,9 @@ def _on_schedule_result(report: dict) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _restore_state()
+    _apply_processing_config()   # restore UI-saved auto-crop / compress / PaddleOCR settings
     threading.Thread(target=initialize_models,  daemon=True).start()
-    threading.Thread(target=_run_worker,        daemon=True).start()
+    _ensure_worker_alive()       # start the self-healing worker thread
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
     sched_task = asyncio.create_task(scheduler.run_scheduler(
@@ -800,6 +893,7 @@ async def queue_cancel():
         cleared = len(_work_queue)
         _work_queue.clear()
     _worker_cancel.clear()   # allow future processing
+    _ensure_worker_alive()   # revive the worker if the cancel toggle stopped it
     return JSONResponse({"ok": True, "cleared": cleared})
 
 
@@ -1362,6 +1456,7 @@ async def queue_clear_all():
         cleared = len(_work_queue)
         _work_queue.clear()
     _worker_cancel.clear()
+    _ensure_worker_alive()   # revive the worker if the cancel toggle stopped it
 
     with _kanban_lock:
         _kanban.clear()
@@ -1412,6 +1507,64 @@ async def queue_unstick():
         unstuck.append(fname)
 
     return JSONResponse({"ok": True, "unstuck": unstuck, "count": len(unstuck)})
+
+
+@app.post("/queue/nudge")
+async def queue_nudge():
+    """Manual push button for a stalled pipeline.
+
+    Clears any stuck cancel flag, restarts the worker thread if it died, and
+    re-queues every board item sitting in queued/ocr/distilling that isn't already
+    in the work queue. Use this when items aren't moving instead of restarting the
+    whole container.
+    """
+    _worker_cancel.clear()
+    revived = _ensure_worker_alive()
+
+    with _work_lock:
+        in_queue = {it["filename"] for it in _work_queue}
+    with _kanban_lock:
+        candidates = [
+            fname for fname, entry in _kanban.items()
+            if entry.get("status") in ("queued", "ocr", "distilling")
+        ]
+
+    requeued: list[str] = []
+    for fname in candidates:
+        if fname in in_queue:
+            continue
+        with _item_cache_lock:
+            cached = _item_cache.get(fname)
+        if not cached:
+            candidate = INTAKE_FOLDER / fname
+            if candidate.exists():
+                cached = {
+                    "filename":   fname,
+                    "path":       str(candidate),
+                    "employee":   _last_context.get("employee", "Employee"),
+                    "job_name":   _last_context.get("job_name", ""),
+                    "job_number": _last_context.get("job_number", ""),
+                }
+        if not cached:
+            continue
+        with _work_lock:
+            _work_queue.append(dict(cached))
+        _update_kanban(fname, "queued", None)
+        _broadcast({
+            "type": "kanban_update", "filename": fname,
+            "status": "queued", "data": {}, "model": "",
+        })
+        requeued.append(fname)
+
+    bits = []
+    if revived:
+        bits.append("worker restarted")
+    bits.append(f"{len(requeued)} item(s) re-queued" if requeued else "queue already moving")
+    _broadcast({"type": "log", "message": f"[nudge] {', '.join(bits)}"})
+    return JSONResponse({
+        "ok": True, "requeued": requeued,
+        "count": len(requeued), "worker_restarted": revived,
+    })
 
 
 @app.post("/kanban/remove")
@@ -1605,6 +1758,7 @@ async def get_settings():
         "host_output_path": cfg.get("host_output_path") or HOST_OUTPUT_PATH or "",
         "host_export_path": cfg.get("host_export_path") or os.getenv("HOST_EXPORT_PATH", ""),
         "docker": Path("/.dockerenv").exists(),
+        "version": APP_VERSION,
     })
 
 
@@ -1618,6 +1772,106 @@ async def save_settings(body: SettingsRequest):
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/version")
+async def get_version():
+    return JSONResponse({"version": APP_VERSION})
+
+
+# ── Image-processing settings ──────────────────────────────────────────────────
+
+class ProcessingSettingsRequest(BaseModel):
+    autocrop:     bool | None = None
+    compress:     bool | None = None
+    paddleocr:    bool | None = None
+    jpeg_quality: int | None = None
+
+
+@app.get("/settings/processing")
+async def get_processing_settings():
+    return JSONResponse(_processing_settings())
+
+
+@app.post("/settings/processing")
+async def save_processing_settings(body: ProcessingSettingsRequest):
+    try:
+        cfg = _load_config()
+        proc = cfg.get("processing") or {}
+        if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
+        if body.compress  is not None: proc["compress"]  = bool(body.compress)
+        if body.paddleocr is not None: proc["paddleocr"] = bool(body.paddleocr)
+        if body.jpeg_quality is not None:
+            proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
+        cfg["processing"] = proc
+        _save_config(cfg)
+        applied = _apply_processing_config(cfg)
+        return JSONResponse({"ok": True, **applied})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Email settings ─────────────────────────────────────────────────────────────
+
+class EmailSettingsRequest(BaseModel):
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass: str = ""      # blank = keep previously saved password
+    smtp_from: str = ""
+    email_to:  str = ""
+    email_subject: str = "Weekly Reimbursement Report"
+
+
+@app.get("/settings/email")
+async def get_email_settings():
+    # Resolve from the same source the sender uses (UI config over env), and report
+    # only whether a password is present — never echo the secret back to the client.
+    from watch_mode import load_email_config
+    em = load_email_config()
+    password_set = bool(em["pass"])
+    return JSONResponse({
+        "smtp_host":     em["host"],
+        "smtp_port":     em["port"],
+        "smtp_user":     em["user"],
+        "smtp_from":     em["from"],
+        "email_to":      em["to"],
+        "email_subject": em["subject"],
+        "password_set":  password_set,
+        "configured":    bool(em["host"] and em["user"] and em["to"] and password_set),
+    })
+
+
+@app.post("/settings/email")
+async def save_email_settings(body: EmailSettingsRequest):
+    try:
+        cfg = _load_config()
+        email = cfg.get("email") or {}
+        email["smtp_host"]     = body.smtp_host.strip()
+        email["smtp_port"]     = int(body.smtp_port or 587)
+        email["smtp_user"]     = body.smtp_user.strip()
+        email["smtp_from"]     = body.smtp_from.strip()
+        email["email_to"]      = body.email_to.strip()
+        email["email_subject"] = body.email_subject.strip() or "Weekly Reimbursement Report"
+        if body.smtp_pass:   # blank keeps the previously saved password
+            email["smtp_pass"] = body.smtp_pass
+        cfg["email"] = email
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/settings/email/test")
+async def test_email_settings():
+    def _run():
+        from watch_mode import send_test_email
+        return send_test_email()
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 
 # ── Scheduled export endpoints ─────────────────────────────────────────────────
@@ -1767,12 +2021,13 @@ async def admin_restart():
 @app.get("/watch/status")
 async def watch_status():
     try:
-        from watch_mode import load_state, SMTP_HOST, EMAIL_TO
+        from watch_mode import load_state, load_email_config
         state = load_state()
+        em = load_email_config()
         return JSONResponse({
             "receipts":        len(state.get("receipts", [])),
             "last_emailed":    state.get("last_emailed"),
-            "smtp_configured": bool(SMTP_HOST and EMAIL_TO),
+            "smtp_configured": bool(em["host"] and em["user"] and em["pass"] and em["to"]),
         })
     except Exception as exc:
         return JSONResponse({

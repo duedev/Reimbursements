@@ -45,6 +45,11 @@ OLMOCR_MODEL_ID      = os.getenv("OLMOCR_MODEL_ID",      "allenai/olmOCR-2-7B")
 GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "google/gemma-4-12b-qat")
 GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "google/gemma-4-26b-a4b-qat")
 GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
+
+# Build tag — surfaced in the web UI footer and the workbook footer so you can
+# confirm which build is actually running (handy after a `docker compose up`
+# that may have reused a stale image). Override at build time with BUILD_TAG.
+APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
@@ -229,16 +234,32 @@ def list_available_models() -> list[str]:
         return []
 
 
+def _looks_like_chat_model(model_id: str) -> bool:
+    """Heuristic: exclude embedding / audio / reranker models from auto-selection."""
+    low = model_id.lower()
+    return not any(tag in low for tag in
+                   ("embed", "bge-", "rerank", "whisper", "tts", "clip", "vae"))
+
+
 def initialize_models() -> str:
-    """Check LM Studio connectivity and report available models. Does not auto-select."""
+    """Check LM Studio connectivity and adopt whatever model is loaded.
+
+    If the configured distill model isn't actually loaded, fall back to a loaded
+    Gemma if present, otherwise the first loaded chat-capable model — so the app
+    works out of the box with whatever the user has running in LM Studio.
+    """
     global _active_distill_model
     available = list_available_models()
     if available:
         print(f"[models] {len(available)} model(s) available: {available}")
         if not _active_distill_model or _active_distill_model not in available:
-            gemma = next((m for m in available if "gemma" in m.lower()), None)
-            if gemma:
-                _active_distill_model = gemma
+            chosen = (
+                next((m for m in available if "gemma" in m.lower()), None)
+                or next((m for m in available if _looks_like_chat_model(m)), None)
+                or available[0]
+            )
+            _active_distill_model = chosen
+            print(f"[models] Auto-selected loaded model: {chosen}")
     else:
         print("[models] LM Studio not reachable or no models loaded")
 
@@ -254,6 +275,13 @@ AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
 AUTOCROP_MAX_RATIO = 0.95   # skip crop that trims almost nothing
 AUTOCROP_MARGIN    = 0.02   # safety margin re-added around the detected bbox
 _AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as content
+
+# Stored-image compression — re-encode every saved receipt to an optimized JPEG
+# so phone photos don't bloat the output folder or the embedded workbook images.
+# All three are runtime-adjustable from the web UI (Settings → Image processing).
+COMPRESS_ENABLED = os.getenv("COMPRESS_ENABLED", "1").lower() not in ("0", "false", "no")
+JPEG_QUALITY     = int(os.getenv("JPEG_QUALITY", "85"))    # 40 (smaller) … 95 (sharper)
+STORE_MAX_PX     = int(os.getenv("STORE_MAX_PX", "2000"))  # cap the longest side of stored images
 
 
 def autocrop_receipt(img: Image.Image) -> Image.Image:
@@ -310,12 +338,41 @@ def autocrop_image_file(path: Path) -> bool:
             if cropped.size == img.size:
                 return False
             if path.suffix.lower() in (".jpg", ".jpeg"):
-                cropped.save(path, format="JPEG", quality=85, optimize=True)
+                cropped.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
             else:
                 cropped.save(path)
         return True
     except Exception:
         return False
+
+
+def compress_image_file(path: Path) -> Path:
+    """Re-encode a stored receipt image as an optimized JPEG to shrink its size.
+
+    Honors the runtime JPEG_QUALITY / STORE_MAX_PX settings, downscales oversized
+    photos, and converts non-JPEG formats (PNG, HEIC-as-PNG, etc.) to JPEG. Returns
+    the path of the resulting file — which may carry a new ``.jpg`` suffix — or the
+    original path unchanged when compression is disabled or anything goes wrong.
+    """
+    if not COMPRESS_ENABLED:
+        return path
+    try:
+        with Image.open(path) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            img = raw.convert("RGB")
+        if max(img.size) > STORE_MAX_PX:
+            ratio = STORE_MAX_PX / max(img.size)
+            img = img.resize(
+                (round(img.width * ratio), round(img.height * ratio)), Image.LANCZOS,
+            )
+        target = path.with_suffix(".jpg")
+        img.save(target, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        if target != path and path.exists():
+            path.unlink()
+        return target
+    except Exception:
+        return path
 
 
 def encode_image(path: Path) -> tuple[str, str]:
@@ -939,6 +996,7 @@ def generate_spreadsheet(
         sections=dict(by_category),
         expense_period=expense_period,
         employee_name=employee_name,
+        build_tag=APP_VERSION,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_name   = re.sub(r'[^\w\s-]', '', employee_name or '').strip().replace(' ', '_') or 'Employee'
@@ -1103,6 +1161,7 @@ def process_receipts_batch(
             data["_flag"] = flags_list[0].get("flag", "")
 
         autocrop_image_file(img_path)
+        img_path = compress_image_file(img_path)
         if use_folder_structure:
             dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)

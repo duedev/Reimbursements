@@ -211,7 +211,12 @@ Model IDs are defaults only — use the in-app model selectors to switch without
 
 #### Email (optional)
 
-Leave `SMTP_HOST` empty to disable email entirely.
+> **You can now configure email entirely in the web UI** — open **Settings → Email
+> delivery**, fill in your SMTP details, and click **Send test email** to verify.
+> UI-saved settings take precedence over the environment variables below and need
+> no restart. The variables remain as defaults / for the standalone watcher.
+
+Leave `SMTP_HOST` empty (and the UI fields blank) to disable email entirely.
 
 | Variable | Description |
 |---|---|
@@ -219,8 +224,22 @@ Leave `SMTP_HOST` empty to disable email entirely.
 | `SMTP_PORT` | SMTP port (default 587, TLS) |
 | `SMTP_USER` / `SMTP_PASS` | SMTP credentials |
 | `SMTP_FROM` | Sender address |
-| `EMAIL_TO` | Recipient address(es) |
+| `EMAIL_TO` | Recipient address(es), comma-separated |
 | `EMAIL_SUBJECT` | Subject line (default: "Weekly Reimbursement Report") |
+
+#### Image processing
+
+Auto-crop, JPEG compression, and the PaddleOCR fallback are toggleable in
+**Settings → Image processing** (no restart needed). The defaults below apply
+until changed in the UI.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTOCROP_ENABLED` | `1` | Trim uniform background borders around each receipt |
+| `COMPRESS_ENABLED` | `1` | Re-encode stored receipts to optimized JPEG |
+| `JPEG_QUALITY` | `85` | Stored-image JPEG quality (40–95) |
+| `STORE_MAX_PX` | `2000` | Cap the longest side of stored receipt images |
+| `PADDLEOCR_ENABLED` | `1` | Local CPU OCR fallback when LM Studio's OCR stage is down |
 
 #### UI folder shortcuts
 
@@ -337,6 +356,7 @@ Each generated workbook contains four sheets:
 | `POST` | `/queue/add-intake` | form: `employee`, `job_name`, `job_number` | `{queued: [], pending: n}` |
 | `POST` | `/queue/cancel` | — | `{ok, cleared: n}` |
 | `POST` | `/queue/clear-all` | — | `{ok, cleared: n}` |
+| `POST` | `/queue/nudge` | — | `{ok, requeued: [], count, worker_restarted}` — manual push for a stalled queue |
 | `GET` | `/queue/status` | — | `{pending, completed, kanban}` |
 
 ### Events & Results
@@ -367,9 +387,13 @@ Each generated workbook contains four sheets:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET/POST` | `/settings` | `host_intake_path`, `host_output_path` |
+| `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
+| `GET/POST` | `/settings/processing` | `autocrop`, `compress`, `paddleocr`, `jpeg_quality` |
+| `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
+| `POST` | `/settings/email/test` | Send a test email with the current settings |
 | `GET/POST` | `/saved-fields` | `employees`, `job_names`, `job_numbers` lists |
 | `GET` | `/intake/files` | Files waiting in the intake folder |
+| `GET` | `/version` | Running build tag |
 
 ### Watch Mode
 

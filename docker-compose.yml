@@ -1,6 +1,10 @@
 services:
   receipt-processor:
     build: .
+    # Relaunch automatically after the in-app "Restart App" button (which exits the
+    # process) and after host reboots / crashes. Without this, the restart button
+    # stops the container for good and it never comes back online.
+    restart: unless-stopped
     ports:
       - "8000:8000"
     extra_hosts:
@@ -39,6 +43,7 @@ services:
   receipt-watcher:
     build: .
     profiles: ["watch"]
+    restart: unless-stopped
     command: ["python", "watch_mode.py"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
