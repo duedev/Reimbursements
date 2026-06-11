@@ -203,7 +203,7 @@ def _run_worker() -> None:
         client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
 
         futures_map: dict = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS or None) as ex:
             for item in batch:
                 if _worker_cancel.is_set():
                     break
@@ -1308,6 +1308,28 @@ async def remove_saved_field(body: RemoveFieldRequest):
     cfg[body.list_key] = lst
     _save_config(cfg)
     return JSONResponse({"ok": True})
+
+
+# ── Admin / maintenance ────────────────────────────────────────────────────────
+
+import signal as _signal
+
+
+@app.post("/admin/restart")
+async def admin_restart():
+    """Gracefully stop the server process.
+
+    Docker (restart: always / unless-stopped) will immediately relaunch the
+    container.  Outside Docker, pair this with a process manager (systemd,
+    supervisor, etc.) configured to restart on exit.
+    """
+    async def _shutdown():
+        await asyncio.sleep(0.4)         # let the response reach the browser
+        _worker_cancel.set()             # stop background threads cleanly
+        os.kill(os.getpid(), _signal.SIGTERM)
+
+    asyncio.create_task(_shutdown())
+    return JSONResponse({"ok": True, "message": "Restarting…"})
 
 
 # ── Watch-mode / email ─────────────────────────────────────────────────────────
