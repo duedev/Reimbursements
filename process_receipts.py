@@ -64,9 +64,17 @@ IMAGE_MAX_PX         = 1568
 _active_ocr_model:    str = ""           # no dedicated OCR model by default
 _active_distill_model: str = GEMMA_MODEL_ID
 
-# Thinking-mode flags per role (can be toggled via model swap endpoints)
-_ocr_thinking:    bool = False   # off by default — smallest/fastest model for OCR
-_distill_thinking: bool = True   # on by default — bigger model benefits from CoT
+# Reasoning ("thinking") mode — a single global toggle for OCR + distillation.
+# Off by default: receipt extraction is structured JSON at temperature 0, which
+# rarely benefits from chain-of-thought and runs slower with it. Toggle from the UI.
+_thinking_enabled: bool = False
+
+
+def _thinking_body(budget: int) -> dict:
+    """Return the LM Studio extra_body fragment for the current reasoning mode."""
+    if _thinking_enabled:
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+    return {"thinking": {"type": "disabled"}}
 
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
@@ -471,11 +479,7 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
     """Stage 1: dedicated OCR model extracts raw text only."""
     try:
         b64, mime = encode_image(image_path)
-        thinking_body = (
-            {"thinking": {"type": "enabled", "budget_tokens": 4096}}
-            if _ocr_thinking
-            else {"thinking": {"type": "disabled"}}
-        )
+        thinking_body = _thinking_body(4096)
         response = client.chat.completions.create(
             model=model_id,
             messages=[{"role": "user", "content": [
@@ -574,11 +578,7 @@ def _unified_distillation(
         except json.JSONDecodeError:
             return None
 
-    thinking_body = (
-        {"thinking": {"type": "enabled", "budget_tokens": 8192}}
-        if _distill_thinking
-        else {"thinking": {"type": "disabled"}}
-    )
+    thinking_body = _thinking_body(8192)
     try:
         resp = client.chat.completions.create(
             model=_active_distill_model,
@@ -626,11 +626,7 @@ def _extract_with_model(
         except json.JSONDecodeError:
             return None
 
-    thinking_body = (
-        {"thinking": {"type": "enabled", "budget_tokens": 8192}}
-        if _distill_thinking
-        else {"thinking": {"type": "disabled"}}
-    )
+    thinking_body = _thinking_body(8192)
     try:
         b64, mime = encode_image(image_path)
         system_msg = {"role": "system", "content": "You are a receipt data extractor. Always respond with valid JSON only."}

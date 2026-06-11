@@ -153,7 +153,10 @@ def _processing_settings() -> dict:
 
 def _apply_processing_config(cfg: dict | None = None) -> dict:
     """Push persisted image-processing settings into the process_receipts module."""
-    proc = (cfg if cfg is not None else _load_config()).get("processing") or {}
+    cfg = cfg if cfg is not None else _load_config()
+    if "thinking_enabled" in cfg:
+        _pr._thinking_enabled = bool(cfg["thinking_enabled"])
+    proc = cfg.get("processing") or {}
     if "autocrop" in proc:
         _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
     if "compress" in proc:
@@ -1588,22 +1591,20 @@ async def get_available_models():
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
         return JSONResponse({
-            "models":           models,
-            "active_distill":   _pr._active_distill_model,
-            "active_ocr":       _pr._active_ocr_model,
-            "distill_thinking": _pr._distill_thinking,
-            "ocr_thinking":     _pr._ocr_thinking,
-            "ok":               True,
+            "models":         models,
+            "active_distill": _pr._active_distill_model,
+            "active_ocr":     _pr._active_ocr_model,
+            "thinking":       _pr._thinking_enabled,
+            "ok":             True,
         })
     except Exception as exc:
         return JSONResponse({
-            "models":           [],
-            "active_distill":   _pr._active_distill_model,
-            "active_ocr":       _pr._active_ocr_model,
-            "distill_thinking": _pr._distill_thinking,
-            "ocr_thinking":     _pr._ocr_thinking,
-            "ok":               False,
-            "error":            str(exc),
+            "models":         [],
+            "active_distill": _pr._active_distill_model,
+            "active_ocr":     _pr._active_ocr_model,
+            "thinking":       _pr._thinking_enabled,
+            "ok":             False,
+            "error":          str(exc),
         })
 
 
@@ -1614,26 +1615,34 @@ class ModelSwapRequest(BaseModel):
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
     """Set distillation model. LM Studio JIT will load it on first use."""
-    model_str = body.model
-    no_think  = model_str.endswith("::no-think")
-    model_str = model_str.removesuffix("::no-think") if no_think else model_str
+    model_str = body.model.strip()
     target = GEMMA_SMALL_MODEL_ID if model_str == "small" else (
         GEMMA_LARGE_MODEL_ID if model_str == "large" else model_str
     )
     _pr._active_distill_model = target
-    _pr._distill_thinking = not no_think
-    return JSONResponse({"ok": True, "active_distill": target, "thinking": not no_think})
+    return JSONResponse({"ok": True, "active_distill": target})
 
 
 @app.post("/models/ocr")
 async def swap_ocr_model(body: ModelSwapRequest):
     """Set (or clear) the dedicated OCR model. LM Studio JIT loads on first use."""
-    target   = body.model.strip()
-    no_think = target.endswith("::no-think")
-    target   = target.removesuffix("::no-think") if no_think else target
+    target = body.model.strip()
     _pr._active_ocr_model = target        # empty string = disable OCR stage
-    _pr._ocr_thinking = not no_think if target else False
-    return JSONResponse({"ok": True, "active_ocr": target, "thinking": not no_think})
+    return JSONResponse({"ok": True, "active_ocr": target})
+
+
+class ThinkingRequest(BaseModel):
+    enabled: bool = False
+
+
+@app.post("/models/thinking")
+async def set_thinking(body: ThinkingRequest):
+    """Toggle reasoning ("thinking") mode for OCR + distillation, and persist it."""
+    _pr._thinking_enabled = bool(body.enabled)
+    cfg = _load_config()
+    cfg["thinking_enabled"] = _pr._thinking_enabled
+    _save_config(cfg)
+    return JSONResponse({"ok": True, "thinking": _pr._thinking_enabled})
 
 
 @app.get("/models/lmstudio")
