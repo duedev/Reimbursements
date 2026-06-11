@@ -996,6 +996,76 @@ async def make_spreadsheet_legacy(job_id: str):
 
 # ── Results management ─────────────────────────────────────────────────────────
 
+_EDITABLE_FIELDS = {"vendor", "date", "amount", "category", "job_name",
+                    "job_number", "ai_summary", "expense_description"}
+_DUP_FLAG_KEYWORDS = ("potential duplicate", "duplicate of")
+
+
+class UpdateResultRequest(BaseModel):
+    filename: str
+    field: str
+    value: str = ""
+
+
+@app.post("/results/update")
+async def update_result(body: UpdateResultRequest):
+    """Inline-edit a single field of a completed receipt."""
+    field = body.field
+    if field not in _EDITABLE_FIELDS:
+        return JSONResponse({"ok": False, "error": f"Field not editable: {field}"},
+                            status_code=400)
+    value: object = body.value.strip()
+
+    if field == "amount":
+        try:
+            value = round(float(str(value).replace("$", "").replace(",", "")), 2)
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "Amount must be a number"},
+                                status_code=400)
+    elif field == "category":
+        if value not in ("fuel", "mats", "misc"):
+            return JSONResponse({"ok": False, "error": "Invalid category"},
+                                status_code=400)
+
+    with _results_lock:
+        target = None
+        for r in _results:
+            if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                target = r
+                break
+        if target is None:
+            return JSONResponse({"ok": False, "error": "Receipt not found in results"},
+                                status_code=404)
+
+        if field == "category":
+            target["category"]  = value
+            target["_category"] = value
+        else:
+            target[field] = value if value != "" else None
+
+        # Vendor/date/amount edits change duplicate identity — recompute flags
+        if field in ("vendor", "date", "amount"):
+            for r in _results:
+                flag = (r.get("_flag") or "").lower()
+                if any(kw in flag for kw in _DUP_FLAG_KEYWORDS):
+                    r["_flag"] = ""
+            _detect_duplicates(_results)
+
+        updated = dict(target)
+
+    kanban_key = updated.get("_file") or body.filename
+    _update_kanban(kanban_key, "done", updated)
+    _persist_state()
+    _broadcast({
+        "type":     "kanban_update",
+        "filename": kanban_key,
+        "status":   "done",
+        "data":     _safe_receipt_data(updated),
+        "model":    "",
+    })
+    return JSONResponse({"ok": True, "data": _safe_receipt_data(updated)})
+
+
 @app.post("/results/clear")
 async def clear_results():
     """Clear completed results and remove done/failed entries from the kanban."""

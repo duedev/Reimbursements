@@ -19,6 +19,7 @@ Drop in photos or PDFs of receipts. The app extracts the vendor, date, amount, a
 - **Persistent autocomplete** — Employee name, job name, and job number fields remember your last 20 entries
 - **Category-prefixed filenames** — Processed images renamed to `fuel_12-30-24_shell.jpg` for instant sorting
 - **Duplicate detection** — Same vendor/date/amount flagged automatically
+- **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery** — Watch-mode daemon can email the weekly report over SMTP
 - **Desktop GUI** — Standalone `customtkinter` app for users who prefer not to run a server
@@ -335,6 +336,7 @@ Each generated workbook contains four sheets:
 |---|---|---|
 | `GET` | `/events` | SSE stream — connect once, receive all updates |
 | `POST` | `/retry-receipt` | `{"filename": "..."}` — re-queues at front |
+| `POST` | `/results/update` | `{"filename", "field", "value"}` — inline-edit one field of a completed receipt |
 | `POST` | `/kanban/remove` | `{"filename": "..."}` — dismiss a card |
 | `POST` | `/generate-spreadsheet` | Streams `.xlsx` binary |
 | `POST` | `/results/clear` | Clears completed results, hides generate card |
