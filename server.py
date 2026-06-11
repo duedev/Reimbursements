@@ -28,6 +28,7 @@ from process_receipts import (
     initialize_models,
     _extract_receipt_with_status,
     _is_low_confidence,
+    _has_ocr_flag,
     _compute_confidence,
     _get_fail_reason,
     classify_category,
@@ -144,6 +145,13 @@ def _update_kanban(filename: str, status: str, data, model: str = "") -> None:
         _kanban[filename] = {"status": status, "data": _safe_receipt_data(data), "model": model}
 
 
+def _is_active_in_kanban(filename: str) -> bool:
+    """True if the file is already queued or being processed — skip re-queuing."""
+    with _kanban_lock:
+        entry = _kanban.get(filename, {})
+    return entry.get("status") in ("queued", "ocr", "distilling")
+
+
 def _safe_receipt_data(data) -> dict:
     """Serialize receipt data for SSE — strip non-serialisable internal fields."""
     if not data:
@@ -208,7 +216,7 @@ def _run_worker() -> None:
                     data = None
                     _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
 
-                if data is None or _is_low_confidence(data):
+                if data is None or _is_low_confidence(data) or _has_ocr_flag(data):
                     fail_reason = _get_fail_reason(data)
                     partial: dict = {}
                     if data is not None:
@@ -401,6 +409,7 @@ async def queue_add(
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     queued: list[str] = []
+    skipped: list[str] = []
 
     for f in files:
         fname = f.filename or "receipt"
@@ -415,6 +424,9 @@ async def queue_add(
                 pages = pdf_to_images(dest, tmp_dir / f"_pdf_{dest.stem}")
                 dest.unlink(missing_ok=True)
                 for page_path in pages:
+                    if _is_active_in_kanban(page_path.name):
+                        skipped.append(page_path.name)
+                        continue
                     with _seen_lock:
                         _seen_intake.add(page_path.name)
                     item = {
@@ -436,6 +448,9 @@ async def queue_add(
                 _broadcast({"type": "log", "message": f"[upload] PDF error {fname}: {exc}"})
 
         elif suffix in IMAGE_EXTENSIONS:
+            if _is_active_in_kanban(dest.name):
+                skipped.append(dest.name)
+                continue
             with _seen_lock:
                 _seen_intake.add(dest.name)
             item = {
@@ -470,7 +485,7 @@ async def queue_add(
     with _work_lock:
         n_pending = len(_work_queue)
 
-    return JSONResponse({"queued": queued, "pending": n_pending})
+    return JSONResponse({"queued": queued, "skipped": skipped, "pending": n_pending})
 
 
 @app.post("/queue/add-intake")
@@ -481,6 +496,7 @@ async def queue_add_intake(
 ):
     """Enqueue all unprocessed files currently in the intake folder."""
     queued: list[str] = []
+    skipped: list[str] = []
 
     try:
         files_in_intake = sorted(
@@ -495,6 +511,10 @@ async def queue_add_intake(
             if p.name in _seen_intake:
                 continue
             _seen_intake.add(p.name)
+
+        if _is_active_in_kanban(p.name):
+            skipped.append(p.name)
+            continue
 
         suffix = p.suffix.lower()
 
@@ -520,6 +540,9 @@ async def queue_add_intake(
                 dest_dir = INTAKE_FOLDER / f"_pdf_{p.stem}"
                 pages    = pdf_to_images(p, dest_dir)
                 for page_path in pages:
+                    if _is_active_in_kanban(page_path.name):
+                        skipped.append(page_path.name)
+                        continue
                     with _seen_lock:
                         _seen_intake.add(page_path.name)
                     item = {
@@ -558,7 +581,7 @@ async def queue_add_intake(
     with _work_lock:
         n_pending = len(_work_queue)
 
-    return JSONResponse({"queued": queued, "pending": n_pending})
+    return JSONResponse({"queued": queued, "skipped": skipped, "pending": n_pending})
 
 
 @app.post("/queue/cancel")
@@ -951,36 +974,27 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
+    """Set distillation model. LM Studio JIT will load it on first use."""
     model_str = body.model
     no_think  = model_str.endswith("::no-think")
     model_str = model_str.removesuffix("::no-think") if no_think else model_str
     target = GEMMA_SMALL_MODEL_ID if model_str == "small" else (
         GEMMA_LARGE_MODEL_ID if model_str == "large" else model_str
     )
-    ok = _try_load_model(target)
-    if ok:
-        _pr._active_distill_model = target
-        _pr._distill_thinking = not no_think
-        return JSONResponse({"ok": True, "active_distill": target, "thinking": not no_think})
-    return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
+    _pr._active_distill_model = target
+    _pr._distill_thinking = not no_think
+    return JSONResponse({"ok": True, "active_distill": target, "thinking": not no_think})
 
 
 @app.post("/models/ocr")
 async def swap_ocr_model(body: ModelSwapRequest):
-    """Set (or clear) the dedicated OCR model. Pass model="" to disable dedicated OCR."""
-    target = body.model.strip()
+    """Set (or clear) the dedicated OCR model. LM Studio JIT loads on first use."""
+    target   = body.model.strip()
     no_think = target.endswith("::no-think")
     target   = target.removesuffix("::no-think") if no_think else target
-    if not target:
-        _pr._active_ocr_model = ""
-        _pr._ocr_thinking = False
-        return JSONResponse({"ok": True, "active_ocr": ""})
-    ok = _try_load_model(target)
-    if ok:
-        _pr._active_ocr_model = target
-        _pr._ocr_thinking = not no_think
-        return JSONResponse({"ok": True, "active_ocr": target, "thinking": not no_think})
-    return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
+    _pr._active_ocr_model = target        # empty string = disable OCR stage
+    _pr._ocr_thinking = not no_think if target else False
+    return JSONResponse({"ok": True, "active_ocr": target, "thinking": not no_think})
 
 
 @app.get("/models/lmstudio")

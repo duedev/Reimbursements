@@ -298,6 +298,14 @@ def _is_low_confidence(data: Optional[dict]) -> bool:
     return False
 
 
+def _has_ocr_flag(data: Optional[dict]) -> bool:
+    """True if the distillation model flagged an OCR error in this receipt."""
+    if not data:
+        return False
+    flags = data.get("flags") or []
+    return any("ocr error" in (f.get("flag") or "").lower() for f in flags)
+
+
 def _compute_confidence(data: Optional[dict]) -> tuple[int, str]:
     """Return (0–100 pct, comma-separated missing-field string)."""
     if not data:
