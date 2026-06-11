@@ -54,6 +54,7 @@ INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
 OUT_FOLDER    = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
 CONFIG_FILE   = OUT_FOLDER / ".app_config.json"
+STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snapshot
 
 # ── Stall checker config ───────────────────────────────────────────────────────
 
@@ -186,6 +187,71 @@ def _cache_item(item: dict) -> None:
         _item_cache[item["filename"]] = item
 
 
+# ── State persistence ──────────────────────────────────────────────────────────
+# Completed/failed receipts and the last-used form context are snapshotted to
+# disk so a server restart doesn't wipe an already-processed batch. Queued and
+# in-flight items are intentionally not persisted — their worker is gone.
+
+def _persist_state() -> None:
+    try:
+        with _results_lock:
+            results_copy = copy.deepcopy(_results)
+            context_copy = dict(_last_context)
+        with _kanban_lock:
+            kanban_copy = {
+                fn: dict(v) for fn, v in _kanban.items()
+                if v.get("status") in ("done", "failed")
+            }
+        payload = {
+            "results":      results_copy,
+            "kanban":       kanban_copy,
+            "last_context": context_copy,
+        }
+        OUT_FOLDER.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(payload, default=str))
+        tmp.replace(STATE_FILE)
+    except Exception as exc:
+        print(f"[state] persist failed: {exc}")
+
+
+def _restore_state() -> None:
+    try:
+        if not STATE_FILE.exists():
+            return
+        payload = json.loads(STATE_FILE.read_text())
+    except Exception as exc:
+        print(f"[state] restore failed: {exc}")
+        return
+    if not isinstance(payload, dict):
+        return
+
+    results = payload.get("results")
+    if isinstance(results, list):
+        with _results_lock:
+            _results.extend(r for r in results if isinstance(r, dict))
+
+    kanban = payload.get("kanban")
+    if isinstance(kanban, dict):
+        with _kanban_lock:
+            for fn, entry in kanban.items():
+                if isinstance(entry, dict) and entry.get("status") in ("done", "failed"):
+                    _kanban[fn] = entry
+
+    ctx = payload.get("last_context")
+    if isinstance(ctx, dict):
+        with _results_lock:
+            _last_context.update({
+                k: ctx[k] for k in ("employee", "job_name", "job_number")
+                if isinstance(ctx.get(k), str)
+            })
+
+    with _results_lock:
+        n = len(_results)
+    if n:
+        print(f"[state] Restored {n} completed receipt(s) from previous session")
+
+
 # ── Background worker ──────────────────────────────────────────────────────────
 
 def _run_worker() -> None:
@@ -300,6 +366,7 @@ def _run_worker() -> None:
             n_done = len(_results)
         with _work_lock:
             n_pending = len(_work_queue)
+        _persist_state()
         _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending})
 
 
@@ -450,6 +517,7 @@ def _run_stall_checker() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _restore_state()
     threading.Thread(target=initialize_models,  daemon=True).start()
     threading.Thread(target=_run_worker,        daemon=True).start()
     threading.Thread(target=_run_watcher,       daemon=True).start()
@@ -854,6 +922,7 @@ async def add_manual_result(body: ManualReceiptRequest):
             _results.append(data)
 
     _update_kanban(body.filename, "done", data)
+    _persist_state()
     _broadcast({
         "type":     "kanban_update",
         "filename": body.filename,
@@ -936,6 +1005,7 @@ async def clear_results():
         to_remove = [fn for fn, v in _kanban.items() if v["status"] in ("done", "failed")]
         for fn in to_remove:
             del _kanban[fn]
+    _persist_state()
     _broadcast({"type": "results_cleared"})
     return JSONResponse({"ok": True})
 
@@ -991,6 +1061,7 @@ async def retry_receipt(body: RetryRequest):
         _work_queue.appendleft(item)
 
     _update_kanban(filename, "queued", None)
+    _persist_state()
     _broadcast({
         "type": "kanban_update", "filename": filename,
         "status": "queued", "data": {}, "model": "",
@@ -1014,6 +1085,7 @@ async def queue_clear_all():
     with _seen_lock:
         _seen_intake.clear()   # allows intake files to be re-queued after board reset
 
+    _persist_state()
     _broadcast({"type": "kanban_cleared"})
     return JSONResponse({"ok": True, "cleared": cleared})
 
@@ -1063,6 +1135,7 @@ async def kanban_remove(body: RetryRequest):
     filename = body.filename
     with _kanban_lock:
         _kanban.pop(filename, None)
+    _persist_state()
     return JSONResponse({"ok": True})
 
 
