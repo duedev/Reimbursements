@@ -21,8 +21,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_run_watcher", lambda: None)
     monkeypatch.setattr(server, "_run_stall_checker", lambda: None)
     monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
-    # Save processing globals so endpoint mutations don't leak into other tests
-    saved = (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.PADDLEOCR_ENABLED, pr.JPEG_QUALITY)
+    # Save runtime globals so endpoint mutations don't leak into other tests
+    saved = (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.PADDLEOCR_ENABLED,
+             pr.JPEG_QUALITY, pr._thinking_enabled)
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
@@ -31,7 +32,8 @@ def client(tmp_path, monkeypatch):
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
-    (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.PADDLEOCR_ENABLED, pr.JPEG_QUALITY) = saved
+    (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.PADDLEOCR_ENABLED,
+     pr.JPEG_QUALITY, pr._thinking_enabled) = saved
 
 
 def test_processing_round_trip(client):
@@ -67,6 +69,24 @@ def test_email_password_hidden_and_preserved(client):
 def test_version_endpoint(client):
     assert client.get("/version").json()["version"] == pr.APP_VERSION
     assert client.get("/settings").json()["version"] == pr.APP_VERSION
+
+
+def test_reasoning_toggle_round_trip(client):
+    assert client.post("/models/thinking", json={"enabled": True}).json()["thinking"] is True
+    assert pr._thinking_enabled is True
+    assert client.get("/models/available").json()["thinking"] is True
+    # persisted, and re-applied from config
+    assert json.loads(server.CONFIG_FILE.read_text())["thinking_enabled"] is True
+    pr._thinking_enabled = False
+    server._apply_processing_config()
+    assert pr._thinking_enabled is True
+
+
+def test_thinking_body_reflects_flag(monkeypatch):
+    monkeypatch.setattr(pr, "_thinking_enabled", False)
+    assert pr._thinking_body(8192) == {"thinking": {"type": "disabled"}}
+    monkeypatch.setattr(pr, "_thinking_enabled", True)
+    assert pr._thinking_body(8192) == {"thinking": {"type": "enabled", "budget_tokens": 8192}}
 
 
 def test_nudge_requeues_queued_item(client):

@@ -825,7 +825,12 @@
         </div>
       </div>
     </div>
-    <div style="margin-top:10px;text-align:right">
+    <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer"
+             title="Let the model reason step-by-step before answering. Off is faster and usually just as accurate for receipts.">
+        <input type="checkbox" id="reasoning-toggle" style="width:auto">
+        Reasoning mode
+      </label>
       <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
@@ -2075,14 +2080,11 @@ async function loadModels() {
   try {
     const res  = await fetch('/models/available');
     const data = await res.json();
-    const activeDistill    = data.active_distill    || '';
-    const activeOcr        = data.active_ocr        || '';
-    const distillThinking  = data.distill_thinking  !== false; // default true
-    const ocrThinking      = data.ocr_thinking      === true;  // default false
+    const activeDistill = data.active_distill || '';
+    const activeOcr     = data.active_ocr     || '';
 
-    // Determine effective selected value (with ::no-think suffix if needed)
-    const activeDistillKey = activeDistill && !distillThinking ? activeDistill + '::no-think' : activeDistill;
-    const activeOcrKey     = activeOcr     && !ocrThinking     ? activeOcr     + '::no-think' : activeOcr;
+    const think = document.getElementById('reasoning-toggle');
+    if (think) think.checked = data.thinking === true;   // single global toggle, default off
 
     document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
     document.getElementById('ocr-model-dot').style.background     = activeOcr     ? 'var(--success)' : 'var(--border)';
@@ -2094,17 +2096,10 @@ async function loadModels() {
       distillSelect.innerHTML = '<option value="">No models loaded in LM Studio</option>';
     } else {
       models.forEach(id => {
-        // Normal (thinking) option
         const opt = document.createElement('option');
-        opt.value = id; opt.textContent = id + ' (thinking)';
-        if (id === activeDistillKey || id === activeDistill && distillThinking) opt.selected = true;
+        opt.value = id; opt.textContent = id;
+        if (id === activeDistill) opt.selected = true;
         distillSelect.appendChild(opt);
-        // No-thinking variant
-        const optNT = document.createElement('option');
-        optNT.value = id + '::no-think';
-        optNT.textContent = id + ' (no thinking)';
-        if (id + '::no-think' === activeDistillKey) optNT.selected = true;
-        distillSelect.appendChild(optNT);
       });
       if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
@@ -2113,15 +2108,9 @@ async function loadModels() {
     ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
     models.forEach(id => {
       const opt = document.createElement('option');
-      opt.value = id + '::no-think';
-      opt.textContent = id + ' (no thinking)';
-      if (id + '::no-think' === activeOcrKey || (id === activeOcr && !ocrThinking)) opt.selected = true;
+      opt.value = id; opt.textContent = id;
+      if (id === activeOcr) opt.selected = true;
       ocrSelect.appendChild(opt);
-      // Thinking variant for OCR (power users)
-      const optT = document.createElement('option');
-      optT.value = id; optT.textContent = id + ' (thinking)';
-      if (id === activeOcrKey) optT.selected = true;
-      ocrSelect.appendChild(optT);
     });
     if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
   } catch (_) {
@@ -2138,7 +2127,7 @@ distillSelect.addEventListener('change', async () => {
     const data = await res.json();
     if (data.ok) {
       document.getElementById('distill-model-dot').style.background = 'var(--success)';
-      showToast(`Distillation model: ${chosen.replace('::no-think','')}${chosen.endsWith('::no-think') ? ' (no thinking)' : ''}`, true);
+      showToast(`Distillation model: ${chosen}`, true);
     } else {
       showToast(`Could not set model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
@@ -2160,6 +2149,20 @@ ocrSelect.addEventListener('change', async () => {
       document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
+});
+
+document.getElementById('reasoning-toggle').addEventListener('change', async (e) => {
+  const enabled = e.target.checked;
+  try {
+    const res  = await fetch('/models/thinking', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Reasoning mode ${data.thinking ? 'on' : 'off'}`, true);
+    } else {
+      e.target.checked = !enabled;
+      showToast('Could not change reasoning mode', false);
+    }
+  } catch (err) { e.target.checked = !enabled; showToast(`Error: ${err.message}`, false); }
 });
 
 document.getElementById('refresh-models-btn').addEventListener('click', loadModels);
