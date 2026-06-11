@@ -181,7 +181,8 @@ def _safe_receipt_data(data) -> dict:
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
               "expense_description", "summary", "ai_summary", "_flag", "_category",
               "_new_filename", "_file", "flags", "_confidence", "_error",
-              "_amount_verified"):
+              "_amount_verified", "_proc_seconds", "_ocr_seconds",
+              "_distill_seconds", "_ocr_engine"):
         if k in data:
             out[k] = data[k]
     return out
@@ -1029,6 +1030,7 @@ def _compute_stats(results: list[dict]) -> dict:
     by_day: dict[str, float] = {}
     flagged = 0
     verified = 0
+    proc_times: list[float] = []
 
     for r in results:
         amt = _amt(r)
@@ -1052,6 +1054,12 @@ def _compute_stats(results: list[dict]) -> dict:
             flagged += 1
         if r.get("_amount_verified"):
             verified += 1
+        try:
+            secs = float(r.get("_proc_seconds") or 0)
+            if secs > 0:
+                proc_times.append(secs)
+        except (TypeError, ValueError):
+            pass
 
     top_vendors = sorted(
         ({"vendor": k, **v} for k, v in by_vendor.items()),
@@ -1068,6 +1076,8 @@ def _compute_stats(results: list[dict]) -> dict:
         "by_category":  by_category,
         "top_vendors":  top_vendors,
         "timeline":     timeline,
+        "proc_total_seconds": round(sum(proc_times), 1),
+        "proc_avg_seconds":   round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
     }
 
 

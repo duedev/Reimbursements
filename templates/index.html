@@ -268,6 +268,7 @@
     .kanban-cards::-webkit-scrollbar { width: 8px; }
     .kanban-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
     .kanban-cards::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    .k-proc-time { margin-top: 4px; font-size: 10.5px; color: var(--muted); }
     .saved-time-stat { cursor: pointer; }
     .saved-time-stat:hover { filter: brightness(1.25); text-decoration: underline dotted; }
 
@@ -602,7 +603,7 @@
 
     /* ── Insights dashboard ────────────────────────────────────────────────── */
     .insights-grid {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px;
     }
     @media (max-width: 760px) { .insights-grid { grid-template-columns: 1fr 1fr; } }
     .stat-tile {
@@ -903,6 +904,7 @@
         <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
         <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
       </div>
       <div class="charts-row">
         <div class="chart-box">
@@ -1303,6 +1305,10 @@ function makeCard(filename, status, data, model, errorMsg) {
       inner += `<div class="k-summary">${ed('ai_summary', `"${esc(summaryText || 'add summary…')}"`)}</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    if (status === 'done' && data._proc_seconds) {
+      const engine = data._ocr_engine ? ` &bull; ${esc(data._ocr_engine)}` : '';
+      inner += `<div class="k-proc-time" title="Processing time">&#9201; ${data._proc_seconds}s${engine}</div>`;
+    }
   }
 
   // Image view button (available on all cards that have a resolvable file)
@@ -2304,6 +2310,8 @@ async function loadStats() {
     document.getElementById('st-count').textContent   = s.count;
     document.getElementById('st-avg').textContent     = fmtMoney(s.average);
     document.getElementById('st-flagged').textContent = s.flagged;
+    document.getElementById('st-proc').textContent =
+      s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
 
     renderDonut(s.by_category, s.total);
     renderTimeline(s.timeline);

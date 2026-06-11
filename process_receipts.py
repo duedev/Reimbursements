@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import concurrent.futures
 import threading
 import urllib.request
@@ -495,22 +496,40 @@ def _extract_receipt_with_status(
         if status_cb:
             status_cb(status, data, model)
 
+    t_start = time.perf_counter()
+
+    def _finish(data: Optional[dict], ocr_seconds: float = 0.0,
+                distill_seconds: float = 0.0) -> Optional[dict]:
+        if data is not None:
+            data["_proc_seconds"] = round(time.perf_counter() - t_start, 1)
+            if ocr_seconds:
+                data["_ocr_seconds"] = round(ocr_seconds, 1)
+            if distill_seconds:
+                data["_distill_seconds"] = round(distill_seconds, 1)
+        return data
+
     try:
         if _active_ocr_model and _active_ocr_model != _active_distill_model:
             _cb("ocr", model=_active_ocr_model)
+            t_ocr = time.perf_counter()
             ocr_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
+            ocr_seconds = time.perf_counter() - t_ocr
             if ocr_text:
                 _cb("distilling", model=_active_distill_model)
+                t_distill = time.perf_counter()
                 data = _unified_distillation(client, ocr_text)
+                distill_seconds = time.perf_counter() - t_distill
                 if not _is_low_confidence(data):
                     if data is not None:
                         data["_raw_ocr"] = ocr_text
-                    return data
+                    return _finish(data, ocr_seconds, distill_seconds)
                 print(f"[extract] Two-step low-confidence for {image_path.name}, "
                       "falling back to direct vision")
 
         _cb("distilling", model=_active_distill_model)
-        return _extract_with_model(client, image_path, _active_distill_model)
+        t_distill = time.perf_counter()
+        data = _extract_with_model(client, image_path, _active_distill_model)
+        return _finish(data, distill_seconds=time.perf_counter() - t_distill)
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")
         return None
