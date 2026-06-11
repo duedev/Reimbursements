@@ -888,7 +888,7 @@ async def retry_receipt(body: RetryRequest):
 
 @app.post("/queue/clear-all")
 async def queue_clear_all():
-    """Full board reset: drain queue, clear kanban, clear results."""
+    """Full board reset: drain queue, clear kanban, clear results, reset seen-intake set."""
     _worker_cancel.set()
     with _work_lock:
         cleared = len(_work_queue)
@@ -899,6 +899,8 @@ async def queue_clear_all():
         _kanban.clear()
     with _results_lock:
         _results.clear()
+    with _seen_lock:
+        _seen_intake.clear()   # allows intake files to be re-queued after board reset
 
     _broadcast({"type": "kanban_cleared"})
     return JSONResponse({"ok": True, "cleared": cleared})
@@ -924,18 +926,22 @@ async def get_available_models():
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
         return JSONResponse({
-            "models":         models,
-            "active_distill": _pr._active_distill_model,
-            "active_ocr":     _pr._active_ocr_model,
-            "ok":             True,
+            "models":           models,
+            "active_distill":   _pr._active_distill_model,
+            "active_ocr":       _pr._active_ocr_model,
+            "distill_thinking": _pr._distill_thinking,
+            "ocr_thinking":     _pr._ocr_thinking,
+            "ok":               True,
         })
     except Exception as exc:
         return JSONResponse({
-            "models":         [],
-            "active_distill": _pr._active_distill_model,
-            "active_ocr":     _pr._active_ocr_model,
-            "ok":             False,
-            "error":          str(exc),
+            "models":           [],
+            "active_distill":   _pr._active_distill_model,
+            "active_ocr":       _pr._active_ocr_model,
+            "distill_thinking": _pr._distill_thinking,
+            "ocr_thinking":     _pr._ocr_thinking,
+            "ok":               False,
+            "error":            str(exc),
         })
 
 
@@ -945,13 +951,17 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
-    target = GEMMA_SMALL_MODEL_ID if body.model == "small" else (
-        GEMMA_LARGE_MODEL_ID if body.model == "large" else body.model
+    model_str = body.model
+    no_think  = model_str.endswith("::no-think")
+    model_str = model_str.removesuffix("::no-think") if no_think else model_str
+    target = GEMMA_SMALL_MODEL_ID if model_str == "small" else (
+        GEMMA_LARGE_MODEL_ID if model_str == "large" else model_str
     )
     ok = _try_load_model(target)
     if ok:
         _pr._active_distill_model = target
-        return JSONResponse({"ok": True, "active_distill": target})
+        _pr._distill_thinking = not no_think
+        return JSONResponse({"ok": True, "active_distill": target, "thinking": not no_think})
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
 
 
@@ -959,13 +969,17 @@ async def swap_distill_model(body: ModelSwapRequest):
 async def swap_ocr_model(body: ModelSwapRequest):
     """Set (or clear) the dedicated OCR model. Pass model="" to disable dedicated OCR."""
     target = body.model.strip()
+    no_think = target.endswith("::no-think")
+    target   = target.removesuffix("::no-think") if no_think else target
     if not target:
         _pr._active_ocr_model = ""
+        _pr._ocr_thinking = False
         return JSONResponse({"ok": True, "active_ocr": ""})
     ok = _try_load_model(target)
     if ok:
         _pr._active_ocr_model = target
-        return JSONResponse({"ok": True, "active_ocr": target})
+        _pr._ocr_thinking = not no_think
+        return JSONResponse({"ok": True, "active_ocr": target, "thinking": not no_think})
     return JSONResponse({"ok": False, "error": f"Could not load model: {target}"}, status_code=503)
 
 
@@ -1128,6 +1142,28 @@ async def save_fields(body: SaveFieldsRequest):
     _save_field(cfg, "saved_employees",   body.employee)
     _save_field(cfg, "saved_job_names",   body.job_name)
     _save_field(cfg, "saved_job_numbers", body.job_number)
+    _save_config(cfg)
+    return JSONResponse({"ok": True})
+
+
+class RemoveFieldRequest(BaseModel):
+    list_key: str
+    value:    str
+
+
+@app.post("/saved-fields/remove")
+async def remove_saved_field(body: RemoveFieldRequest):
+    """Remove a single value from a saved-fields list."""
+    allowed = {"saved_employees", "saved_job_names", "saved_job_numbers"}
+    if body.list_key not in allowed:
+        return JSONResponse({"ok": False, "error": "invalid key"}, status_code=400)
+    cfg = _load_config()
+    lst = cfg.get(body.list_key, [])
+    try:
+        lst.remove(body.value)
+    except ValueError:
+        pass
+    cfg[body.list_key] = lst
     _save_config(cfg)
     return JSONResponse({"ok": True})
 
