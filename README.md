@@ -19,6 +19,11 @@ Drop in photos or PDFs of receipts. The app extracts the vendor, date, amount, a
 - **Persistent autocomplete** — Employee name, job name, and job number fields remember your last 20 entries
 - **Category-prefixed filenames** — Processed images renamed to `fuel_12-30-24_shell.jpg` for instant sorting
 - **Duplicate detection** — Same vendor/date/amount flagged automatically
+- **Amount verification** — In two-stage OCR mode, extracted amounts are cross-checked against money values printed on total-like lines of the raw OCR text; verified receipts get a ✓ badge, mismatches are flagged for review (pure regex, catches LLM hallucinations)
+- **Insights dashboard** — Live spend analytics: total/average/flagged tiles, category donut, spend-over-time bars, and top-vendor rankings (dependency-free SVG charts)
+- **CSV export** — One click exports all completed receipts as a spreadsheet-ready CSV
+- **Report history** — Browse and re-download every previously generated workbook
+- **Board search** — Filter receipt cards by vendor, filename, or category (press `/` to focus)
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery** — Watch-mode daemon can email the weekly report over SMTP
@@ -340,6 +345,10 @@ Each generated workbook contains four sheets:
 | `POST` | `/kanban/remove` | `{"filename": "..."}` — dismiss a card |
 | `POST` | `/generate-spreadsheet` | Streams `.xlsx` binary |
 | `POST` | `/results/clear` | Clears completed results, hides generate card |
+| `GET` | `/stats` | Spend analytics: totals, by-category, top vendors, timeline |
+| `GET` | `/export/csv` | Streams all completed results as CSV |
+| `GET` | `/reports` | Lists previously generated workbooks (name, size, date) |
+| `GET` | `/reports/download?filename=` | Download a past report |
 
 ### Models
 

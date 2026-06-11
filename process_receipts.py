@@ -521,6 +521,76 @@ def extract_receipt_data(client: OpenAI, image_path: Path) -> Optional[dict]:
     return _extract_receipt_with_status(client, image_path, status_cb=None)
 
 
+# ── Amount audit (rules-based OCR cross-check) ─────────────────────────────────
+# LLMs occasionally hallucinate or mis-copy the total. When raw OCR text is
+# available we cross-check the extracted amount against money values that
+# appear on total-like lines — pure regex, no model involved.
+
+_TOTAL_KEYWORD_RE = re.compile(
+    r"\b(grand\s*total|sub[-\s]?total|subtotal|total\s*due|amount\s*due|"
+    r"balance\s*due|total|amount|balance)\b",
+    re.IGNORECASE,
+)
+_MONEY_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})")
+
+
+def extract_candidate_totals(text: str) -> list[float]:
+    """Money values found on total-like lines of raw receipt text.
+
+    Falls back to every money value in the text when no line mentions a
+    total keyword (some receipts only print the bare number).
+    """
+    if not text:
+        return []
+
+    def _vals(s: str) -> list[float]:
+        out = []
+        for m in _MONEY_RE.finditer(s):
+            try:
+                out.append(round(float(m.group(1).replace(",", "")), 2))
+            except ValueError:
+                pass
+        return out
+
+    keyword_vals: list[float] = []
+    for line in text.splitlines():
+        if _TOTAL_KEYWORD_RE.search(line):
+            keyword_vals.extend(_vals(line))
+    if keyword_vals:
+        return sorted(set(keyword_vals))
+    return sorted(set(_vals(text)))
+
+
+def audit_amount(data: Optional[dict], raw_text: str) -> Optional[str]:
+    """Cross-check the model's amount against OCR text.
+
+    Sets data["_amount_verified"] (True/False) and returns a human-readable
+    flag string when the amount cannot be found in the OCR text, or None
+    when it verifies (or there is nothing to check against).
+    """
+    if not data or not raw_text:
+        return None
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+
+    candidates = extract_candidate_totals(raw_text)
+    if not candidates:
+        return None
+
+    if any(abs(amount - c) < 0.005 for c in candidates):
+        data["_amount_verified"] = True
+        return None
+
+    data["_amount_verified"] = False
+    closest = min(candidates, key=lambda c: abs(c - amount))
+    return (f"Amount ${amount:.2f} not found in receipt text "
+            f"(closest printed total: ${closest:.2f}) — verify manually")
+
+
 # ── Category classification ────────────────────────────────────────────────────
 
 def classify_category(data: dict) -> str:

@@ -588,6 +588,86 @@
     .section-toggle svg { width: 12px; height: 12px; transition: transform 0.2s; }
     .section-toggle.collapsed svg { transform: rotate(-90deg); }
 
+    /* ── Insights dashboard ────────────────────────────────────────────────── */
+    .insights-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;
+    }
+    @media (max-width: 760px) { .insights-grid { grid-template-columns: 1fr 1fr; } }
+    .stat-tile {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+    }
+    .stat-tile .stat-value { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    .stat-tile .stat-label { font-size: 11px; color: var(--muted); margin-top: 2px;
+      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+    .stat-tile.tile-total .stat-value { color: var(--success); }
+    .stat-tile.tile-flag  .stat-value { color: var(--warning); }
+    .charts-row { display: grid; grid-template-columns: 220px 1fr 240px; gap: 18px; align-items: start; }
+    @media (max-width: 980px) { .charts-row { grid-template-columns: 1fr; } }
+    .chart-box { background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px; min-height: 180px; }
+    .chart-box h4 { font-size: 11px; color: var(--muted); font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 10px; }
+    .donut-legend { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; font-size: 11px; }
+    .donut-legend .leg-row { display: flex; align-items: center; gap: 7px; }
+    .donut-legend .leg-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+    .donut-legend .leg-amt { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .vendor-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 7px; }
+    .vendor-row .v-name { width: 90px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; flex-shrink: 0; }
+    .vendor-row .v-bar-wrap { flex: 1; background: rgba(255,255,255,0.06);
+      border-radius: 99px; height: 8px; overflow: hidden; }
+    .vendor-row .v-bar { height: 100%; border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+    .vendor-row .v-amt { width: 64px; text-align: right; color: var(--muted);
+      font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .empty-note { color: var(--muted); font-size: 12px; text-align: center; padding: 30px 0; }
+
+    /* Verified badge */
+    .k-verified { display: inline-block; font-size: 9px; font-weight: 700;
+      padding: 1px 6px; border-radius: 4px; letter-spacing: 0.03em;
+      background: rgba(45,212,130,0.14); color: var(--success);
+      border: 1px solid rgba(45,212,130,0.3); }
+
+    /* Board search */
+    .board-search {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .board-search input {
+      flex: 1; max-width: 320px; height: 34px; font-size: 13px;
+    }
+    .board-search .search-count { font-size: 11px; color: var(--muted); }
+    .k-card.search-hide { display: none; }
+
+    /* Report history */
+    .report-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 9px 12px; border-radius: 8px; font-size: 13px;
+      transition: background 0.15s;
+    }
+    .report-row:hover { background: rgba(255,255,255,0.04); }
+    .report-row .r-icon { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+      background: rgba(45,212,130,0.12); color: var(--success);
+      display: flex; align-items: center; justify-content: center; }
+    .report-row .r-icon svg { width: 15px; height: 15px; }
+    .report-row .r-name { flex: 1; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; font-family: ui-monospace, monospace; font-size: 12px; }
+    .report-row .r-meta { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+    .report-row a { color: var(--accent); text-decoration: none; font-weight: 600;
+      font-size: 12px; flex-shrink: 0; }
+    .report-row a:hover { text-decoration: underline; }
+
+    /* Confetti */
+    @keyframes confetti-fall {
+      0%   { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(105vh) rotate(720deg); opacity: 0.6; }
+    }
+    .confetti-bit {
+      position: fixed; top: 0; width: 9px; height: 14px; z-index: 9998;
+      pointer-events: none; border-radius: 2px;
+      animation: confetti-fall linear forwards;
+    }
+
     /* Unstick button */
     .btn-unstick {
       background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3);
@@ -753,6 +833,10 @@
       </button>
     </div>
     <div id="kanban-body">
+    <div class="board-search">
+      <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)" autocomplete="off">
+      <span class="search-count" id="board-search-count"></span>
+    </div>
     <div class="kanban-board">
       <div class="kanban-col">
         <div class="kanban-col-header">
@@ -786,6 +870,41 @@
     </div><!-- /kanban-body -->
   </div>
 
+  <!-- Insights dashboard (shown when completed results exist) -->
+  <div class="card hidden" id="insights-card">
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('insights-body','insights-toggle')">
+      Insights
+      <button class="section-toggle" id="insights-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="insights-body">
+      <div class="insights-grid">
+        <div class="stat-tile tile-total"><div class="stat-value" id="st-total">$0.00</div><div class="stat-label">Total Spend</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
+        <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-box">
+          <h4>By Category</h4>
+          <div id="donut-chart"></div>
+          <div class="donut-legend" id="donut-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h4>Spend Over Time</h4>
+          <div id="timeline-chart"></div>
+        </div>
+        <div class="chart-box">
+          <h4>Top Vendors</h4>
+          <div id="vendor-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Generate spreadsheet card (shown when completed results exist) -->
   <div class="card hidden" id="generate-card">
     <div class="card-title">Generate Spreadsheet</div>
@@ -797,6 +916,13 @@
             d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
         </svg>
         Generate Spreadsheet
+      </button>
+      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Export CSV
       </button>
       <button class="btn" id="reset-btn"
               style="background:var(--surface);border:1px solid var(--border)">
@@ -865,6 +991,15 @@
         </button>
       </div>
     </div>
+  </div>
+
+  <!-- Report history -->
+  <div class="card hidden" id="reports-card">
+    <div class="card-title" style="display:flex;align-items:center">
+      Report History
+      <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list">↻</button>
+    </div>
+    <div id="reports-list"></div>
   </div>
 
   <!-- Settings -->
@@ -1123,6 +1258,8 @@ function makeCard(filename, status, data, model, errorMsg) {
   inner += `<div class="k-status-row">`;
   inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
   if (data && data._confidence != null) inner += confBadge(data._confidence);
+  if (data && data._amount_verified === true)
+    inner += `<span class="k-verified" title="Amount cross-checked against OCR text">&#10003; verified</span>`;
   inner += `</div>`;
 
   if (data && data.vendor) {
@@ -1191,6 +1328,7 @@ function moveCard(filename, newStatus, data, model, errorMsg) {
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
+  if (boardSearchInput.value.trim()) applyBoardSearch();
   const hasCards = Object.keys(receiptCards).length > 0;
   document.getElementById('clear-board-btn').classList.toggle('hidden', !hasCards);
 }
@@ -1236,6 +1374,7 @@ function connectSSE() {
       completedCount = msg.completed || 0;
       _updateQueueBadge(msg.pending || 0);
       _updateGenerateCard();
+      loadStats();
 
     } else if (msg.type === 'kanban_update') {
       const fname = msg.filename;
@@ -1248,8 +1387,12 @@ function connectSSE() {
       completedCount = msg.completed || 0;
       _updateQueueBadge(msg.pending || 0);
       _updateGenerateCard();
-      if (completedCount > 0) showToast(`Batch complete — ${completedCount} receipt(s) ready`, true);
+      if (completedCount > 0) {
+        showToast(`Batch complete — ${completedCount} receipt(s) ready`, true);
+        celebrate();
+      }
       loadIntakeCount();
+      loadStats();
 
     } else if (msg.type === 'log') {
       appendLog(msg.message);
@@ -1271,6 +1414,7 @@ function connectSSE() {
         if (['done','failed'].includes(receiptCards[k].status)) delete receiptCards[k];
       });
       setCounts();
+      loadStats();
 
     } else if (msg.type === 'stall_recovered') {
       showToast(`Stalled item re-queued: ${msg.filename}`, true);
@@ -1288,6 +1432,7 @@ function connectSSE() {
       _updateQueueBadge(0);
       stopBtn.style.display = 'none';
       document.getElementById('clear-board-btn').classList.add('hidden');
+      loadStats();
       showToast('Board cleared', true);
     }
   };
@@ -1426,6 +1571,7 @@ async function _doGenerate(excludeFilenames = []) {
     downloadBtn.download = fname;
     downloadRow.classList.remove('hidden');
     showToast('Spreadsheet ready — click Download', true);
+    loadReports();
   } catch (err) {
     showToast(`Generation failed: ${err.message}`, false);
   } finally {
@@ -1546,6 +1692,7 @@ window.startInlineEdit = function(ev, el, filename, field) {
       if (d.ok) {
         receiptCards[filename] = { status: 'done', data: d.data, error: '' };
         refreshCard(filename);
+        loadStats();
       } else {
         showToast(`Edit failed: ${d.error || res.status}`, false);
         refreshCard(filename);
@@ -2108,6 +2255,194 @@ window.removeSavedItem = async function(listKey, value, panelId) {
   } catch (_) {}
 };
 
+// ── Insights dashboard ────────────────────────────────────────────────────────
+const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8b5cf6' };
+const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function loadStats() {
+  try {
+    const res = await fetch('/stats');
+    if (!res.ok) return;
+    const s = await res.json();
+    const card = document.getElementById('insights-card');
+    if (!s.count) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+
+    document.getElementById('st-total').textContent   = fmtMoney(s.total);
+    document.getElementById('st-count').textContent   = s.count;
+    document.getElementById('st-avg').textContent     = fmtMoney(s.average);
+    document.getElementById('st-flagged').textContent = s.flagged;
+
+    renderDonut(s.by_category, s.total);
+    renderTimeline(s.timeline);
+    renderVendors(s.top_vendors);
+  } catch (_) {}
+}
+
+function renderDonut(byCat, total) {
+  const box = document.getElementById('donut-chart');
+  const legend = document.getElementById('donut-legend');
+  const cats = Object.entries(byCat).filter(([, v]) => v.total > 0);
+  if (!cats.length || !total) {
+    box.innerHTML = '<div class="empty-note">No data</div>'; legend.innerHTML = ''; return;
+  }
+  const R = 55, C = 70, SW = 22, circ = 2 * Math.PI * R;
+  let offset = 0;
+  let segs = '';
+  cats.forEach(([cat, v]) => {
+    const frac = v.total / total;
+    const len  = frac * circ;
+    segs += `<circle r="${R}" cx="${C}" cy="${C}" fill="none"
+      stroke="${CAT_COLORS[cat] || '#64748b'}" stroke-width="${SW}"
+      stroke-dasharray="${len} ${circ - len}" stroke-dashoffset="${-offset}"
+      transform="rotate(-90 ${C} ${C})"><title>${cat}: ${fmtMoney(v.total)}</title></circle>`;
+    offset += len;
+  });
+  box.innerHTML = `<svg viewBox="0 0 140 140" style="width:100%;max-width:150px;display:block;margin:0 auto">
+    ${segs}
+    <text x="${C}" y="${C - 3}" text-anchor="middle" fill="var(--text)" font-size="15" font-weight="700">${fmtMoney(total)}</text>
+    <text x="${C}" y="${C + 14}" text-anchor="middle" fill="var(--muted)" font-size="9">TOTAL</text>
+  </svg>`;
+  const labels = { fuel: 'Fuel', mats: 'Materials', misc: 'Misc' };
+  legend.innerHTML = cats.map(([cat, v]) =>
+    `<div class="leg-row">
+      <span class="leg-dot" style="background:${CAT_COLORS[cat] || '#64748b'}"></span>
+      <span>${labels[cat] || cat} (${v.count})</span>
+      <span class="leg-amt">${fmtMoney(v.total)}</span>
+    </div>`).join('');
+}
+
+function renderTimeline(timeline) {
+  const box = document.getElementById('timeline-chart');
+  if (!timeline.length) { box.innerHTML = '<div class="empty-note">No dated receipts</div>'; return; }
+  const W = 460, H = 150, padB = 22, padL = 4, padR = 4;
+  const max = Math.max(...timeline.map(t => t.total));
+  const n = timeline.length;
+  const slot = (W - padL - padR) / n;
+  const barW = Math.max(4, Math.min(34, slot * 0.65));
+  let bars = '';
+  timeline.forEach((t, i) => {
+    const h = max ? (t.total / max) * (H - padB - 14) : 0;
+    const x = padL + i * slot + (slot - barW) / 2;
+    const y = H - padB - h;
+    const label = t.date.slice(5).replace('-', '/');
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(h, 2).toFixed(1)}"
+        rx="2.5" fill="url(#barGrad)"><title>${t.date}: ${fmtMoney(t.total)}</title></rect>`;
+    const every = Math.ceil(n / 8);
+    if (i % every === 0 || i === n - 1) {
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle" fill="var(--muted)" font-size="8.5">${label}</text>`;
+    }
+  });
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">
+    <defs><linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--accent-2)"/>
+    </linearGradient></defs>${bars}</svg>`;
+}
+
+function renderVendors(vendors) {
+  const box = document.getElementById('vendor-chart');
+  if (!vendors.length) { box.innerHTML = '<div class="empty-note">No data</div>'; return; }
+  const max = vendors[0].total || 1;
+  box.innerHTML = vendors.map(v =>
+    `<div class="vendor-row">
+      <span class="v-name" title="${esc(v.vendor)}">${esc(v.vendor)}</span>
+      <div class="v-bar-wrap"><div class="v-bar" style="width:${Math.max(3, (v.total / max) * 100)}%"></div></div>
+      <span class="v-amt">${fmtMoney(v.total)}</span>
+    </div>`).join('');
+}
+
+// ── Report history ────────────────────────────────────────────────────────────
+function _fmtBytes(n) {
+  return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+
+async function loadReports() {
+  try {
+    const res = await fetch('/reports');
+    if (!res.ok) return;
+    const d = await res.json();
+    const card = document.getElementById('reports-card');
+    const list = document.getElementById('reports-list');
+    if (!d.reports.length) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    list.innerHTML = d.reports.map(r => {
+      const dt = new Date(r.modified * 1000);
+      const when = dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `<div class="report-row">
+        <div class="r-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg></div>
+        <span class="r-name" title="${esc(r.filename)}">${esc(r.filename)}</span>
+        <span class="r-meta">${when} &bull; ${_fmtBytes(r.size)}</span>
+        <a href="/reports/download?filename=${encodeURIComponent(r.filename)}" download>Download</a>
+      </div>`;
+    }).join('');
+  } catch (_) {}
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+document.getElementById('export-csv-btn').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/export/csv');
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `Server error: ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : 'Reimbursements.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('CSV exported', true);
+  } catch (err) {
+    showToast(`CSV export failed: ${err.message}`, false);
+  }
+});
+
+// ── Board search ──────────────────────────────────────────────────────────────
+const boardSearchInput = document.getElementById('board-search-input');
+
+function applyBoardSearch() {
+  const q = boardSearchInput.value.trim().toLowerCase();
+  const cards = document.querySelectorAll('.k-card');
+  let shown = 0;
+  cards.forEach(c => {
+    const hit = !q || c.textContent.toLowerCase().includes(q);
+    c.classList.toggle('search-hide', !hit);
+    if (hit) shown++;
+  });
+  document.getElementById('board-search-count').textContent =
+    q ? `${shown} / ${cards.length} match` : '';
+  setCounts();
+}
+boardSearchInput.addEventListener('input', applyBoardSearch);
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
+    e.preventDefault();
+    boardSearchInput.focus();
+  }
+});
+
+// ── Confetti celebration ──────────────────────────────────────────────────────
+function celebrate() {
+  const colors = ['#4f8ef7', '#8b5cf6', '#2dd482', '#f5a623', '#f4566a'];
+  for (let i = 0; i < 70; i++) {
+    const bit = document.createElement('div');
+    bit.className = 'confetti-bit';
+    bit.style.left = Math.random() * 100 + 'vw';
+    bit.style.background = colors[i % colors.length];
+    bit.style.animationDuration = (1.6 + Math.random() * 1.6) + 's';
+    bit.style.animationDelay = Math.random() * 0.4 + 's';
+    bit.style.transform = `rotate(${Math.random() * 360}deg)`;
+    document.body.appendChild(bit);
+    setTimeout(() => bit.remove(), 4000);
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 connectSSE();
 loadWatchStatus();
@@ -2116,6 +2451,8 @@ loadLMStudioModels();
 loadModels();
 loadSettings();
 loadSavedFields();
+loadStats();
+loadReports();
 </script>
 </body>
 </html>
