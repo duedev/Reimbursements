@@ -496,6 +496,7 @@ def build_themed_workbook(
     sections: dict,
     expense_period: str = "",
     employee_name: str = "Duane Hamilton",
+    build_tag: str = "",
 ) -> Workbook:
     """
     Build a fresh themed workbook from receipt data.
@@ -565,8 +566,10 @@ def build_themed_workbook(
     current_row += 1
 
     # Muted generated-by footer
-    foot = ws.cell(row=current_row + 1, column=1,
-                   value=f"Generated {datetime.now().strftime('%B %d, %Y')} by Receipt Processor")
+    foot_text = f"Generated {datetime.now().strftime('%B %d, %Y')} by Receipt Processor"
+    if build_tag:
+        foot_text += f" · build {build_tag}"
+    foot = ws.cell(row=current_row + 1, column=1, value=foot_text)
     foot.font = _font(size=9, color="8A93A6")
 
     _autosize_columns(ws)

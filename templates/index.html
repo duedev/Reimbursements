@@ -854,11 +854,11 @@
       </svg>
       Cancel Queue
     </button>
-    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Re-queue items stuck in processing">
+    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Push the queue: restart the worker and re-queue anything that isn't moving">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
       </svg>
-      Restart Stalled
+      Nudge Queue
     </button>
     <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
       &#10005; Clear Board
@@ -1077,6 +1077,80 @@
           <span id="sched-status" style="font-size:12px;color:var(--muted)"></span>
         </div>
       </div>
+
+      <!-- Image processing -->
+      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Image processing</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+          Applied to every receipt as it's processed. Changes take effect on the next receipt —
+          no restart needed.
+        </p>
+        <div style="display:flex;flex-direction:column;gap:11px">
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
+            <input type="checkbox" id="proc-autocrop" style="width:auto">
+            Auto-crop receipt borders <span style="color:var(--muted)">— trim the background around the receipt</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
+            <input type="checkbox" id="proc-compress" style="width:auto">
+            Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
+            <input type="checkbox" id="proc-paddleocr" style="width:auto">
+            PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
+            <span style="min-width:96px">JPEG quality</span>
+            <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
+            <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
+          </label>
+        </div>
+        <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
+      </div>
+
+      <!-- Email delivery -->
+      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Email delivery</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+          SMTP account used for <strong style="color:var(--text)">Send Report Now</strong> and the scheduled export's
+          <strong style="color:var(--text)">Email report</strong> option. For Gmail/Outlook, use an App Password.
+          <span id="email-config-status" style="font-weight:600"></span>
+        </p>
+        <div class="fields" style="grid-template-columns:2fr 1fr">
+          <label>SMTP host
+            <input type="text" id="email-host" placeholder="smtp.gmail.com" autocomplete="off">
+          </label>
+          <label>Port
+            <input type="number" id="email-port" value="587" autocomplete="off">
+          </label>
+        </div>
+        <div class="fields" style="grid-template-columns:1fr 1fr;margin-top:10px">
+          <label>Username
+            <input type="text" id="email-user" placeholder="you@gmail.com" autocomplete="off">
+          </label>
+          <label>Password / App Password
+            <input type="password" id="email-pass" placeholder="••••••••" autocomplete="new-password">
+          </label>
+        </div>
+        <div class="fields" style="grid-template-columns:1fr 1fr;margin-top:10px">
+          <label>From address <span style="color:var(--muted);font-weight:400">(optional)</span>
+            <input type="text" id="email-from" placeholder="defaults to username" autocomplete="off">
+          </label>
+          <label>Send to <span style="color:var(--muted);font-weight:400">(comma-separated)</span>
+            <input type="text" id="email-to" placeholder="boss@company.com" autocomplete="off">
+          </label>
+        </div>
+        <div class="fields" style="grid-template-columns:1fr;margin-top:10px">
+          <label>Subject
+            <input type="text" id="email-subject" placeholder="Weekly Reimbursement Report" autocomplete="off">
+          </label>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary" id="email-save-btn" style="height:32px;padding:0 14px;font-size:12px">Save email settings</button>
+          <button class="btn" id="email-test-btn" style="height:32px;padding:0 14px;font-size:12px">Send test email</button>
+          <span id="email-status" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+      </div>
+
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
@@ -1103,7 +1177,7 @@
 
 <footer style="text-align:center; padding: 18px 0 28px; color: var(--muted); font-size: 12px;">
   <a href="https://github.com/duedev/Reimbursements" target="_blank" rel="noopener"
-     style="color: inherit; text-decoration: none;">Receipt Processor — open source on GitHub</a>
+     style="color: inherit; text-decoration: none;">Receipt Processor — open source on GitHub</a><span id="build-tag"></span>
 </footer>
 
 <!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
@@ -1279,9 +1353,10 @@ function setCounts() {
   document.getElementById('cnt-processing').textContent = document.getElementById('col-processing').children.length;
   document.getElementById('cnt-completed').textContent  = document.getElementById('col-completed').children.length;
   document.getElementById('cnt-failed').textContent     = document.getElementById('col-failed').children.length;
-  // Show unstick button when items are in processing
+  // Show the Nudge Queue button whenever items are waiting or in-flight
+  const queuedCount     = document.getElementById('col-queued').children.length;
   const processingCount = document.getElementById('col-processing').children.length;
-  document.getElementById('unstick-btn').classList.toggle('hidden', processingCount === 0);
+  document.getElementById('unstick-btn').classList.toggle('hidden', queuedCount === 0 && processingCount === 0);
 }
 
 function catBadge(cat) {
@@ -1589,18 +1664,17 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Unstick stalled items ─────────────────────────────────────────────────────
+// ── Nudge the queue (manual push) ─────────────────────────────────────────────
 document.getElementById('unstick-btn').addEventListener('click', async () => {
   const btn = document.getElementById('unstick-btn');
   btn.disabled = true;
   try {
-    const res = await fetch('/queue/unstick', { method: 'POST' });
+    const res = await fetch('/queue/nudge', { method: 'POST' });
     const d   = await res.json();
-    if (d.count > 0) {
-      showToast(`${d.count} stalled item(s) re-queued`, true);
-    } else {
-      showToast('No stalled items found', true);
-    }
+    const parts = [];
+    if (d.worker_restarted) parts.push('worker restarted');
+    if (d.count > 0) parts.push(`${d.count} item(s) re-queued`);
+    showToast(parts.length ? parts.join(', ') : 'Queue is already moving', true);
   } catch (err) {
     showToast(`Error: ${err.message}`, false);
   } finally {
@@ -2206,9 +2280,125 @@ async function loadSettings() {
       el.dataset.hostPath = d.host_export_path;
       document.getElementById('export-path-item').classList.remove('hidden');
     }
+    if (d.version) {
+      const bt = document.getElementById('build-tag');
+      if (bt) bt.textContent = ` · build ${d.version}`;
+    }
   } catch (_) {}
   loadSchedule();
+  loadProcessingSettings();
+  loadEmailSettings();
 }
+
+// ── Image-processing settings ─────────────────────────────────────────────────
+async function loadProcessingSettings() {
+  try {
+    const d = await (await fetch('/settings/processing')).json();
+    document.getElementById('proc-autocrop').checked  = d.autocrop  !== false;
+    document.getElementById('proc-compress').checked   = d.compress  !== false;
+    document.getElementById('proc-paddleocr').checked  = d.paddleocr !== false;
+    document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
+    document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
+  } catch (_) {}
+}
+
+let _procSaveTimer = null;
+async function saveProcessingSettings() {
+  const body = {
+    autocrop:     document.getElementById('proc-autocrop').checked,
+    compress:     document.getElementById('proc-compress').checked,
+    paddleocr:    document.getElementById('proc-paddleocr').checked,
+    jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
+  };
+  try {
+    const res = await fetch('/settings/processing', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      const msg = document.getElementById('proc-saved-msg');
+      msg.style.opacity = '1';
+      setTimeout(() => { msg.style.opacity = '0'; }, 1800);
+    } else {
+      showToast(`Could not save: ${d.error}`, false);
+    }
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+}
+
+['proc-autocrop', 'proc-compress', 'proc-paddleocr'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveProcessingSettings);
+});
+document.getElementById('proc-quality').addEventListener('input', (e) => {
+  document.getElementById('proc-quality-val').textContent = `${e.target.value} %`;
+});
+document.getElementById('proc-quality').addEventListener('change', () => {
+  clearTimeout(_procSaveTimer);
+  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
+});
+
+// ── Email settings ────────────────────────────────────────────────────────────
+async function loadEmailSettings() {
+  try {
+    const d = await (await fetch('/settings/email')).json();
+    document.getElementById('email-host').value    = d.smtp_host || '';
+    document.getElementById('email-port').value    = d.smtp_port || 587;
+    document.getElementById('email-user').value    = d.smtp_user || '';
+    document.getElementById('email-from').value    = d.smtp_from || '';
+    document.getElementById('email-to').value      = d.email_to || '';
+    document.getElementById('email-subject').value = d.email_subject || '';
+    // Show a placeholder dot-mask when a password is already stored
+    document.getElementById('email-pass').placeholder = d.password_set ? '•••••••• (saved)' : '••••••••';
+    const status = document.getElementById('email-config-status');
+    status.textContent = d.configured ? '✓ Configured' : (d.smtp_host ? '⚠ Incomplete' : '');
+    status.style.color = d.configured ? 'var(--success)' : 'var(--warning)';
+  } catch (_) {}
+}
+
+document.getElementById('email-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('email-save-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/settings/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        smtp_host:     document.getElementById('email-host').value.trim(),
+        smtp_port:     parseInt(document.getElementById('email-port').value, 10) || 587,
+        smtp_user:     document.getElementById('email-user').value.trim(),
+        smtp_pass:     document.getElementById('email-pass').value,  // blank keeps saved
+        smtp_from:     document.getElementById('email-from').value.trim(),
+        email_to:      document.getElementById('email-to').value.trim(),
+        email_subject: document.getElementById('email-subject').value.trim(),
+      }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      document.getElementById('email-pass').value = '';   // don't keep the secret in the DOM
+      showToast('Email settings saved', true);
+      loadEmailSettings();
+      loadWatchStatus();
+    } else {
+      showToast(`Email error: ${d.error}`, false);
+    }
+  } catch (err) { showToast(`Email error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('email-test-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('email-test-btn');
+  const status = document.getElementById('email-status');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  status.textContent = '';
+  try {
+    const res = await fetch('/settings/email/test', { method: 'POST' });
+    const d = await res.json();
+    status.textContent = d.ok ? (d.message || 'Test email sent ✓') : `Failed: ${d.error}`;
+    status.style.color = d.ok ? 'var(--success)' : 'var(--danger)';
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = 'Send test email'; }
+});
 
 async function loadSchedule() {
   try {

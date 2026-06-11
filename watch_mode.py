@@ -58,6 +58,43 @@ EMAIL_TO     = os.getenv("EMAIL_TO", "")
 EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Weekly Reimbursement Report")
 
 STATE_FILE = WATCH_STATE / "receipts_state.json"
+# Shared app config — written by the web UI's Settings → Email section. When
+# present, its values take precedence over the SMTP_* environment variables so
+# email can be configured without editing docker-compose.yml or restarting.
+CONFIG_FILE = _OUTPUT_DIR / ".app_config.json"
+
+
+def load_email_config() -> dict:
+    """Resolve SMTP settings: UI-saved config (app config file) over env vars."""
+    saved: dict = {}
+    try:
+        if CONFIG_FILE.exists():
+            saved = (json.loads(CONFIG_FILE.read_text()).get("email") or {})
+    except Exception:
+        saved = {}
+
+    def pick(key: str, env: str, default: str = "") -> str:
+        val = saved.get(key)
+        return str(val) if val not in (None, "") else os.getenv(env, default)
+
+    try:
+        port = int(saved.get("smtp_port") or os.getenv("SMTP_PORT", "587") or 587)
+    except (TypeError, ValueError):
+        port = 587
+
+    return {
+        "host":    pick("smtp_host", "SMTP_HOST"),
+        "port":    port,
+        "user":    pick("smtp_user", "SMTP_USER"),
+        "pass":    pick("smtp_pass", "SMTP_PASS"),
+        "from":    pick("smtp_from", "SMTP_FROM"),
+        "to":      pick("email_to",  "EMAIL_TO"),
+        "subject": pick("email_subject", "EMAIL_SUBJECT", "Weekly Reimbursement Report"),
+    }
+
+
+def _recipients(to_field: str) -> list[str]:
+    return [a.strip() for a in (to_field or "").split(",") if a.strip()]
 
 
 # ── State helpers ──────────────────────────────────────────────────────────────
@@ -149,14 +186,17 @@ def send_workbook_email(workbook_path: Path, receipt_count: int) -> dict:
 
     Shared by watch-mode reports and the scheduled-export task in scheduler.py.
     """
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
-        return {"ok": False, "error": "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO."}
+    cfg = load_email_config()
+    if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
+        return {"ok": False, "error": "SMTP not configured. Set host, username, password and recipient in Settings → Email."}
 
+    sender = cfg["from"] or cfg["user"]
+    recipients = _recipients(cfg["to"])
     try:
         msg = MIMEMultipart()
-        msg["From"]    = SMTP_FROM or SMTP_USER
-        msg["To"]      = EMAIL_TO
-        msg["Subject"] = EMAIL_SUBJECT
+        msg["From"]    = sender
+        msg["To"]      = cfg["to"]
+        msg["Subject"] = cfg["subject"]
 
         body = MIMEText(
             f"Please find attached the reimbursement report generated on "
@@ -171,15 +211,39 @@ def send_workbook_email(workbook_path: Path, receipt_count: int) -> dict:
         part["Content-Disposition"] = f'attachment; filename="{workbook_path.name}"'
         msg.attach(part)
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as smtp:
             smtp.starttls()
-            smtp.login(SMTP_USER, SMTP_PASS)
-            smtp.sendmail(SMTP_FROM or SMTP_USER, EMAIL_TO, msg.as_string())
+            smtp.login(cfg["user"], cfg["pass"])
+            smtp.sendmail(sender, recipients, msg.as_string())
 
-        print(f"[watch] Email sent to {EMAIL_TO}")
+        print(f"[watch] Email sent to {cfg['to']}")
         return {"ok": True, "filename": workbook_path.name}
     except Exception as exc:
         return {"ok": False, "error": f"Email failed: {exc}"}
+
+
+def send_test_email() -> dict:
+    """Send a tiny test message to verify the SMTP settings. Used by the UI."""
+    cfg = load_email_config()
+    if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
+        return {"ok": False, "error": "SMTP not configured. Set host, username, password and recipient first."}
+    sender = cfg["from"] or cfg["user"]
+    try:
+        msg = MIMEText(
+            "This is a test message from Receipt Processor. "
+            "If you're reading this, your email settings work.",
+            "plain",
+        )
+        msg["From"]    = sender
+        msg["To"]      = cfg["to"]
+        msg["Subject"] = "Receipt Processor — test email"
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as smtp:
+            smtp.starttls()
+            smtp.login(cfg["user"], cfg["pass"])
+            smtp.sendmail(sender, _recipients(cfg["to"]), msg.as_string())
+        return {"ok": True, "message": f"Test email sent to {cfg['to']}"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def send_report(state: dict, client: OpenAI | None = None) -> dict:
@@ -187,8 +251,9 @@ def send_report(state: dict, client: OpenAI | None = None) -> dict:
     Build the Excel and email it. Returns {"ok": bool, "filename": str, "error": str}.
     Called by POST /watch/send-email in server.py.
     """
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
-        return {"ok": False, "error": "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO."}
+    cfg = load_email_config()
+    if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
+        return {"ok": False, "error": "SMTP not configured. Set host, username, password and recipient in Settings → Email."}
 
     try:
         out_path = build_report(state, client=client)
