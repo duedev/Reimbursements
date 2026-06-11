@@ -55,3 +55,17 @@ def test_employee_name_sanitised_in_filename(tmp_path):
 def test_missing_employee_name_defaults(tmp_path):
     path = generate_spreadsheet(_results(), tmp_path, employee_name="")
     assert "Reimbursements_Employee_" in path.name
+
+
+def test_theme_extras(tmp_path):
+    path = generate_spreadsheet(_results(), tmp_path, employee_name="Jane Smith")
+    wb = load_workbook(path)
+    ws = wb["Summary"]
+    assert ws.freeze_panes == "A5"
+    assert ws.sheet_properties.tabColor is not None
+    assert wb["Fuel"].sheet_properties.tabColor is not None
+    assert wb["Fuel"].freeze_panes == "A3"
+    # One conditional-format threshold rule per category section
+    assert len(list(ws.conditional_formatting)) == 3
+    assert ws.page_setup.orientation == "landscape"
+    assert ws.print_title_rows in ("1:4", "$1:$4")

@@ -9,6 +9,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from openpyxl import Workbook
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -30,6 +31,17 @@ COLOR_NOTE_BG     = "FEF9C3"
 COLOR_FLAG_BG     = "FEE2E2"
 # Separator between receipts within a category section
 COLOR_RECEIPT_SEP = "B0B8C1"
+# Hyperlink accent — matches the web UI accent color
+COLOR_ACCENT      = "4F8EF7"
+# Sheet tab colors — same palette as the web UI category colors (CAT_COLORS)
+TAB_COLORS = {
+    "Summary":       "1E40AF",
+    "Fuel":          "F5A623",
+    "Materials":     "2DD482",
+    "Miscellaneous": "8B5CF6",
+}
+# Amount thresholds mirrored from the model's flagging rules (process_receipts)
+CATEGORY_THRESHOLDS = {"fuel": 200, "mats": 500, "misc": 300}
 
 # ── Column positions (1-indexed) ───────────────────────────────────────────────
 COL_RECEIPT_NO = 1   # A
@@ -529,6 +541,8 @@ def build_themed_workbook(
         ("misc", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Miscellaneous"),
     ]
 
+    data_row_ranges: dict[str, tuple[int, int]] = {}
+
     for category, col_headers, label in SECTION_DEFS:
         receipts = sections.get(category, [])
         _write_section_banner(ws, current_row, label)
@@ -542,12 +556,47 @@ def build_themed_workbook(
             summary_link_cells[(category, i)] = cell_a
             current_row += 1
         last_data_row = current_row - 1
+        data_row_ranges[category] = (first_data_row, last_data_row)
         _write_subtotal(ws, current_row, first_data_row, last_data_row)
         subtotal_rows[category] = current_row
         current_row += 1
 
     _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"], subtotal_rows["misc"])
+    current_row += 1
+
+    # Muted generated-by footer
+    foot = ws.cell(row=current_row + 1, column=1,
+                   value=f"Generated {datetime.now().strftime('%B %d, %Y')} by Receipt Processor")
+    foot.font = _font(size=9, color="8A93A6")
+
     _autosize_columns(ws)
+
+    # Highlight amounts over the category flag thresholds, even when the model
+    # didn't flag them itself
+    amount_col = get_column_letter(COL_AMOUNT)
+    for category, (first, last) in data_row_ranges.items():
+        if last < first:
+            continue
+        ws.conditional_formatting.add(
+            f"{amount_col}{first}:{amount_col}{last}",
+            CellIsRule(operator="greaterThan",
+                       formula=[str(CATEGORY_THRESHOLDS[category])],
+                       fill=_fill(COLOR_FLAG_BG)),
+        )
+
+    # Keep title + meta rows visible when scrolling
+    ws.freeze_panes = "A5"
+    ws.sheet_properties.tabColor = TAB_COLORS["Summary"]
+
+    # Print setup: one page wide, landscape, repeat the header rows
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    from openpyxl.worksheet.properties import PageSetupProperties
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_title_rows = "1:4"
+    # NOTE: no AutoFilter on purpose — the sheet stacks three banner/subtotal
+    # sections, so a single filter range would scramble them.
 
     # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
     IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]
@@ -555,12 +604,14 @@ def build_themed_workbook(
         receipts        = sections.get(cat, [])
         cat_sr          = summary_row_map.get(cat, [])
         anchors         = _build_image_sheet(wb, sheet_name, receipts, cat, cat_sr)
+        wb[sheet_name].sheet_properties.tabColor = TAB_COLORS.get(sheet_name)
+        wb[sheet_name].freeze_panes = "A3"
         safe_name       = sheet_name.replace("'", "''")
         for i, anchor in enumerate(anchors):
             cell_a = summary_link_cells.get((cat, i))
             if cell_a and anchor:
                 # Internal hyperlink — no leading #, just 'SheetName'!CellRef
                 cell_a.hyperlink = f"'{safe_name}'!{anchor}"
-                cell_a.font = _font(bold=True, size=11, color="2563EB")
+                cell_a.font = _font(bold=True, size=11, color=COLOR_ACCENT)
 
     return wb
