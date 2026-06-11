@@ -403,6 +403,39 @@
     .k-dismiss-btn:hover { color: var(--danger); background: rgba(239,68,68,0.1); }
     .btn-danger { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
 
+    /* Per-item step log */
+    .k-steps-toggle {
+      display: inline-flex; align-items: center; gap: 3px;
+      margin-top: 6px; padding: 2px 7px;
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; color: var(--muted); font-size: 10px;
+      cursor: pointer; transition: background 0.1s, color 0.1s;
+    }
+    .k-steps-toggle:hover { background: var(--surface); color: var(--text); }
+    .k-step-log {
+      display: none;
+      margin-top: 7px; padding-top: 7px;
+      border-top: 1px solid var(--border);
+    }
+    .k-step-log.open { display: block; }
+    .k-step-entry {
+      display: grid;
+      grid-template-columns: 13px auto 1fr auto;
+      gap: 4px; align-items: baseline;
+      padding: 2px 0; font-size: 10px; color: var(--muted);
+    }
+    .k-step-entry.ok-false .k-step-icon { color: var(--danger); }
+    .k-step-entry.ok-true  .k-step-icon { color: var(--success); }
+    .k-step-icon { text-align: center; }
+    .k-step-label { font-weight: 600; color: var(--text); white-space: nowrap; }
+    .k-step-detail {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-family: ui-monospace, monospace; font-size: 9px;
+    }
+    .k-step-dur {
+      white-space: nowrap; font-family: ui-monospace, monospace; font-size: 9px;
+    }
+
     /* Spinner for in-progress cards */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner {
@@ -1381,7 +1414,30 @@ function confBadge(conf) {
   return `<span class="k-confidence ${cls}">${conf}%</span>`;
 }
 
-function makeCard(filename, status, data, model, errorMsg) {
+// ── Per-item step log ──────────────────────────────────────────────────────────
+function renderSteps(steps) {
+  if (!steps || !steps.length) return '';
+  return steps.map(s => {
+    const icon = s.ok ? '&#10003;' : '&#10007;';
+    const dur  = (s.duration_s > 0) ? `<span class="k-step-dur">${s.duration_s.toFixed(1)}s</span>` : '';
+    return `<div class="k-step-entry ${s.ok ? 'ok-true' : 'ok-false'}">
+      <span class="k-step-icon">${icon}</span>
+      <span class="k-step-label">${esc(s.label || s.step)}</span>
+      <span class="k-step-detail">${esc(s.detail || '')}</span>
+      ${dur}
+    </div>`;
+  }).join('');
+}
+
+window.toggleStepLog = function(e, filename) {
+  e.stopPropagation();
+  const card = getCardEl(filename);
+  if (!card) return;
+  const log = card.querySelector('.k-step-log');
+  if (log) log.classList.toggle('open');
+};
+
+function makeCard(filename, status, data, model, errorMsg, steps) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
   div.className = `k-card status-${status}`;
@@ -1444,6 +1500,13 @@ function makeCard(filename, status, data, model, errorMsg) {
     inner += `<div class="k-edit-hint">Tip: click any field to edit it in place</div>`;
   }
 
+  // Step log toggle — shown whenever there are recorded processing steps
+  const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
+  if (stepsArr.length) {
+    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${esc(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
+    inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
+  }
+
   inner += `<button class="k-dismiss-btn" onclick="dismissCard('${esc(filename)}')" title="Dismiss">&#10005;</button>`;
 
   div.innerHTML = inner;
@@ -1460,11 +1523,11 @@ function insertCardSorted(col, card) {
   insertBefore ? col.insertBefore(card, insertBefore) : col.appendChild(card);
 }
 
-function moveCard(filename, newStatus, data, model, errorMsg) {
+function moveCard(filename, newStatus, data, model, errorMsg, steps) {
   const colMap = { queued:'col-queued', ocr:'col-processing', distilling:'col-processing', done:'col-completed', failed:'col-failed' };
   const existing = getCardEl(filename);
   if (existing) existing.remove();
-  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '');
+  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '', steps || (data && data._steps) || []);
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
@@ -1504,8 +1567,9 @@ function connectSSE() {
       // Restore kanban from server state
       const kanban = msg.kanban || {};
       Object.entries(kanban).forEach(([fname, info]) => {
-        receiptCards[fname] = { status: info.status, data: info.data, error: (info.data || {})._error || '' };
-        moveCard(fname, info.status, info.data || null, info.model || '', (info.data || {})._error || '');
+        const fsteps = (info.data && info.data._steps) || [];
+        receiptCards[fname] = { status: info.status, data: info.data, error: (info.data || {})._error || '', steps: fsteps };
+        moveCard(fname, info.status, info.data || null, info.model || '', (info.data || {})._error || '', fsteps);
       });
       if (Object.keys(kanban).length > 0) {
         kanbanCard.classList.remove('hidden');
@@ -1518,8 +1582,9 @@ function connectSSE() {
 
     } else if (msg.type === 'kanban_update') {
       const fname = msg.filename;
-      receiptCards[fname] = { status: msg.status, data: msg.data, error: msg.error || '' };
-      moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '');
+      const fsteps = msg.steps || (msg.data && msg.data._steps) || [];
+      receiptCards[fname] = { status: msg.status, data: msg.data, error: msg.error || '', steps: fsteps };
+      moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '', fsteps);
       kanbanCard.classList.remove('hidden');
       progressCard.classList.remove('hidden');
       if (msg.status === 'done' || msg.status === 'failed') scheduleStats();
@@ -1784,7 +1849,7 @@ window.dismissCard = async function(filename) {
 // ── Inline editing on completed cards ─────────────────────────────────────────
 function refreshCard(filename) {
   const c = receiptCards[filename];
-  if (c) moveCard(filename, c.status, c.data, '', c.error);
+  if (c) moveCard(filename, c.status, c.data, '', c.error, c.steps || []);
 }
 
 window.startInlineEdit = function(ev, el, filename, field) {
@@ -1833,7 +1898,7 @@ window.startInlineEdit = function(ev, el, filename, field) {
       });
       const d = await res.json().catch(() => ({}));
       if (d.ok) {
-        receiptCards[filename] = { status: 'done', data: d.data, error: '' };
+        receiptCards[filename] = { status: 'done', data: d.data, error: '', steps: (receiptCards[filename] && receiptCards[filename].steps) || (d.data && d.data._steps) || [] };
         refreshCard(filename);
         loadStats();
       } else {

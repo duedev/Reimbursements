@@ -39,7 +39,7 @@ def test_png_upload_compresses_before_extraction_no_filenotfound(worker_env, mon
 
     seen_paths: list[Path] = []
 
-    def fake_extract(client, path, cb):
+    def fake_extract(client, path, cb, step_log=None):
         # Whatever path the worker hands us MUST exist on disk.
         seen_paths.append(Path(path))
         assert Path(path).exists(), f"extraction got a missing file: {path}"
