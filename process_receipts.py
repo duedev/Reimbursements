@@ -437,6 +437,65 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
         return None
 
 
+# ── PaddleOCR fallback ─────────────────────────────────────────────────────────
+# Local CPU OCR used when the LM Studio OCR stage fails or is unreachable.
+# The recognized text feeds the same distillation stage as LM Studio OCR.
+
+PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "1").lower() not in ("0", "false", "no")
+
+_paddle_engine = None          # PaddleOCR instance, or False after init failure
+_paddle_lock = threading.Lock()
+
+
+def _get_paddle_engine():
+    """Lazy PaddleOCR singleton. Returns None when disabled or unavailable."""
+    global _paddle_engine
+    if not PADDLEOCR_ENABLED:
+        return None
+    if _paddle_engine is not None:
+        return _paddle_engine or None
+    with _paddle_lock:
+        if _paddle_engine is not None:
+            return _paddle_engine or None
+        try:
+            from paddleocr import PaddleOCR
+            try:  # PaddleOCR 3.x
+                _paddle_engine = PaddleOCR(use_textline_orientation=True, lang="en")
+            except TypeError:  # PaddleOCR 2.x
+                _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
+            print("[paddle] PaddleOCR fallback engine initialised")
+        except Exception as exc:
+            print(f"[paddle] PaddleOCR unavailable: {exc}")
+            _paddle_engine = False
+    return _paddle_engine or None
+
+
+def _extract_paddle_ocr(image_path: Path) -> Optional[str]:
+    """Run PaddleOCR on an image, returning recognized lines joined by newlines."""
+    engine = _get_paddle_engine()
+    if engine is None:
+        return None
+    try:
+        lines: list[str] = []
+        if hasattr(engine, "predict"):  # 3.x API
+            for res in engine.predict(str(image_path)) or []:
+                texts = res.get("rec_texts") if isinstance(res, dict) else getattr(res, "rec_texts", None)
+                if texts:
+                    lines.extend(t for t in texts if t)
+        else:  # 2.x API
+            for page in engine.ocr(str(image_path)) or []:
+                for entry in page or []:
+                    try:
+                        lines.append(entry[1][0])
+                    except (IndexError, TypeError):
+                        pass
+        text = "\n".join(lines).strip()
+        return text or None
+    except Exception as exc:
+        print(f"[paddle] OCR failed for {image_path.name}: {exc}")
+        return None
+
+
 def _unified_distillation(
     client: OpenAI, ocr_text: str, *, _retry: bool = True,
 ) -> Optional[dict]:
@@ -577,28 +636,58 @@ def _extract_receipt_with_status(
                 data["_distill_seconds"] = round(distill_seconds, 1)
         return data
 
+    def _distill_text(ocr_text: str, ocr_seconds: float,
+                      engine: str = "") -> Optional[dict]:
+        _cb("distilling", model=_active_distill_model)
+        t_distill = time.perf_counter()
+        data = _unified_distillation(client, ocr_text)
+        distill_seconds = time.perf_counter() - t_distill
+        if _is_low_confidence(data):
+            return None
+        data["_raw_ocr"] = ocr_text
+        if engine:
+            data["_ocr_engine"] = engine
+        return _finish(data, ocr_seconds, distill_seconds)
+
     try:
         if _active_ocr_model and _active_ocr_model != _active_distill_model:
             _cb("ocr", model=_active_ocr_model)
             t_ocr = time.perf_counter()
             ocr_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
             ocr_seconds = time.perf_counter() - t_ocr
-            if ocr_text:
-                _cb("distilling", model=_active_distill_model)
-                t_distill = time.perf_counter()
-                data = _unified_distillation(client, ocr_text)
-                distill_seconds = time.perf_counter() - t_distill
-                if not _is_low_confidence(data):
+            if not ocr_text:
+                # LM Studio OCR stage failed/unreachable — try local PaddleOCR
+                _cb("ocr", model="paddleocr")
+                t_ocr = time.perf_counter()
+                ocr_text = _extract_paddle_ocr(image_path)
+                ocr_seconds = time.perf_counter() - t_ocr
+                if ocr_text:
+                    data = _distill_text(ocr_text, ocr_seconds, engine="paddleocr")
                     if data is not None:
-                        data["_raw_ocr"] = ocr_text
-                    return _finish(data, ocr_seconds, distill_seconds)
+                        return data
+                ocr_text = None
+            if ocr_text:
+                data = _distill_text(ocr_text, ocr_seconds)
+                if data is not None:
+                    return data
                 print(f"[extract] Two-step low-confidence for {image_path.name}, "
                       "falling back to direct vision")
 
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _extract_with_model(client, image_path, _active_distill_model)
-        return _finish(data, distill_seconds=time.perf_counter() - t_distill)
+        if data is not None:
+            return _finish(data, distill_seconds=time.perf_counter() - t_distill)
+
+        # Direct vision failed too — last resort: PaddleOCR text + distillation
+        # (covers vision-incapable distill models while the text API still works)
+        _cb("ocr", model="paddleocr")
+        t_ocr = time.perf_counter()
+        ocr_text = _extract_paddle_ocr(image_path)
+        if ocr_text:
+            return _distill_text(ocr_text, time.perf_counter() - t_ocr,
+                                 engine="paddleocr")
+        return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")
         return None

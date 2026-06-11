@@ -1,7 +1,18 @@
 FROM python:3.12-slim
 WORKDIR /app
+
+# Runtime libs required by paddlepaddle/paddleocr (CPU)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 libglib2.0-0 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download PaddleOCR detection/recognition models so the first fallback
+# OCR isn't delayed by a model download at runtime (non-fatal if offline)
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en')" || true
+
 COPY . .
 
 # Persistent data directories for volume mounts
