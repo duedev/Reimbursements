@@ -675,15 +675,9 @@
     <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px">
       <div>
         <div class="watch-count" id="intake-count">—</div>
-        <div class="watch-label">files in intake folder</div>
+        <div class="watch-label">files in intake folder (auto-queued)</div>
       </div>
       <div class="btn-row" style="flex:1;justify-content:flex-end">
-        <button class="btn btn-primary hidden" id="process-intake-btn" style="gap:6px">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-          </svg>
-          Queue Intake Files
-        </button>
         <button class="btn btn-amber hidden" id="send-email-btn">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round"
@@ -719,9 +713,14 @@
           <input type="text" id="setting-output-path" placeholder="/Users/yourname/Documents/output">
         </label>
       </div>
-      <div style="margin-top:14px;display:flex;gap:12px;align-items:center">
+      <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
+        <button class="btn" id="restart-btn"
+                style="height:36px;padding:0 16px;font-size:13px;margin-left:auto;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--danger)"
+                title="Restart the server process (Docker will relaunch automatically)">
+          &#8635; Restart App
+        </button>
       </div>
     </div>
   </details>
@@ -1132,44 +1131,15 @@ processBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Queue intake folder ───────────────────────────────────────────────────────
-const processIntakeBtn = document.getElementById('process-intake-btn');
-
+// ── Intake folder file count ──────────────────────────────────────────────────
 async function loadIntakeCount() {
   try {
     const res = await fetch('/intake/files');
     if (!res.ok) return;
     const d = await res.json();
-    const count = d.count || 0;
-    document.getElementById('intake-count').textContent = count;
-    processIntakeBtn.classList.toggle('hidden', count === 0);
+    document.getElementById('intake-count').textContent = d.count || 0;
   } catch (_) {}
 }
-
-processIntakeBtn.addEventListener('click', async () => {
-  const form = new FormData();
-  form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
-  form.append('job_name', document.getElementById('job-name').value.trim());
-  form.append('job_number', document.getElementById('job-number').value.trim());
-
-  processIntakeBtn.disabled = true;
-  try {
-    const res = await fetch('/queue/add-intake', { method: 'POST', body: form });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
-
-    _saveFields();
-    const skippedMsg2 = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
-    showToast(`${d.queued.length} file(s) queued from intake folder${skippedMsg2}`, true);
-    progressCard.classList.remove('hidden');
-    kanbanCard.classList.remove('hidden');
-    loadIntakeCount();
-  } catch (err) {
-    showToast(`Error: ${err.message}`, false);
-  } finally {
-    processIntakeBtn.disabled = false;
-  }
-});
 
 // ── Cancel queue ──────────────────────────────────────────────────────────────
 stopBtn.addEventListener('click', async () => {
@@ -1733,6 +1703,25 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
   } finally {
     btn.disabled = false;
   }
+});
+
+// ── Restart app ───────────────────────────────────────────────────────────────
+document.getElementById('restart-btn').addEventListener('click', async () => {
+  if (!confirm('Restart the app server?\n\nDocker will relaunch it automatically. The page will reload in ~5 seconds.')) return;
+  const btn = document.getElementById('restart-btn');
+  btn.disabled = true;
+  btn.textContent = '⌛ Restarting…';
+  try {
+    await fetch('/admin/restart', { method: 'POST' });
+  } catch (_) { /* expected — server goes down */ }
+  // Poll until the server comes back, then reload
+  const poll = setInterval(async () => {
+    try {
+      await fetch('/');
+      clearInterval(poll);
+      location.reload();
+    } catch (_) {}
+  }, 1500);
 });
 
 // ── Image lightbox ────────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ OLMOCR_MODEL_ID      = os.getenv("OLMOCR_MODEL_ID",      "allenai/olmOCR-2-7B")
 GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "google/gemma-4-12b-qat")
 GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "google/gemma-4-26b-a4b-qat")
 GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
-MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "4"))
+MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
 HOST_OUTPUT_PATH     = os.getenv("HOST_OUTPUT_PATH", "")
@@ -784,7 +784,7 @@ def process_receipts_batch(
         receipt_status(i, total, img_path.name, "queued", None)
 
     futures_map: dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_REQUESTS) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_REQUESTS or None) as executor:
         for i, img_path in enumerate(images, start=1):
             if cancel_event and cancel_event.is_set():
                 log("Processing stopped by user.")
