@@ -59,6 +59,10 @@ IMAGE_MAX_PX         = 1568
 _active_ocr_model:    str = ""           # no dedicated OCR model by default
 _active_distill_model: str = GEMMA_MODEL_ID
 
+# Thinking-mode flags per role (can be toggled via model swap endpoints)
+_ocr_thinking:    bool = False   # off by default — smallest/fastest model for OCR
+_distill_thinking: bool = True   # on by default — bigger model benefits from CoT
+
 FUEL_VENDORS = {
     "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
     "marathon", "speedway", "sunoco", "citgo", "texaco", "pilot", "loves",
@@ -333,6 +337,11 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
     """Stage 1: dedicated OCR model extracts raw text only."""
     try:
         b64, mime = encode_image(image_path)
+        thinking_body = (
+            {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+            if _ocr_thinking
+            else {"thinking": {"type": "disabled"}}
+        )
         response = client.chat.completions.create(
             model=model_id,
             messages=[{"role": "user", "content": [
@@ -340,6 +349,7 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
                 {"type": "text", "text": OLMOCR_RAW_PROMPT},
             ]}],
             temperature=0.0, max_tokens=2048,
+            extra_body=thinking_body,
         )
         text = response.choices[0].message.content.strip()
         return text if text else None
@@ -370,11 +380,17 @@ def _unified_distillation(
         except json.JSONDecodeError:
             return None
 
+    thinking_body = (
+        {"thinking": {"type": "enabled", "budget_tokens": 8192}}
+        if _distill_thinking
+        else {"thinking": {"type": "disabled"}}
+    )
     try:
         resp = client.chat.completions.create(
             model=_active_distill_model,
             messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=768,
+            extra_body=thinking_body,
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -386,6 +402,7 @@ def _unified_distillation(
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
                 temperature=0.0, max_tokens=768,
+                extra_body=thinking_body,
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
@@ -413,6 +430,11 @@ def _extract_with_model(
         except json.JSONDecodeError:
             return None
 
+    thinking_body = (
+        {"thinking": {"type": "enabled", "budget_tokens": 8192}}
+        if _distill_thinking
+        else {"thinking": {"type": "disabled"}}
+    )
     try:
         b64, mime = encode_image(image_path)
         system_msg = {"role": "system", "content": "You are a receipt data extractor. Always respond with valid JSON only."}
@@ -423,6 +445,7 @@ def _extract_with_model(
         resp = client.chat.completions.create(
             model=model_id, messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=768,
+            extra_body=thinking_body,
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -434,6 +457,7 @@ def _extract_with_model(
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
                 temperature=0.0, max_tokens=768,
+                extra_body=thinking_body,
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:

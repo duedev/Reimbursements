@@ -407,8 +407,51 @@
     .dup-card .dup-card-summary { color: var(--muted); font-style: italic; line-height: 1.4; }
     .dup-card.excluded { opacity: 0.4; }
     .mr-preview { width: 100%; max-height: 200px; object-fit: contain; border-radius: 8px;
-      margin-bottom: 16px; background: rgba(0,0,0,0.3); display: block; }
+      margin-bottom: 16px; background: rgba(0,0,0,0.3); display: block; cursor: zoom-in; }
     .mr-preview-wrap { text-align: center; margin-bottom: 16px; }
+
+    /* Image lightbox */
+    #img-lightbox {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 2000;
+      display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+    }
+    #img-lightbox img {
+      max-width: 94vw; max-height: 94vh; object-fit: contain; border-radius: 6px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.7);
+    }
+    #img-lightbox .lb-close {
+      position: absolute; top: 18px; right: 22px; font-size: 32px; color: #fff;
+      background: none; border: none; cursor: pointer; opacity: 0.7; line-height: 1;
+    }
+    #img-lightbox .lb-close:hover { opacity: 1; }
+
+    /* Duplicate card image — zoomable */
+    .dup-card img { cursor: zoom-in; }
+
+    /* Saved-fields manage panel */
+    .manage-saved-btn {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 10px; padding: 0 3px; margin-left: 5px; opacity: 0.65;
+      vertical-align: middle; border-radius: 3px;
+    }
+    .manage-saved-btn:hover { color: var(--text); opacity: 1; background: rgba(255,255,255,0.07); }
+    .saved-manage-panel {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px; margin-top: 4px;
+      font-size: 12px; max-height: 130px; overflow-y: auto;
+    }
+    .saved-item-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 3px 6px; border-radius: 4px; gap: 6px;
+    }
+    .saved-item-row:hover { background: rgba(255,255,255,0.05); }
+    .saved-item-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .saved-item-row button {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 15px; padding: 0 3px; flex-shrink: 0; line-height: 1;
+    }
+    .saved-item-row button:hover { color: var(--danger); }
+    .saved-item-empty { color: var(--muted); padding: 4px 6px; text-align: center; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -443,18 +486,27 @@
     <div class="fields" style="margin-bottom:16px">
       <label>
         Employee Name
+        <button class="manage-saved-btn" type="button" title="Manage saved employees"
+                onclick="toggleManagePanel('manage-panel-employees','saved_employees')">&#9998;</button>
         <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name" list="employees-list" autocomplete="off">
         <datalist id="employees-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-employees"></div>
       </label>
       <label>
         Job Name
+        <button class="manage-saved-btn" type="button" title="Manage saved job names"
+                onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
         <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
         <datalist id="job-names-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-jobnames"></div>
       </label>
       <label>
         Job Number
+        <button class="manage-saved-btn" type="button" title="Manage saved job numbers"
+                onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
         <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
         <datalist id="job-numbers-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-jobnumbers"></div>
       </label>
     </div>
     <!-- Two model dropdowns -->
@@ -693,7 +745,7 @@
     </div>
     <div class="modal-fields">
       <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
-      <label>Date <input type="text" id="mr-date" placeholder="YYYY-MM-DD"></label>
+      <label>Date <input type="date" id="mr-date"></label>
       <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
       <label>Category
         <select id="mr-category">
@@ -728,6 +780,12 @@
       <button class="btn" id="dup-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
     </div>
   </div>
+</div>
+
+<!-- Image lightbox -->
+<div id="img-lightbox" style="display:none" onclick="closeLightbox()">
+  <button class="lb-close" onclick="closeLightbox()" title="Close">&#10005;</button>
+  <img id="lb-img" src="" alt="Receipt">
 </div>
 
 <div class="toast" id="toast"></div>
@@ -858,7 +916,7 @@ function makeCard(filename, status, data, model, errorMsg) {
   if (status === 'ocr') {
     const label = (document.getElementById('active-model-label')?.textContent || 'OCR Model').split('/').pop().substring(0, 24);
     inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(label)}</div>`;
-  } else if (status === 'distilling' || status === 'done' || status === 'failed') {
+  } else if (status === 'distilling') {
     const primary = document.getElementById('active-model-label')?.textContent || '';
     if (primary && primary !== 'Loading…' && primary !== 'No model') {
       inner += `<div style="font-size:9px;color:var(--muted);font-family:ui-monospace,monospace;margin-bottom:3px">&#129302; ${esc(primary.split('/').pop().substring(0,24))}</div>`;
@@ -1024,7 +1082,13 @@ function _updateQueueBadge(pending) {
 function _updateGenerateCard() {
   if (completedCount > 0) {
     generateCard.classList.remove('hidden');
-    genSummary.innerHTML = `<span class="gen-stat stat-ok">${completedCount} processed</span>`;
+    const minsSaved = completedCount * 5;
+    const timeTxt = minsSaved >= 60
+      ? `~${(minsSaved / 60).toFixed(1)} hrs`
+      : `~${minsSaved} min`;
+    genSummary.innerHTML =
+      `<span class="gen-stat stat-ok">${completedCount} processed</span>` +
+      `<span class="gen-stat" style="color:var(--accent)" title="Estimated at 5 min/receipt for manual entry">&#9200; You saved ${timeTxt} of manual data entry</span>`;
   }
 }
 
@@ -1207,6 +1271,23 @@ window.dismissCard = async function(filename) {
   }).catch(() => {});
 };
 
+// ── Date normalization helper ─────────────────────────────────────────────────
+function toDateInputValue(str) {
+  if (!str) return '';
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  // MM-DD-YY → YYYY-MM-DD
+  const m1 = str.match(/^(\d{2})-(\d{2})-(\d{2})$/);
+  if (m1) return `20${m1[3]}-${m1[1]}-${m1[2]}`;
+  // M/D/YYYY or MM/DD/YYYY
+  const m2 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m2) {
+    const yr = m2[3].length === 2 ? `20${m2[3]}` : m2[3];
+    return `${yr}-${m2[1].padStart(2,'0')}-${m2[2].padStart(2,'0')}`;
+  }
+  return str;
+}
+
 // ── Manual Review Modal ───────────────────────────────────────────────────────
 let _mrFilename = '';
 
@@ -1216,7 +1297,7 @@ window.openManualReview = function(filename) {
   const card = receiptCards[filename];
   const data = card?.data || {};
   document.getElementById('mr-vendor').value     = data.vendor     || '';
-  document.getElementById('mr-date').value       = data.date       || '';
+  document.getElementById('mr-date').value       = toDateInputValue(data.date || '');
   document.getElementById('mr-amount').value     = data.amount != null ? data.amount : '';
   document.getElementById('mr-category').value   = data._category  || data.category || 'misc';
   document.getElementById('mr-job-name').value   = data.job_name   || '';
@@ -1230,6 +1311,7 @@ window.openManualReview = function(filename) {
   previewImg.src = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
   previewImg.onload  = () => { previewWrap.style.display = ''; };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
+  previewImg.onclick = () => openLightbox(previewImg.src);
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
 };
@@ -1299,6 +1381,7 @@ function _showDupDialog(groups) {
       card.dataset.file = item.filename;
       card.innerHTML = `
         <img src="${imgUrl}" alt="${esc(item.filename)}" loading="lazy"
+             onclick="openLightbox('${imgUrl}')"
              onerror="this.style.display='none'">
         <div class="dup-card-body">
           <div class="dup-card-fname">${esc(item.filename)}</div>
@@ -1411,8 +1494,14 @@ async function loadModels() {
   try {
     const res  = await fetch('/models/available');
     const data = await res.json();
-    const activeDistill = data.active_distill || '';
-    const activeOcr     = data.active_ocr     || '';
+    const activeDistill    = data.active_distill    || '';
+    const activeOcr        = data.active_ocr        || '';
+    const distillThinking  = data.distill_thinking  !== false; // default true
+    const ocrThinking      = data.ocr_thinking      === true;  // default false
+
+    // Determine effective selected value (with ::no-think suffix if needed)
+    const activeDistillKey = activeDistill && !distillThinking ? activeDistill + '::no-think' : activeDistill;
+    const activeOcrKey     = activeOcr     && !ocrThinking     ? activeOcr     + '::no-think' : activeOcr;
 
     document.getElementById('active-model-label').textContent = activeDistill || 'No model';
     document.getElementById('gemma-status-dot').style.background    = activeDistill ? 'var(--success)' : 'var(--border)';
@@ -1426,10 +1515,17 @@ async function loadModels() {
       distillSelect.innerHTML = '<option value="">No models loaded in LM Studio</option>';
     } else {
       models.forEach(id => {
+        // Normal (thinking) option
         const opt = document.createElement('option');
-        opt.value = id; opt.textContent = id;
-        if (id === activeDistill) opt.selected = true;
+        opt.value = id; opt.textContent = id + ' (thinking)';
+        if (id === activeDistillKey || id === activeDistill && distillThinking) opt.selected = true;
         distillSelect.appendChild(opt);
+        // No-thinking variant
+        const optNT = document.createElement('option');
+        optNT.value = id + '::no-think';
+        optNT.textContent = id + ' (no thinking)';
+        if (id + '::no-think' === activeDistillKey) optNT.selected = true;
+        distillSelect.appendChild(optNT);
       });
       if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
@@ -1438,9 +1534,15 @@ async function loadModels() {
     ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
     models.forEach(id => {
       const opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
-      if (id === activeOcr) opt.selected = true;
+      opt.value = id + '::no-think';
+      opt.textContent = id + ' (no thinking)';
+      if (id + '::no-think' === activeOcrKey || (id === activeOcr && !ocrThinking)) opt.selected = true;
       ocrSelect.appendChild(opt);
+      // Thinking variant for OCR (power users)
+      const optT = document.createElement('option');
+      optT.value = id; optT.textContent = id + ' (thinking)';
+      if (id === activeOcrKey) optT.selected = true;
+      ocrSelect.appendChild(optT);
     });
     if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
   } catch (_) {
@@ -1628,6 +1730,72 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
     btn.disabled = false;
   }
 });
+
+// ── Image lightbox ────────────────────────────────────────────────────────────
+function openLightbox(src) {
+  const lb = document.getElementById('img-lightbox');
+  document.getElementById('lb-img').src = src;
+  lb.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+  document.getElementById('img-lightbox').style.display = 'none';
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeLightbox();
+});
+
+// ── Saved-fields manage panel ─────────────────────────────────────────────────
+const _listKeyMap = {
+  saved_employees:   'employees',
+  saved_job_names:   'job_names',
+  saved_job_numbers: 'job_numbers',
+};
+
+async function _renderManagePanel(panelId, listKey) {
+  const panel = document.getElementById(panelId);
+  panel.innerHTML = '<div class="saved-item-empty">Loading…</div>';
+  panel.classList.remove('hidden');
+  try {
+    const res = await fetch('/saved-fields');
+    const d = await res.json();
+    const values = d[_listKeyMap[listKey]] || [];
+    if (values.length === 0) {
+      panel.innerHTML = '<div class="saved-item-empty">No saved items</div>';
+    } else {
+      panel.innerHTML = values.map(v =>
+        `<div class="saved-item-row">
+          <span title="${esc(v)}">${esc(v)}</span>
+          <button title="Remove" onclick="removeSavedItem('${listKey}','${esc(v.replace(/\\/g,'\\\\').replace(/'/g,"\\'"))}','${panelId}')">&#215;</button>
+        </div>`
+      ).join('');
+    }
+  } catch (_) {
+    panel.innerHTML = '<div class="saved-item-empty">Error loading</div>';
+  }
+}
+
+window.toggleManagePanel = function(panelId, listKey) {
+  const panel = document.getElementById(panelId);
+  if (!panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    return;
+  }
+  _renderManagePanel(panelId, listKey);
+};
+
+window.removeSavedItem = async function(listKey, value, panelId) {
+  try {
+    await fetch('/saved-fields/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_key: listKey, value }),
+    });
+    await loadSavedFields();
+    await _renderManagePanel(panelId, listKey);
+  } catch (_) {}
+};
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 connectSSE();
