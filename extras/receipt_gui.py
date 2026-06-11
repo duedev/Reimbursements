@@ -302,7 +302,6 @@ class ReceiptProcessorApp(ctk.CTk):
 
         try:
             result = process_receipts_batch(
-                template_path=template,
                 receipts_folder=receipts,
                 output_dir=out_dir,
                 employee_name=self.employee_var.get().strip() or "Employee",

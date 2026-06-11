@@ -16,7 +16,8 @@ RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en')" || true
 COPY . .
 
 # Persistent data directories for volume mounts
-RUN mkdir -p /data/receipts /data/output /data/watch_inbox /data/watch_staged /data/watch_state \
+RUN mkdir -p /data/intake /data/output /data/export /data/processing \
+    /data/failed /data/watch_inbox /data/watch_state \
     && chmod -R 777 /data
 
 EXPOSE 8000

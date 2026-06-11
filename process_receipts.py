@@ -48,7 +48,6 @@ GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
-HOST_OUTPUT_PATH     = os.getenv("HOST_OUTPUT_PATH", "")
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 PDF_EXTENSIONS       = {".pdf"}
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
@@ -70,7 +69,7 @@ FUEL_VENDORS = {
     "love's", "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
     "gas station", "fuel station", "petro", "petroleum", "flying j",
     "bucees", "buc-ee", "racetrac", "racetrack", "cenex", "sinclair",
-    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill", "sunoco",
+    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill",
     "kum & go", "sheetz", "thorntons", "mapco", "gulf", "hess",
     "conoco", "phillips 66", "pdq", "getgo", "flash foods", "moto mart",
     "pantry", "road ranger", "git n go", "corner store",
@@ -920,7 +919,6 @@ def generate_spreadsheet(
     results: list[dict],
     output_dir: Path,
     employee_name: str = "Duane Hamilton",
-    host_output_path: str = "",
 ) -> Optional[Path]:
     if not results:
         return None
@@ -953,7 +951,6 @@ def generate_spreadsheet(
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def process_receipts_batch(
-    template_path: Path,
     receipts_folder: Path,
     output_dir: Path,
     employee_name: str = "Duane Hamilton",
@@ -1165,7 +1162,6 @@ def process_receipts_batch(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("spreadsheet", nargs="?", default="Reimbursement_sheet_1.xlsx")
     parser.add_argument("--receipts",         default=RECEIPTS_FOLDER)
     parser.add_argument("--output-dir",       default=OUTPUT_FOLDER)
     parser.add_argument("--employee",         default="Duane Hamilton")
@@ -1184,7 +1180,6 @@ def main():
 
     initialize_models()
     process_receipts_batch(
-        template_path=Path(args.spreadsheet),
         receipts_folder=receipts,
         output_dir=out_dir,
         employee_name=args.employee,

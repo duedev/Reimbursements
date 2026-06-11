@@ -51,9 +51,10 @@ from process_receipts import (
     PDF_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
-    HOST_OUTPUT_PATH,
     RECEIPTS_FOLDER,
 )
+
+HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 
 # ── Folder / config paths ──────────────────────────────────────────────────────
 
@@ -1049,7 +1050,8 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     )
 
 
-# Legacy alias — same behaviour as global endpoint
+# DEPRECATED legacy alias — the frontend no longer calls this; kept one release
+# for external scripts. Remove after 2026-12.
 @app.post("/generate-spreadsheet/{job_id}")
 async def make_spreadsheet_legacy(job_id: str):
     return await make_spreadsheet()
