@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+import csv
+import io
 import json
 import os
 import shutil
@@ -14,12 +16,13 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from queue import Empty, Queue
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
@@ -31,7 +34,9 @@ from process_receipts import (
     _has_ocr_flag,
     _compute_confidence,
     _get_fail_reason,
+    audit_amount,
     classify_category,
+    sort_key_for_receipt,
     rename_receipt_image,
     _detect_duplicates,
     generate_spreadsheet,
@@ -175,7 +180,8 @@ def _safe_receipt_data(data) -> dict:
     out = {}
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
               "expense_description", "summary", "ai_summary", "_flag", "_category",
-              "_new_filename", "_file", "flags", "_confidence", "_error"):
+              "_new_filename", "_file", "flags", "_confidence", "_error",
+              "_amount_verified"):
         if k in data:
             out[k] = data[k]
     return out
@@ -328,9 +334,12 @@ def _run_worker() -> None:
                 data["_category"]  = category
                 data["job_name"]   = item.get("job_name") or None
                 data["job_number"] = item.get("job_number") or None
+                audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
                 flags = data.get("flags") or []
                 if flags and not data.get("_flag"):
                     data["_flag"] = flags[0].get("flag", "")
+                if audit_flag and not data.get("_flag"):
+                    data["_flag"] = audit_flag
                 conf, _ = _compute_confidence(data)
                 data["_confidence"] = conf
 
@@ -992,6 +1001,149 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
 @app.post("/generate-spreadsheet/{job_id}")
 async def make_spreadsheet_legacy(job_id: str):
     return await make_spreadsheet()
+
+
+# ── Analytics / insights ───────────────────────────────────────────────────────
+
+def _compute_stats(results: list[dict]) -> dict:
+    """Aggregate spend stats for the insights dashboard. Pure function."""
+    def _amt(r) -> float:
+        try:
+            return round(float(r.get("amount") or 0), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    total = 0.0
+    by_category: dict[str, dict] = {}
+    by_vendor: dict[str, dict] = {}
+    by_day: dict[str, float] = {}
+    flagged = 0
+    verified = 0
+
+    for r in results:
+        amt = _amt(r)
+        total += amt
+        cat = (r.get("_category") or r.get("category") or "misc").lower()
+        c = by_category.setdefault(cat, {"count": 0, "total": 0.0})
+        c["count"] += 1
+        c["total"] = round(c["total"] + amt, 2)
+
+        vendor = (r.get("vendor") or "Unknown").strip() or "Unknown"
+        v = by_vendor.setdefault(vendor, {"count": 0, "total": 0.0})
+        v["count"] += 1
+        v["total"] = round(v["total"] + amt, 2)
+
+        d = sort_key_for_receipt(r)
+        if d != date.max:
+            key = d.isoformat()
+            by_day[key] = round(by_day.get(key, 0.0) + amt, 2)
+
+        if r.get("_flag"):
+            flagged += 1
+        if r.get("_amount_verified"):
+            verified += 1
+
+    top_vendors = sorted(
+        ({"vendor": k, **v} for k, v in by_vendor.items()),
+        key=lambda x: -x["total"],
+    )[:8]
+    timeline = [{"date": k, "total": v} for k, v in sorted(by_day.items())]
+
+    return {
+        "count":        len(results),
+        "total":        round(total, 2),
+        "average":      round(total / len(results), 2) if results else 0.0,
+        "flagged":      flagged,
+        "verified":     verified,
+        "by_category":  by_category,
+        "top_vendors":  top_vendors,
+        "timeline":     timeline,
+    }
+
+
+@app.get("/stats")
+async def get_stats():
+    with _results_lock:
+        results_copy = list(_results)
+    return JSONResponse(_compute_stats(results_copy))
+
+
+# ── CSV export ─────────────────────────────────────────────────────────────────
+
+_CSV_COLUMNS = [
+    ("Category",    lambda r: (r.get("_category") or r.get("category") or "misc").upper()),
+    ("Date",        lambda r: r.get("date") or ""),
+    ("Vendor",      lambda r: r.get("vendor") or ""),
+    ("Amount",      lambda r: f"{float(r.get('amount') or 0):.2f}"),
+    ("Job Name",    lambda r: r.get("job_name") or ""),
+    ("Job Number",  lambda r: r.get("job_number") or ""),
+    ("Description", lambda r: r.get("expense_description") or ""),
+    ("Summary",     lambda r: r.get("ai_summary") or r.get("summary") or ""),
+    ("Flag",        lambda r: r.get("_flag") or ""),
+    ("File",        lambda r: r.get("_new_filename") or r.get("_file") or ""),
+]
+
+
+def _results_to_csv(results: list[dict]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([name for name, _ in _CSV_COLUMNS])
+    for r in sorted(results, key=sort_key_for_receipt):
+        writer.writerow([fn(r) for _, fn in _CSV_COLUMNS])
+    return buf.getvalue()
+
+
+@app.get("/export/csv")
+async def export_csv():
+    with _results_lock:
+        results_copy = copy.deepcopy(_results)
+    if not results_copy:
+        return JSONResponse({"error": "No processed results available"}, status_code=404)
+    csv_text = _results_to_csv(results_copy)
+    fname = f"Reimbursements_{time.strftime('%Y-%m-%d')}.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ── Report history ─────────────────────────────────────────────────────────────
+
+@app.get("/reports")
+async def list_reports():
+    """Previously generated workbooks in the output folder, newest first."""
+    reports = []
+    try:
+        for p in OUT_FOLDER.glob("Reimbursements_*.xlsx"):
+            try:
+                st = p.stat()
+                reports.append({
+                    "filename": p.name,
+                    "size":     st.st_size,
+                    "modified": int(st.st_mtime),
+                })
+            except OSError:
+                pass
+    except Exception:
+        pass
+    reports.sort(key=lambda r: -r["modified"])
+    return JSONResponse({"reports": reports})
+
+
+@app.get("/reports/download")
+async def download_report(filename: str = ""):
+    if (not filename or "/" in filename or "\\" in filename or ".." in filename
+            or not filename.startswith("Reimbursements_")
+            or not filename.endswith((".xlsx", ".csv"))):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
+    p = OUT_FOLDER / filename
+    if not p.exists() or not p.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    media = ("text/csv" if filename.endswith(".csv")
+             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(p), media_type=media,
+                        headers={"Content-Disposition": f'attachment; filename="{p.name}"'})
 
 
 # ── Results management ─────────────────────────────────────────────────────────
