@@ -98,7 +98,23 @@
     }
     header .tagline { font-size: 11px; color: var(--muted); display: block; font-weight: 400; letter-spacing: 0; margin-top: -1px; }
 
-    main { width: 100%; max-width: 1500px; margin: 0 auto; padding: 24px 18px 56px; display: grid; gap: 20px; }
+    main { width: 100%; max-width: 1280px; margin: 0 auto; padding: 24px 18px 56px; display: grid; gap: 20px; }
+
+    /* Side-by-side card pairs on wide screens */
+    .row-2col { display: grid; gap: 20px; align-items: start; }
+    @media (min-width: 1100px) { .row-2col { grid-template-columns: 1fr 1fr; } }
+
+    /* Host folder paths banner */
+    .paths-banner {
+      max-width: 1280px; margin: 14px auto 0; padding: 0 18px;
+      display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center;
+      font-size: 12px; color: var(--muted);
+    }
+    .paths-banner .path-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .paths-banner code {
+      cursor: pointer; text-decoration: underline dotted;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
+    }
 
     .card {
       background: var(--surface);
@@ -720,7 +736,23 @@
   </button>
 </header>
 
+<!-- Host folder paths — the real folders on your computer -->
+<div class="paths-banner" id="paths-banner">
+  <span class="path-item">&#128194; Drop receipts in:
+    <code id="watch-folder-path" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
+    <button class="copy-btn" id="open-watch-folder-btn" title="Open folder">Open</button>
+  </span>
+  <span class="path-item">&#128202; Reports:
+    <code id="folder-path" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
+    <button class="copy-btn" id="open-folder-btn" title="Open folder">Open</button>
+  </span>
+  <span class="path-item hidden" id="export-path-item">&#9729;&#65039; Auto-export:
+    <code id="export-folder-path" title="Click to copy" onclick="copyFolderPath('export-folder-path')">—</code>
+  </span>
+</div>
+
 <main>
+  <div class="row-2col">
   <!-- Upload card (hidden while processing) -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
@@ -734,6 +766,13 @@
       <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
     </div>
     <div id="file-list"></div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--muted)">
+      <span><span class="watch-count" id="intake-count" style="font-size:15px">—</span>
+        files in intake folder (auto-queued)</span>
+      <button class="btn btn-amber hidden" id="send-email-btn" style="margin-left:auto;height:32px;padding:0 14px;font-size:12px">
+        &#9993; Send Report Now
+      </button>
+    </div>
   </div>
 
   <!-- Config card (hidden while processing) -->
@@ -789,7 +828,17 @@
     <div style="margin-top:10px;text-align:right">
       <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
     </div>
+    <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
+      Loaded in LM Studio
+    </div>
+    <div class="model-strip" id="model-strip">
+      <div class="model-row">
+        <div class="model-dot"></div>
+        <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
+      </div>
+    </div>
   </div>
+  </div><!-- /row-2col -->
 
   <!-- Action row -->
   <div class="btn-row">
@@ -924,6 +973,7 @@
     </div>
   </div>
 
+  <div class="row-2col">
   <!-- Generate spreadsheet card (shown when completed results exist) -->
   <div class="card hidden" id="generate-card">
     <div class="card-title">Generate Spreadsheet</div>
@@ -959,59 +1009,6 @@
     </div>
   </div>
 
-  <!-- Watch-mode / Output card -->
-  <div class="card" id="watch-card">
-    <div class="card-title">Watch Mode / Output</div>
-
-    <div class="folder-strip" style="margin-bottom:10px">
-      <span>Output folder:</span>
-      <code id="folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
-      <button class="copy-btn" id="open-folder-btn">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             style="display:inline;vertical-align:middle;margin-right:3px">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open
-      </button>
-    </div>
-
-    <div class="folder-strip" style="margin-bottom:16px">
-      <span>Watch inbox:</span>
-      <code id="watch-folder-path" style="cursor:pointer;text-decoration:underline dotted" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
-      <button class="copy-btn" id="open-watch-folder-btn">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             style="display:inline;vertical-align:middle;margin-right:3px">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
-        </svg>Open
-      </button>
-    </div>
-
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-      LM Studio Models
-    </div>
-    <div class="model-strip" id="model-strip">
-      <div class="model-row">
-        <div class="model-dot"></div>
-        <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
-      </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px">
-      <div>
-        <div class="watch-count" id="intake-count">—</div>
-        <div class="watch-label">files in intake folder (auto-queued)</div>
-      </div>
-      <div class="btn-row" style="flex:1;justify-content:flex-end">
-        <button class="btn btn-amber hidden" id="send-email-btn">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round"
-              d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
-          </svg>
-          Send Report Now
-        </button>
-      </div>
-    </div>
-  </div>
-
   <!-- Report history -->
   <div class="card hidden" id="reports-card">
     <div class="card-title" style="display:flex;align-items:center">
@@ -1020,6 +1017,7 @@
     </div>
     <div id="reports-list"></div>
   </div>
+  </div><!-- /row-2col -->
 
   <!-- Settings -->
   <details class="card" id="settings-card" style="padding:0">
@@ -2109,8 +2107,7 @@ async function loadWatchStatus() {
       el.dataset.hostPath = display;
     }
     if (statusRes.ok) {
-      const { receipts, smtp_configured } = await statusRes.json();
-      document.getElementById('watch-count').textContent = receipts;
+      const { smtp_configured } = await statusRes.json();
       if (smtp_configured) document.getElementById('send-email-btn').classList.remove('hidden');
     }
     if (watchFolderRes.ok) {
@@ -2203,6 +2200,12 @@ async function loadSettings() {
     const d = await res.json();
     document.getElementById('setting-intake-path').value = d.host_intake_path || '';
     document.getElementById('setting-output-path').value = d.host_output_path || '';
+    if (d.host_export_path) {
+      const el = document.getElementById('export-folder-path');
+      el.textContent = d.host_export_path;
+      el.dataset.hostPath = d.host_export_path;
+      document.getElementById('export-path-item').classList.remove('hidden');
+    }
   } catch (_) {}
   loadSchedule();
 }

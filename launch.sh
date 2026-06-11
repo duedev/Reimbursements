@@ -1,5 +1,40 @@
 #!/usr/bin/env bash
 
+cd "$(dirname "$0")"
+
+# ── First-run folder wizard ────────────────────────────────────────────────────
+# Writes a .env file so Docker uses real folders on YOUR computer instead of
+# hidden ones inside the container. Re-run any time with: ./launch.sh --reconfigure
+
+if [ ! -f .env ] || [ "$1" = "--reconfigure" ]; then
+    echo ""
+    echo "── First-time setup ──────────────────────────────────────────"
+    echo "Pick the folders the app should use on this computer."
+    echo "Press Enter to accept the suggested folder shown in brackets."
+    echo ""
+
+    read -e -r -p "1) Receipts drop folder — put receipt photos here [$PWD/intake]: " INTAKE_PATH
+    INTAKE_PATH="${INTAKE_PATH:-$PWD/intake}"
+
+    read -e -r -p "2) Reports folder — spreadsheets are saved here [$PWD/output]: " OUTPUT_PATH
+    OUTPUT_PATH="${OUTPUT_PATH:-$PWD/output}"
+
+    echo "3) Auto-export folder — scheduled reports are copied here."
+    read -e -r -p "   Tip: choose a Dropbox/Drive/OneDrive folder for automatic cloud upload [$PWD/export]: " EXPORT_PATH
+    EXPORT_PATH="${EXPORT_PATH:-$PWD/export}"
+
+    mkdir -p "$INTAKE_PATH" "$OUTPUT_PATH" "$EXPORT_PATH"
+    cat > .env <<EOF
+INTAKE_PATH=$INTAKE_PATH
+OUTPUT_PATH=$OUTPUT_PATH
+EXPORT_PATH=$EXPORT_PATH
+EOF
+    echo ""
+    echo "Saved to .env — re-run './launch.sh --reconfigure' to change these."
+    echo "──────────────────────────────────────────────────────────────"
+    echo ""
+fi
+
 echo "Building and starting Receipt Processor…"
 if docker compose version &>/dev/null 2>&1; then
     docker compose up -d --build
