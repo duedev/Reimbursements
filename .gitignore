@@ -6,3 +6,4 @@ __pycache__/
 output/
 intake/
 receipts/
+.DS_Store
