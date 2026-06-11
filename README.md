@@ -1,5 +1,7 @@
 # Receipt Processor
 
+[![CI](https://github.com/duedev/Reimbursements/actions/workflows/ci.yml/badge.svg)](https://github.com/duedev/Reimbursements/actions/workflows/ci.yml)
+
 > AI-powered receipt scanning, extraction, and reimbursement report generation — runs entirely on your hardware with [LM Studio](https://lmstudio.ai).
 
 Drop in photos or PDFs of receipts. The app extracts the vendor, date, amount, and category using a local vision model, renames and organizes the files, tracks everything on a live Kanban board, and produces a formatted, print-ready Excel reimbursement form. No cloud APIs, no subscription fees — 100% local AI.
@@ -17,6 +19,7 @@ Drop in photos or PDFs of receipts. The app extracts the vendor, date, amount, a
 - **Persistent autocomplete** — Employee name, job name, and job number fields remember your last 20 entries
 - **Category-prefixed filenames** — Processed images renamed to `fuel_12-30-24_shell.jpg` for instant sorting
 - **Duplicate detection** — Same vendor/date/amount flagged automatically
+- **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery** — Watch-mode daemon can email the weekly report over SMTP
 - **Desktop GUI** — Standalone `customtkinter` app for users who prefer not to run a server
 - **Installable PWA** — Add to home screen on mobile for a native-like experience
@@ -391,6 +394,8 @@ All events are JSON, delivered as `data: {...}\n\n` on the `/events` stream.
 ├── launch.sh               # One-click start (macOS / Linux)
 ├── launch.bat              # One-click start (Windows)
 ├── .env.example            # Volume path configuration template
+├── tests/                  # Pytest suite (classification, duplicates, persistence, …)
+├── .github/workflows/ci.yml# CI — runs the test suite on every push and PR
 └── templates/
     ├── index.html          # SPA frontend (vanilla JS + SSE)
     ├── manifest.json       # PWA manifest
@@ -403,6 +408,7 @@ At runtime, the following folders are created automatically:
 output/
 ├── receipts/               # Renamed receipt images (category_date_vendor.ext)
 │   └── _upload_XXXXX/      # Temp staging for web uploads (cleaned up after rename)
+├── .app_state.json         # Crash-safe snapshot of completed/failed receipts
 └── Reimbursements_Name_YYYY-MM-DD.xlsx
 intake/                     # Drop receipts here for auto-processing
 ```
@@ -431,6 +437,21 @@ PyMuPDF          >= 1.24.0
 ```
 
 `customtkinter` is only required for the desktop GUI and is **not** in `requirements.txt` — install it separately if needed.
+
+---
+
+## Development
+
+### Running the tests
+
+The test suite covers the pure pipeline logic — categorization, duplicate detection, confidence scoring, filename/date handling, spreadsheet generation, and state persistence — and requires no LM Studio connection.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/
+```
+
+CI runs the same suite on Python 3.11 and 3.12 for every push and pull request (see `.github/workflows/ci.yml`).
 
 ---
 
