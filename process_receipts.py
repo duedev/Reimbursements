@@ -553,48 +553,72 @@ _paddle_lock = threading.Lock()
 
 
 def _patch_paddle_predictor_option() -> None:
-    """Shim PaddlePredictorOption so it accepts a positional config argument.
+    """Shim PaddlePredictorOption so a positional model_name still works.
 
-    PaddleOCR 3.1.x passes a positional argument to PaddlePredictorOption()
-    during sub-model setup, but paddlepaddle 3.0.x defines __init__(self) with
-    no extra parameters.  The shim subclass silently drops the argument so the
-    init can proceed with defaults.  Applied to both paddle.inference and the
-    paddleocr-internal pp_option module so whichever one is hit gets patched.
+    paddleocr 3.x constructs PaddlePredictorOption(model_name, device_type=…,
+    device_id=…) with a positional first argument, but paddlex >= 3.1 made the
+    signature keyword-only (__init__(self, **kwargs)).  paddleocr's paddlex
+    dependency is unbounded upstream, so a mismatched install dies during
+    engine init with "takes 1 positional argument but 2 were given".
+    requirements.txt pins a matching trio; this shim additionally gives
+    environments where the versions have already drifted a chance, by
+    re-passing the positional model_name as a keyword and progressively
+    dropping arguments the installed class rejects (the receipts fallback OCR
+    runs CPU-only, so losing device hints degrades to the default device).
+    It must wrap the class in the module where paddleocr *calls* it
+    (paddleocr._common_args) — that module binds the name at import time, so
+    patching only the defining module would not take effect.
     """
+    import importlib
     import inspect
 
-    def _try_patch(module, attr: str) -> None:
-        orig = getattr(module, attr, None)
-        if orig is None:
-            return
+    def _needs_shim(cls) -> bool:
+        if getattr(cls, "_receipts_compat_shim", False):
+            return False  # already patched
         try:
-            sig = inspect.signature(orig.__init__)
-            non_self = [n for n, p in sig.parameters.items()
-                        if n != "self"
-                        and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
-        except Exception:
-            non_self = ["?"]  # can't inspect — apply patch defensively
+            params = [p for name, p in inspect.signature(cls.__init__).parameters.items()
+                      if name != "self"]
+        except (TypeError, ValueError):
+            return True  # can't inspect — wrap defensively
+        return not any(
+            p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+            for p in params
+        )
 
-        if non_self:
-            return  # already accepts extra args; no patch needed
+    def _shimmed(cls):
+        class _Compat(cls):  # type: ignore[valid-type]
+            _receipts_compat_shim = True
 
-        class _Compat(orig):  # type: ignore[valid-type]
             def __init__(self, *args, **kwargs):
-                super().__init__()
+                # paddlex raises a bare Exception for unsupported options, so
+                # each rung of the ladder has to catch broadly.
+                attempts = [((), {"model_name": args[0], **kwargs}) if args else None,
+                            ((), kwargs),
+                            ((), {})]
+                last_exc = None
+                for attempt in attempts:
+                    if attempt is None:
+                        continue
+                    a, kw = attempt
+                    try:
+                        super().__init__(*a, **kw)
+                        return
+                    except Exception as exc:  # noqa: BLE001
+                        last_exc = exc
+                raise last_exc  # nothing worked — surface the real error
 
-        setattr(module, attr, _Compat)
+        _Compat.__name__ = cls.__name__
+        _Compat.__qualname__ = cls.__qualname__
+        return _Compat
 
-    try:
-        import paddle.inference as _pi
-        _try_patch(_pi, "PaddlePredictorOption")
-    except Exception:
-        pass
-
-    try:
-        import paddleocr.utils.pp_option as _pp
-        _try_patch(_pp, "PaddlePredictorOption")
-    except Exception:
-        pass
+    for mod_name in ("paddleocr._common_args", "paddlex.inference"):
+        try:
+            module = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        cls = getattr(module, "PaddlePredictorOption", None)
+        if cls is not None and _needs_shim(cls):
+            setattr(module, "PaddlePredictorOption", _shimmed(cls))
 
 
 def _get_paddle_engine():
@@ -608,9 +632,8 @@ def _get_paddle_engine():
         if _paddle_engine is not None:
             return _paddle_engine or None
         try:
-            # Apply compat shim before any PaddleOCR constructor runs — works around
-            # PaddleOCR 3.1.x passing a positional arg to PaddlePredictorOption()
-            # when paddlepaddle 3.0.x no longer accepts one.
+            # Apply compat shim before any PaddleOCR constructor runs — works
+            # around paddleocr/paddlex API drift (see _patch_paddle_predictor_option).
             _patch_paddle_predictor_option()
             from paddleocr import PaddleOCR
             try:  # PaddleOCR 3.x (with orientation detection)
@@ -627,6 +650,20 @@ def _get_paddle_engine():
             _paddle_engine = False
             _paddle_init_error = str(exc)
     return _paddle_engine or None
+
+
+def _reset_paddle_engine_failure() -> None:
+    """Clear a cached engine-init failure so the next call retries.
+
+    A failed init is cached (engine = False) to avoid re-paying a slow doomed
+    init on every receipt.  Diagnostics call this first so a fixed environment
+    (packages reinstalled, network restored) is picked up without a restart.
+    A working engine is never discarded.
+    """
+    global _paddle_engine
+    with _paddle_lock:
+        if _paddle_engine is False:
+            _paddle_engine = None
 
 
 def _extract_paddle_ocr(image_path: Path) -> Optional[str]:

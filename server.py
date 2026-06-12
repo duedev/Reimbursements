@@ -2296,17 +2296,31 @@ async def paddle_status():
                 "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
                 "fix": "Install it with: pip install paddleocr paddlepaddle",
             }
+        # Retry a previously failed init so a fixed environment is picked up
+        # without restarting the server.
+        _pr._reset_paddle_engine_failure()
         engine = _pr._get_paddle_engine()
         if engine is None:
             init_err = _pr._paddle_init_error or "unknown error during PaddleOCR.__init__"
+            if "positional argument" in init_err:
+                fix = (
+                    "paddleocr/paddlex version mismatch — paddlex 3.1+ broke the API "
+                    "paddleocr 3.0.x relies on. Reinstall the matching pinned set: "
+                    "pip install 'paddlepaddle==3.0.*' 'paddleocr==3.0.*' 'paddlex==3.0.*' "
+                    "(or rebuild the Docker image), then run this test again."
+                )
+            else:
+                fix = (
+                    "Common causes: missing model files (PaddleOCR downloads them on first "
+                    "run — check for network/permission errors above), incompatible "
+                    "paddlepaddle/paddleocr/paddlex versions, or insufficient RAM. "
+                    "Reinstall the pinned set: pip install 'paddlepaddle==3.0.*' "
+                    "'paddleocr==3.0.*' 'paddlex==3.0.*'"
+                )
             return {
                 "available": False,
                 "reason": f"PaddleOCR imported but engine failed to initialise: {init_err}",
-                "fix": (
-                    "Common causes: missing model files (PaddleOCR downloads them on first run — "
-                    "check for network/permission errors above), incompatible paddlepaddle version, "
-                    "or insufficient RAM. Try: pip install --upgrade paddleocr paddlepaddle"
-                ),
+                "fix": fix,
             }
         return {"available": True, "engine": str(type(engine).__name__)}
 
