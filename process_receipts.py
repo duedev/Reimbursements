@@ -552,6 +552,51 @@ _paddle_init_error: str = ""   # last engine-init exception (exposed by /debug/p
 _paddle_lock = threading.Lock()
 
 
+def _patch_paddle_predictor_option() -> None:
+    """Shim PaddlePredictorOption so it accepts a positional config argument.
+
+    PaddleOCR 3.1.x passes a positional argument to PaddlePredictorOption()
+    during sub-model setup, but paddlepaddle 3.0.x defines __init__(self) with
+    no extra parameters.  The shim subclass silently drops the argument so the
+    init can proceed with defaults.  Applied to both paddle.inference and the
+    paddleocr-internal pp_option module so whichever one is hit gets patched.
+    """
+    import inspect
+
+    def _try_patch(module, attr: str) -> None:
+        orig = getattr(module, attr, None)
+        if orig is None:
+            return
+        try:
+            sig = inspect.signature(orig.__init__)
+            non_self = [n for n, p in sig.parameters.items()
+                        if n != "self"
+                        and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+        except Exception:
+            non_self = ["?"]  # can't inspect — apply patch defensively
+
+        if non_self:
+            return  # already accepts extra args; no patch needed
+
+        class _Compat(orig):  # type: ignore[valid-type]
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+
+        setattr(module, attr, _Compat)
+
+    try:
+        import paddle.inference as _pi
+        _try_patch(_pi, "PaddlePredictorOption")
+    except Exception:
+        pass
+
+    try:
+        import paddleocr.utils.pp_option as _pp
+        _try_patch(_pp, "PaddlePredictorOption")
+    except Exception:
+        pass
+
+
 def _get_paddle_engine():
     """Lazy PaddleOCR singleton. Returns None when disabled or unavailable."""
     global _paddle_engine, _paddle_init_error
@@ -563,11 +608,18 @@ def _get_paddle_engine():
         if _paddle_engine is not None:
             return _paddle_engine or None
         try:
+            # Apply compat shim before any PaddleOCR constructor runs — works around
+            # PaddleOCR 3.1.x passing a positional arg to PaddlePredictorOption()
+            # when paddlepaddle 3.0.x no longer accepts one.
+            _patch_paddle_predictor_option()
             from paddleocr import PaddleOCR
-            try:  # PaddleOCR 3.x
+            try:  # PaddleOCR 3.x (with orientation detection)
                 _paddle_engine = PaddleOCR(use_textline_orientation=True, lang="en")
-            except TypeError:  # PaddleOCR 2.x
-                _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
+            except TypeError:
+                try:  # PaddleOCR 3.x (without orientation — avoids sub-model init)
+                    _paddle_engine = PaddleOCR(use_textline_orientation=False, lang="en")
+                except TypeError:  # PaddleOCR 2.x
+                    _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
             _paddle_init_error = ""
             print("[paddle] PaddleOCR fallback engine initialised")
         except Exception as exc:
