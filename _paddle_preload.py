@@ -1,0 +1,45 @@
+"""Pre-download PaddleOCR models during Docker build.
+
+Applies the same PaddlePredictorOption compat shim used at runtime so the
+init succeeds even when paddlepaddle and paddleocr minor versions diverge.
+Non-fatal: Docker build continues whether or not the download succeeds.
+"""
+import inspect
+
+
+def _patch(mod, attr):
+    orig = getattr(mod, attr, None)
+    if not orig:
+        return
+    try:
+        non_self = [n for n, p in inspect.signature(orig.__init__).parameters.items()
+                    if n != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+    except Exception:
+        non_self = ["?"]
+    if non_self:
+        return
+    class _C(orig):
+        def __init__(self, *a, **kw): super().__init__()
+    setattr(mod, attr, _C)
+
+
+try:
+    import paddle.inference as _pi
+    _patch(_pi, "PaddlePredictorOption")
+except Exception:
+    pass
+
+try:
+    import paddleocr.utils.pp_option as _pp
+    _patch(_pp, "PaddlePredictorOption")
+except Exception:
+    pass
+
+from paddleocr import PaddleOCR
+try:
+    PaddleOCR(use_textline_orientation=True, lang="en")
+except TypeError:
+    try:
+        PaddleOCR(use_textline_orientation=False, lang="en")
+    except TypeError:
+        PaddleOCR(use_angle_cls=True, lang="en")
