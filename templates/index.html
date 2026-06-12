@@ -1014,15 +1014,6 @@
   <div class="card hidden" id="generate-card">
     <div class="card-title">Generate Spreadsheet</div>
     <div class="gen-summary" id="gen-summary"></div>
-    <div style="margin:10px 0 12px;display:flex;flex-direction:column;gap:6px">
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;cursor:pointer">
-        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer">
-        <span>Require all receipts approved before generating</span>
-      </label>
-      <div id="approval-warning" style="display:none;font-size:12px;color:var(--amber);padding:6px 10px;background:rgba(217,119,6,0.1);border:1px solid rgba(217,119,6,0.3);border-radius:6px">
-        &#9888; <span id="unapproved-count">0</span> receipt(s) need approval — review and approve all cards first
-      </div>
-    </div>
     <div class="btn-row">
       <button class="btn btn-success" id="generate-btn">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1046,6 +1037,14 @@
         </svg>
         New Batch
       </button>
+    </div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;cursor:pointer">
+        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer">
+        Require review &amp; approval
+        <span style="color:var(--muted)">— block generation until every completed receipt is approved</span>
+      </label>
+      <div id="approval-gate-status" style="display:none;margin-top:8px;font-size:12px;color:var(--warning)"></div>
     </div>
     <div class="hidden" id="download-row" style="margin-top:14px">
       <a class="btn btn-success" id="download-btn" href="#" download>
@@ -1402,7 +1401,7 @@
 <div class="modal-overlay hidden" id="manual-review-modal">
   <div class="modal-box">
     <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
-    <p class="modal-sub" id="mr-modal-sub">Review the extracted data for <strong id="mr-filename-label"></strong>.</p>
+    <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
     <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
       &#10003; This receipt is approved
     </div>
@@ -1532,7 +1531,14 @@ let folderPaths    = {};
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// For values embedded as JS string literals inside inline on* attributes:
+// escape for the JS string first, then for the HTML attribute. Without this a
+// filename containing a quote breaks the button's handler entirely.
+function escJs(str) {
+  return esc(String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 }
 function showToast(msg, ok) {
   const t = document.getElementById('toast');
@@ -1686,25 +1692,25 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     const errText = errorMsg || (data && data._error) || '';
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
-    inner += `<button class="k-review-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Review</button>`;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-review-btn" onclick="openManualReview('${escJs(filename)}')">&#9998; Review</button>`;
     inner += `</div>`;
   }
 
   if (status === 'done') {
     inner += `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">`;
-    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${esc(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
+    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${escJs(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
     inner += `</div>`;
   }
 
   // Step log toggle — shown whenever there are recorded processing steps
   const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
   if (stepsArr.length) {
-    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${esc(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
+    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
     inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
   }
 
-  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${esc(filename)}')" title="Dismiss">&#10005;</button>`;
+  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss">&#10005;</button>`;
 
   div.innerHTML = inner;
   return div;
@@ -1785,13 +1791,8 @@ function connectSSE() {
       moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '', fsteps);
       kanbanCard.classList.remove('hidden');
       progressCard.classList.remove('hidden');
-      if (msg.status === 'done' || msg.status === 'failed') {
-        // Keep completedCount in sync for manual saves (batch_done only fires for queue batches)
-        completedCount = Object.values(receiptCards).filter(c => c.status === 'done').length;
-        _updateGenerateCard();
-        _updateApprovalWarning();
-        scheduleStats();
-      }
+      _updateGenerateCard();
+      if (msg.status === 'done' || msg.status === 'failed') scheduleStats();
 
     } else if (msg.type === 'batch_done') {
       const prevCompleted = completedCount;
@@ -1866,15 +1867,39 @@ function _updateQueueBadge(pending) {
 }
 
 function _updateGenerateCard() {
-  if (completedCount > 0) {
+  // Derive counts from the board so manual saves, approvals, and dismissals
+  // update the card immediately (completedCount only refreshes on batch_done).
+  const done = Object.values(receiptCards).filter(c => c.status === 'done');
+  if (done.length > 0) {
     generateCard.classList.remove('hidden');
-    const minsSaved = completedCount * 5;
+    const minsSaved = done.length * 5;
     const timeTxt = minsSaved >= 60
       ? `~${(minsSaved / 60).toFixed(1)} hrs`
       : `~${minsSaved} min`;
     genSummary.innerHTML =
-      `<span class="gen-stat stat-ok">${completedCount} processed</span>` +
+      `<span class="gen-stat stat-ok">${done.length} processed</span>` +
       `<span class="gen-stat saved-time-stat" id="saved-time-stat" style="color:var(--accent)" onclick="celebrate()" title="Estimated at 5 min/receipt for manual entry — click to celebrate again 🎉">&#9200; You saved ${timeTxt} of manual data entry</span>`;
+  } else {
+    generateCard.classList.add('hidden');
+  }
+  _updateApprovalGate(done);
+}
+
+// ── Approval gate ─────────────────────────────────────────────────────────────
+// When "Require review & approval" is on, spreadsheet generation is blocked
+// until every completed receipt has been approved (server enforces this too).
+function _updateApprovalGate(doneCards) {
+  const done = doneCards || Object.values(receiptCards).filter(c => c.status === 'done');
+  const unapproved = done.filter(c => !c.data?._approved).length;
+  const blocked = document.getElementById('require-approval').checked && unapproved > 0;
+  generateBtn.disabled = blocked;
+  generateBtn.title = blocked ? 'Blocked — receipts below still need review & approval' : '';
+  const status = document.getElementById('approval-gate-status');
+  if (blocked) {
+    status.innerHTML = `&#9873; ${unapproved} of ${done.length} receipt${done.length === 1 ? '' : 's'} still need review &amp; approval — use the Review &amp; Approve button on each completed card.`;
+    status.style.display = '';
+  } else {
+    status.style.display = 'none';
   }
   _updateApprovalWarning();
 }
@@ -1985,7 +2010,9 @@ async function _doGenerate(excludeFilenames = []) {
     });
     if (!res.ok) {
       const txt = await res.text();
-      throw new Error(txt || `Server error: ${res.status}`);
+      let msg = txt;
+      try { msg = JSON.parse(txt).error || txt; } catch (_) {}
+      throw new Error(msg || `Server error: ${res.status}`);
     }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
@@ -2001,23 +2028,24 @@ async function _doGenerate(excludeFilenames = []) {
   } catch (err) {
     showToast(`Generation failed: ${err.message}`, false);
   } finally {
-    generateBtn.disabled = false;
     generateBtn.innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
       </svg> Generate Spreadsheet`;
+    _updateApprovalGate();  // restores disabled/enabled per the approval gate
   }
 }
 
 generateBtn.addEventListener('click', async () => {
-  // Hard-block if approval is required and some receipts are unapproved
-  if (document.getElementById('require-approval')?.checked) {
+  // Hard block when approval is required and receipts are still unapproved
+  // (belt and braces — the button is disabled while blocked, and the server
+  // rejects unapproved batches too)
+  if (document.getElementById('require-approval').checked) {
     const unapproved = Object.values(receiptCards)
-      .filter(c => c.status === 'done' && !c.data?._approved);
-    if (unapproved.length > 0) {
-      _updateApprovalWarning();
-      showToast(`${unapproved.length} receipt(s) need approval before generating`, false);
+      .filter(c => c.status === 'done' && !c.data?._approved).length;
+    if (unapproved > 0) {
+      showToast(`${unapproved} receipt(s) still need review & approval before generating`, false);
       return;
     }
   }
@@ -2179,7 +2207,6 @@ function _closeReviewModal() {
 
 window.openManualReview = function(filename) {
   _mrFilename = filename;
-  document.getElementById('mr-filename-label').textContent = filename;
   const card = receiptCards[filename];
   const isDone = card?.status === 'done';
   const isFailed = card?.status === 'failed';
@@ -2296,8 +2323,8 @@ document.getElementById('mr-approve-btn').addEventListener('click', async () => 
     });
     const d = await res.json();
     if (d.ok) {
-      _closeReviewModal();
-      showToast(newApproved ? `&#10003; ${_mrFilename} approved` : `Approval removed`, newApproved);
+      document.getElementById('manual-review-modal').classList.add('hidden');
+      showToast(newApproved ? `✓ ${_mrFilename} approved` : `Approval removed`, newApproved);
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
@@ -2696,15 +2723,19 @@ async function loadReviewSettings() {
     document.getElementById('require-approval').checked = !!d.require_approval;
     _updateApprovalWarning();
   } catch (_) {}
+  _updateApprovalGate();
 }
 
 document.getElementById('require-approval').addEventListener('change', async () => {
-  _updateApprovalWarning();
+  const enabled = document.getElementById('require-approval').checked;
+  _updateApprovalGate();
   try {
-    await fetch('/settings/review', {
+    const res = await fetch('/settings/review', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ require_approval: document.getElementById('require-approval').checked }),
+      body: JSON.stringify({ require_approval: enabled }),
     });
+    const d = await res.json();
+    if (d.ok) showToast(enabled ? 'Approval required before generating' : 'Approval requirement off', true);
   } catch (_) {}
 });
 
@@ -3037,7 +3068,7 @@ async function _renderManagePanel(panelId, listKey) {
       panel.innerHTML = values.map(v =>
         `<div class="saved-item-row">
           <span title="${esc(v)}">${esc(v)}</span>
-          <button title="Remove" onclick="removeSavedItem('${listKey}','${esc(v.replace(/\\/g,'\\\\').replace(/'/g,"\\'"))}','${panelId}')">&#215;</button>
+          <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
         </div>`
       ).join('');
     }

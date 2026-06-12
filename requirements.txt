@@ -6,6 +6,10 @@ openpyxl>=3.1.5
 Pillow>=11.0.0
 PyMuPDF>=1.24.0
 # Local OCR fallback when the LM Studio OCR stage is unreachable (heavy: ~600MB)
-# Pin both to the same major.minor to avoid PaddlePredictorOption API drift.
+# Pin all three to the same major.minor: paddleocr's own paddlex dependency is
+# unbounded upstream, and paddlex >= 3.1 made PaddlePredictorOption.__init__
+# keyword-only, which breaks paddleocr 3.0.x engine init with
+# "PaddlePredictorOption.__init__() takes 1 positional argument but 2 were given".
 paddlepaddle==3.0.*
 paddleocr==3.0.*
+paddlex==3.0.*

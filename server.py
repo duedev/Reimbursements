@@ -1207,6 +1207,18 @@ async def add_manual_result(body: ManualReceiptRequest):
                              "_image_path", "_proc_seconds", "_ocr_seconds",
                              "_distill_seconds", "_ocr_engine", "_steps", "_raw_ocr")
                              if k in r}
+                # Reviewing/approving an already-extracted receipt must not
+                # rewrite it as a manual entry: keep its flag and extraction
+                # confidence, and only drop the OCR amount cross-check when
+                # the amount itself was edited.
+                preserved["_flag"] = r.get("_flag", "")
+                preserved["_confidence"] = r.get("_confidence")
+                try:
+                    amount_changed = abs(float(r.get("amount") or 0) - amt) > 0.005
+                except (TypeError, ValueError):
+                    amount_changed = True
+                if amount_changed:
+                    r.pop("_amount_verified", None)
                 r.update(data)
                 r.update(preserved)
                 data = dict(r)
@@ -1239,6 +1251,19 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
 
     if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
+
+    # Approval gate — when enabled in settings, every receipt in the batch must
+    # have been reviewed and approved before a spreadsheet can be generated.
+    if _load_config().get("require_approval"):
+        unapproved = sum(1 for r in results_copy if not r.get("_approved"))
+        if unapproved:
+            return JSONResponse(
+                {"ok": False,
+                 "error": f"{unapproved} of {len(results_copy)} receipt(s) have not been "
+                          "reviewed and approved. Approve them on the board (or turn off "
+                          "'Require review & approval') and try again."},
+                status_code=409,
+            )
 
     # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
     # so excluded items don't leave stale duplicate flags on the remaining receipts
@@ -2296,17 +2321,31 @@ async def paddle_status():
                 "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
                 "fix": "Install it with: pip install paddleocr paddlepaddle",
             }
+        # Retry a previously failed init so a fixed environment is picked up
+        # without restarting the server.
+        _pr._reset_paddle_engine_failure()
         engine = _pr._get_paddle_engine()
         if engine is None:
             init_err = _pr._paddle_init_error or "unknown error during PaddleOCR.__init__"
+            if "positional argument" in init_err:
+                fix = (
+                    "paddleocr/paddlex version mismatch — paddlex 3.1+ broke the API "
+                    "paddleocr 3.0.x relies on. Reinstall the matching pinned set: "
+                    "pip install 'paddlepaddle==3.0.*' 'paddleocr==3.0.*' 'paddlex==3.0.*' "
+                    "(or rebuild the Docker image), then run this test again."
+                )
+            else:
+                fix = (
+                    "Common causes: missing model files (PaddleOCR downloads them on first "
+                    "run — check for network/permission errors above), incompatible "
+                    "paddlepaddle/paddleocr/paddlex versions, or insufficient RAM. "
+                    "Reinstall the pinned set: pip install 'paddlepaddle==3.0.*' "
+                    "'paddleocr==3.0.*' 'paddlex==3.0.*'"
+                )
             return {
                 "available": False,
                 "reason": f"PaddleOCR imported but engine failed to initialise: {init_err}",
-                "fix": (
-                    "Common causes: missing model files (PaddleOCR downloads them on first run — "
-                    "check for network/permission errors above), incompatible paddlepaddle version, "
-                    "or insufficient RAM. Try: pip install --upgrade paddleocr paddlepaddle"
-                ),
+                "fix": fix,
             }
         return {"available": True, "engine": str(type(engine).__name__)}
 

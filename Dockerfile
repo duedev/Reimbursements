@@ -10,53 +10,15 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download PaddleOCR models so the first fallback isn't delayed by a
-# download at runtime.  Apply the same PaddlePredictorOption compat shim used
-# at runtime (process_receipts._patch_paddle_predictor_option) so the init
-# succeeds even when paddlepaddle and paddleocr minor versions diverge.
+# download at runtime.  requirements.txt pins paddlepaddle/paddleocr/paddlex
+# to matching versions, so no compat shim is needed here.  Best-effort: a
+# network-restricted build still succeeds, models then download on first use.
 RUN python - <<'PYEOF' || true
-import inspect
-
-def _patch(mod, attr):
-    orig = getattr(mod, attr, None)
-    if not orig:
-        return
-    try:
-        non_self = [n for n,p in inspect.signature(orig.__init__).parameters.items()
-                    if n != 'self' and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
-        if non_self:
-            return
-    except Exception:
-        pass  # C extension — apply patch defensively
-    class _C(orig):
-        def __init__(self, *a, **kw): super().__init__()
-    _C.__name__ = orig.__name__
-    _C.__qualname__ = orig.__qualname__
-    setattr(mod, attr, _C)
-    import sys
-    for _m in list(sys.modules.values()):
-        if _m is None or _m is mod:
-            continue
-        try:
-            if getattr(_m, attr, None) is orig:
-                setattr(_m, attr, _C)
-        except Exception:
-            pass
-
-try:
-    import paddle.inference as _pi; _patch(_pi, 'PaddlePredictorOption')
-except Exception: pass
-try:
-    import paddleocr.utils.pp_option as _pp; _patch(_pp, 'PaddlePredictorOption')
-except Exception: pass
-
 from paddleocr import PaddleOCR
 try:
     PaddleOCR(use_textline_orientation=True, lang='en')
-except TypeError:
-    try:
-        PaddleOCR(use_textline_orientation=False, lang='en')
-    except TypeError:
-        PaddleOCR(use_angle_cls=True, lang='en')
+except TypeError:  # PaddleOCR 2.x
+    PaddleOCR(use_angle_cls=True, lang='en')
 PYEOF
 
 COPY . .
