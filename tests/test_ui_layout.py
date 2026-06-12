@@ -52,13 +52,13 @@ def test_insights_at_top_of_workspace(page):
     assert "hidden" in insights_div
 
 
-def test_details_and_models_in_settings_tab(page):
+def test_models_and_settings_in_settings_tab(page):
     st = page.find('id="tab-settings"')
     cfg = page.find('id="config-card"')
     setc = page.find('id="settings-card"')
     wsend = page.find("/tab-workspace")
     assert wsend < st < cfg < setc  # config + settings live in the settings tab
-    assert "Details &amp; Models" in page
+    assert "AI Models" in page  # config card is titled for what it holds
 
 
 def test_no_duplicate_ids(page):
