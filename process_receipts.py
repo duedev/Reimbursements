@@ -41,10 +41,10 @@ from spreadsheet_theme import build_themed_workbook
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 LMSTUDIO_BASE_URL    = os.getenv("LMSTUDIO_BASE_URL",    "http://127.0.0.1:1234/v1")
-OLMOCR_MODEL_ID      = os.getenv("OLMOCR_MODEL_ID",      "allenai/olmOCR-2-7B")
-GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "google/gemma-4-12b-qat")
-GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "google/gemma-4-26b-a4b-qat")
-GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       GEMMA_SMALL_MODEL_ID)
+OLMOCR_MODEL_ID      = os.getenv("OLMOCR_MODEL_ID",      "")
+GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "")
+GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "")
+GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       "")
 
 # Build tag — surfaced in the web UI footer and the workbook footer so you can
 # confirm which build is actually running (handy after a `docker compose up`
@@ -72,7 +72,7 @@ IMAGE_MAX_PX         = 1568
 # _active_ocr_model:    empty string = skip dedicated OCR step, use distill model directly
 # _active_distill_model: model used for unified extraction + audit
 _active_ocr_model:    str = ""           # no dedicated OCR model by default
-_active_distill_model: str = GEMMA_MODEL_ID
+_active_distill_model: str = ""           # populated by initialize_models() at startup
 
 # Reasoning ("thinking") mode — a single global toggle for OCR + distillation.
 # Off by default: receipt extraction is structured JSON at temperature 0, which
@@ -548,12 +548,13 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
 PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "1").lower() not in ("0", "false", "no")
 
 _paddle_engine = None          # PaddleOCR instance, or False after init failure
+_paddle_init_error: str = ""   # last engine-init exception (exposed by /debug/paddle-status)
 _paddle_lock = threading.Lock()
 
 
 def _get_paddle_engine():
     """Lazy PaddleOCR singleton. Returns None when disabled or unavailable."""
-    global _paddle_engine
+    global _paddle_engine, _paddle_init_error
     if not PADDLEOCR_ENABLED:
         return None
     if _paddle_engine is not None:
@@ -567,10 +568,12 @@ def _get_paddle_engine():
                 _paddle_engine = PaddleOCR(use_textline_orientation=True, lang="en")
             except TypeError:  # PaddleOCR 2.x
                 _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
+            _paddle_init_error = ""
             print("[paddle] PaddleOCR fallback engine initialised")
         except Exception as exc:
             print(f"[paddle] PaddleOCR unavailable: {exc}")
             _paddle_engine = False
+            _paddle_init_error = str(exc)
     return _paddle_engine or None
 
 
@@ -1035,10 +1038,14 @@ def classify_category(data: dict) -> str:
     vendor   = (data.get("vendor") or "").lower()
     summary  = (data.get("ai_summary") or data.get("summary") or "").lower()
     expense  = (data.get("expense_description") or "").lower()
-    combined = f"{vendor} {summary} {expense}"
+    raw_ocr  = (data.get("_raw_ocr") or "").lower()
+    combined = f"{vendor} {summary} {expense} {raw_ocr}"
 
-    # Fuel: vendor-name match is a strong signal (score +3), keyword in any field (+1)
+    # Fuel: AI-extracted vendor name is strongest signal (+3); fuel vendor found in
+    # raw OCR text but not in extracted vendor adds a secondary signal (+2); fuel
+    # keywords anywhere in the combined text add +1 each.
     fuel_score = sum(3 for kw in FUEL_VENDORS if kw in vendor)
+    fuel_score += sum(2 for kw in FUEL_VENDORS if kw in raw_ocr and kw not in vendor)
     fuel_score += sum(1 for kw in FUEL_KEYWORDS if kw in combined)
 
     if fuel_score >= 3:

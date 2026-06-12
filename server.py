@@ -46,8 +46,6 @@ from process_receipts import (
     _try_load_model,
     pdf_to_images,
     APP_VERSION,
-    GEMMA_SMALL_MODEL_ID,
-    GEMMA_LARGE_MODEL_ID,
     IMAGE_EXTENSIONS,
     PDF_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
@@ -1790,10 +1788,7 @@ class ModelSwapRequest(BaseModel):
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
     """Set distillation model. LM Studio JIT will load it on first use."""
-    model_str = body.model.strip()
-    target = GEMMA_SMALL_MODEL_ID if model_str == "small" else (
-        GEMMA_LARGE_MODEL_ID if model_str == "large" else model_str
-    )
+    target = body.model.strip()
     _pr._active_distill_model = target
     return JSONResponse({"ok": True, "active_distill": target})
 
@@ -2189,14 +2184,25 @@ async def paddle_status():
     def _check():
         try:
             from paddleocr import PaddleOCR  # noqa: F401
-            engine = _pr._get_paddle_engine()
-            if engine is None:
-                return {"available": False, "reason": "PaddleOCR import succeeded but engine failed to initialise"}
-            return {"available": True, "engine": str(type(engine).__name__)}
         except ImportError as exc:
-            return {"available": False, "reason": f"PaddleOCR not installed: {exc}"}
-        except Exception as exc:
-            return {"available": False, "reason": str(exc)}
+            return {
+                "available": False,
+                "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
+                "fix": "Install it with: pip install paddleocr paddlepaddle",
+            }
+        engine = _pr._get_paddle_engine()
+        if engine is None:
+            init_err = _pr._paddle_init_error or "unknown error during PaddleOCR.__init__"
+            return {
+                "available": False,
+                "reason": f"PaddleOCR imported but engine failed to initialise: {init_err}",
+                "fix": (
+                    "Common causes: missing model files (PaddleOCR downloads them on first run — "
+                    "check for network/permission errors above), incompatible paddlepaddle version, "
+                    "or insufficient RAM. Try: pip install --upgrade paddleocr paddlepaddle"
+                ),
+            }
+        return {"available": True, "engine": str(type(engine).__name__)}
 
     result = await asyncio.get_event_loop().run_in_executor(None, _check)
     return JSONResponse(result)
