@@ -49,6 +49,14 @@ def test_local_parse_category_mats():
     assert out["category"] == "mats"
 
 
+def test_local_parse_picks_grand_total_not_tendered_cash():
+    txt = ("DINER\nSUBTOTAL $43.75\nTAX $1.45\nTOTAL $45.20\n"
+           "AMOUNT TENDERED $60.00\nCHANGE $14.80")
+    out = pr._local_distill_from_ocr(txt)
+    assert out["amount"] == 45.20
+    assert out["category"] == "misc"
+
+
 # ── End-to-end fallback when LM Studio is unreachable ─────────────────────────
 
 def test_paddle_fallback_when_lm_fully_down(monkeypatch, tmp_path):
@@ -85,6 +93,25 @@ def test_lm_distillation_preferred_over_local_parse(monkeypatch, tmp_path):
     assert data is not None
     assert data["vendor"] == "Chevron"
     assert "_local_parse" not in data
+
+
+def test_distilled_amount_reconciled_against_ocr_text(monkeypatch, tmp_path):
+    """A model amount that appears nowhere in the OCR text is replaced by the
+    receipt's printed grand total and flagged for review."""
+    img = tmp_path / "r.jpg"
+    img.write_bytes(b"fake")
+    hallucinated = {"vendor": "Chevron", "amount": 39.0, "date": "2026-05-02", "flags": []}
+    monkeypatch.setattr(pr, "_active_ocr_model", "")
+    monkeypatch.setattr(pr, "_active_distill_model", "distill")
+    monkeypatch.setattr(pr, "_extract_with_model", MagicMock(return_value=None))
+    monkeypatch.setattr(pr, "_unified_distillation", MagicMock(return_value=dict(hallucinated)))
+    monkeypatch.setattr(pr, "_extract_paddle_ocr",
+                        MagicMock(return_value="CHEVRON\nSUBTOTAL $28.50\nTAX $1.50\nTOTAL $30.00"))
+
+    data = pr._extract_receipt_with_status(MagicMock(), img, None)
+    assert data is not None
+    assert data["amount"] == 30.00
+    assert any("corrected" in (f.get("flag") or "").lower() for f in data["flags"])
 
 
 # ── Config consolidation ──────────────────────────────────────────────────────

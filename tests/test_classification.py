@@ -48,3 +48,44 @@ def test_fuel_keyword_in_summary_promotes_gas_station():
     data = {"vendor": "Circle K", "category": "misc",
             "ai_summary": "Unleaded gasoline purchase"}
     assert classify_category(data) == "fuel"
+
+
+# ── Raw-OCR fuel scoring must use word boundaries ─────────────────────────────
+# Regression: substring matching let "76" match addresses/prices and "regular"
+# match REGULAR PRICE, flipping almost every receipt with raw OCR text to fuel.
+
+def test_restaurant_with_raw_ocr_stays_misc():
+    data = {"vendor": "Butch's Grinders", "category": "misc",
+            "ai_summary": "Lunch sandwiches",
+            "_raw_ocr": ("BUTCH'S GRINDERS\n1376 MAIN ST\n"
+                         "REGULAR SUB 8.99\nPREMIUM SUB 10.99\n"
+                         "SUBTOTAL 19.98\nTAX 1.62\nTOTAL 21.60")}
+    assert classify_category(data) == "misc"
+
+
+def test_hotel_with_raw_ocr_stays_misc():
+    data = {"vendor": "Hampton Inn", "category": "misc",
+            "ai_summary": "One night hotel stay",
+            "_raw_ocr": ("HAMPTON INN\n762 AIRPORT RD\nLAS VEGAS NV\n"
+                         "ROOM 204 REGULAR RATE 129.00\nTOTAL 154.37")}
+    assert classify_category(data) == "misc"
+
+
+def test_price_ending_in_76_is_not_a_fuel_vendor():
+    data = {"vendor": "Office Depot", "category": "misc",
+            "ai_summary": "Printer paper",
+            "_raw_ocr": "OFFICE DEPOT STORE #76\nPAPER 9.76\nTOTAL 9.76"}
+    assert classify_category(data) == "misc"
+
+
+def test_real_gas_receipt_with_raw_ocr_is_fuel():
+    data = {"vendor": "Quick Stop", "category": "misc", "ai_summary": "",
+            "_raw_ocr": ("SHELL OIL 57444\nPUMP 4\nUNLEADED 12.503 GAL\n"
+                         "PRICE/GAL $3.499\nTOTAL $45.20")}
+    assert classify_category(data) == "fuel"
+
+
+def test_standalone_76_branding_is_fuel():
+    data = {"vendor": "76 Station #4421", "category": "misc",
+            "ai_summary": "Diesel"}
+    assert classify_category(data) == "fuel"

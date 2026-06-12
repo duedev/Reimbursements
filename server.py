@@ -2404,6 +2404,110 @@ async def admin_restart():
     return JSONResponse({"ok": True, "message": "Restarting…"})
 
 
+def _referenced_filenames() -> set[str]:
+    """Every filename (and stem) the app still tracks — results, board cards,
+    queued work, and the stall-recovery item cache.  Stems are included so a
+    file whose extension changed during compression (photo.png → photo.jpg)
+    still counts as referenced."""
+    names: set[str] = set()
+
+    def _add(value) -> None:
+        if not value:
+            return
+        base = Path(str(value)).name
+        names.add(base.lower())
+        names.add(Path(base).stem.lower())
+
+    data_dicts: list[dict] = []
+    with _results_lock:
+        data_dicts.extend(dict(r) for r in _results)
+    with _kanban_lock:
+        for fname, entry in _kanban.items():
+            _add(fname)
+            data_dicts.append(dict(entry.get("data") or {}))
+    for d in data_dicts:
+        for key in ("_file", "_new_filename", "_compressed_file", "_image_path"):
+            _add(d.get(key))
+    with _work_lock:
+        for item in _work_queue:
+            _add(item.get("filename"))
+            _add(item.get("path"))
+    with _item_cache_lock:
+        for fname, item in _item_cache.items():
+            _add(fname)
+            _add((item or {}).get("path"))
+    return names
+
+
+@app.get("/maintenance/orphans")
+async def find_orphaned_files():
+    """Report files in the working folders that no result, board card, or queue
+    item references — leftovers from clears, crashes, or interrupted renames.
+
+    Scans the completed-receipts and processing folders (including their
+    subfolders) plus stale _pdf_* page folders in the intake folder.  Files in
+    the intake folder root are pending input, not orphans.  Report-only —
+    nothing is deleted.
+    """
+    referenced = _referenced_filenames()
+    orphans: list[dict] = []
+    empty_dirs: list[str] = []
+    scanned = 0
+
+    def _scan(folder: Path, label: str) -> None:
+        nonlocal scanned
+        if not folder.exists():
+            return
+        for p in sorted(folder.rglob("*")):
+            if p.is_dir():
+                # Stale temp dirs (_pdf_* page folders, _upload_* staging) with
+                # nothing left inside are clutter worth reporting too.
+                if p.name.startswith(("_pdf_", "_upload_")) and not any(p.iterdir()):
+                    empty_dirs.append(f"{label}/{p.relative_to(folder)}")
+                continue
+            if not p.is_file() or p.name.startswith("."):
+                continue
+            scanned += 1
+            if p.name.lower() in referenced or p.stem.lower() in referenced:
+                continue
+            # Original PDFs are archived next to the receipts after their pages
+            # were queued; they stay referenced through their converted pages
+            # (named "<pdf stem><page suffix>.jpg").
+            if p.suffix.lower() in PDF_EXTENSIONS and any(
+                    n.startswith(p.stem.lower()) for n in referenced):
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            orphans.append({
+                "folder":   label,
+                "name":     str(p.relative_to(folder)),
+                "size":     st.st_size,
+                "modified": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            })
+
+    _scan(IMAGES_FOLDER, "receipts")
+    _scan(PROCESSING_FOLDER, "processing")
+    try:
+        for d in sorted(INTAKE_FOLDER.iterdir()):
+            if d.is_dir() and d.name.startswith("_pdf_"):
+                _scan(d, f"intake/{d.name}")
+                if not any(d.iterdir()):
+                    empty_dirs.append(f"intake/{d.name}")
+    except OSError:
+        pass
+
+    return JSONResponse({
+        "ok":         True,
+        "scanned":    scanned,
+        "count":      len(orphans),
+        "total_size": sum(o["size"] for o in orphans),
+        "orphans":    orphans,
+        "empty_dirs": empty_dirs,
+    })
+
+
 # ── Watch-mode / email ─────────────────────────────────────────────────────────
 
 @app.get("/watch/status")
