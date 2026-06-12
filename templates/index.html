@@ -1531,7 +1531,14 @@ let folderPaths    = {};
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// For values embedded as JS string literals inside inline on* attributes:
+// escape for the JS string first, then for the HTML attribute. Without this a
+// filename containing a quote breaks the button's handler entirely.
+function escJs(str) {
+  return esc(String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 }
 function showToast(msg, ok) {
   const t = document.getElementById('toast');
@@ -1685,25 +1692,25 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     const errText = errorMsg || (data && data._error) || '';
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
-    inner += `<button class="k-review-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Review</button>`;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-review-btn" onclick="openManualReview('${escJs(filename)}')">&#9998; Review</button>`;
     inner += `</div>`;
   }
 
   if (status === 'done') {
     inner += `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">`;
-    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${esc(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
+    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${escJs(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
     inner += `</div>`;
   }
 
   // Step log toggle — shown whenever there are recorded processing steps
   const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
   if (stepsArr.length) {
-    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${esc(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
+    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
     inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
   }
 
-  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${esc(filename)}')" title="Dismiss">&#10005;</button>`;
+  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss">&#10005;</button>`;
 
   div.innerHTML = inner;
   return div;
@@ -2299,7 +2306,7 @@ document.getElementById('mr-approve-btn').addEventListener('click', async () => 
     const d = await res.json();
     if (d.ok) {
       document.getElementById('manual-review-modal').classList.add('hidden');
-      showToast(newApproved ? `&#10003; ${_mrFilename} approved` : `Approval removed`, newApproved);
+      showToast(newApproved ? `✓ ${_mrFilename} approved` : `Approval removed`, newApproved);
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
@@ -3035,7 +3042,7 @@ async function _renderManagePanel(panelId, listKey) {
       panel.innerHTML = values.map(v =>
         `<div class="saved-item-row">
           <span title="${esc(v)}">${esc(v)}</span>
-          <button title="Remove" onclick="removeSavedItem('${listKey}','${esc(v.replace(/\\/g,'\\\\').replace(/'/g,"\\'"))}','${panelId}')">&#215;</button>
+          <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
         </div>`
       ).join('');
     }

@@ -1207,6 +1207,18 @@ async def add_manual_result(body: ManualReceiptRequest):
                              "_image_path", "_proc_seconds", "_ocr_seconds",
                              "_distill_seconds", "_ocr_engine", "_steps", "_raw_ocr")
                              if k in r}
+                # Reviewing/approving an already-extracted receipt must not
+                # rewrite it as a manual entry: keep its flag and extraction
+                # confidence, and only drop the OCR amount cross-check when
+                # the amount itself was edited.
+                preserved["_flag"] = r.get("_flag", "")
+                preserved["_confidence"] = r.get("_confidence")
+                try:
+                    amount_changed = abs(float(r.get("amount") or 0) - amt) > 0.005
+                except (TypeError, ValueError):
+                    amount_changed = True
+                if amount_changed:
+                    r.pop("_amount_verified", None)
                 r.update(data)
                 r.update(preserved)
                 data = dict(r)
