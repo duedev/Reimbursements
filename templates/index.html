@@ -570,14 +570,22 @@
     .k-error { font-size: 10px; color: #f87171; margin-top: 4px;
       background: rgba(239,68,68,0.08); border-radius: 4px; padding: 3px 6px;
       line-height: 1.4; }
+    /* Error log lines with inline explanations */
+    .err-line { margin-bottom: 8px; color: #fca5a5; white-space: pre-wrap; word-break: break-word; }
+    .err-line:last-child { margin-bottom: 0; }
+    .err-exp { font-family: system-ui, sans-serif; font-size: 11px; color: #fdba74;
+      background: rgba(251,146,60,0.10); border-left: 2px solid rgba(251,146,60,0.5);
+      padding: 3px 7px; margin-top: 3px; border-radius: 0 4px 4px 0;
+      white-space: normal; line-height: 1.45; }
 
     /* Image view button on kanban cards */
     .k-img-btn {
-      background: none; border: 1px solid var(--border); color: var(--muted);
-      border-radius: 4px; padding: 2px 7px; font-size: 11px; cursor: pointer;
-      margin-top: 5px; display: inline-block; transition: color 0.15s, border-color 0.15s;
+      background: rgba(79,142,247,0.08); border: 1px solid rgba(79,142,247,0.35);
+      color: var(--accent); border-radius: 4px; padding: 3px 9px; font-size: 11px;
+      cursor: pointer; margin-top: 5px; display: inline-block;
+      transition: background 0.15s, border-color 0.15s;
     }
-    .k-img-btn:hover { color: var(--text); border-color: var(--accent); }
+    .k-img-btn:hover { background: rgba(79,142,247,0.18); border-color: var(--accent); }
 
     /* Create (manual entry) button */
     .k-create-btn {
@@ -996,7 +1004,8 @@
         </svg>
         Generate Spreadsheet
       </button>
-      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
+      <button class="btn" id="export-csv-btn"
+              style="background:rgba(79,142,247,0.15);border:1px solid var(--accent);color:var(--accent)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
@@ -1004,7 +1013,10 @@
         Export CSV
       </button>
       <button class="btn" id="reset-btn"
-              style="background:var(--surface);border:1px solid var(--border)">
+              style="background:rgba(217,119,6,0.15);border:1px solid var(--amber);color:var(--amber)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
         New Batch
       </button>
     </div>
@@ -1118,7 +1130,7 @@
           </div>
           <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
         </div>
-        <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
+        <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;max-height:200px;overflow-y:auto"></div>
       </div>
     </div>
   </div>
@@ -2254,13 +2266,38 @@ const errorLogEl      = document.getElementById('error-log');
 const errorCountBadge = document.getElementById('error-count-badge');
 let   errorPanelOpen  = true;
 
+const _ERROR_EXPLANATIONS = [
+  [/no data|model returned no data/i,       'The AI model returned nothing — LM Studio may be offline or the model is still loading.'],
+  [/low.?confidence|incomplete extraction/i,'Key fields (vendor or amount) couldn\'t be reliably read. Use "Create" on the failed card to enter them manually.'],
+  [/ocr error/i,                            'The image text couldn\'t be transcribed. Try a clearer photo with better lighting.'],
+  [/extraction failed/i,                    'The AI model couldn\'t parse this receipt. Verify LM Studio is running with a loaded model, then retry.'],
+  [/stalled|stuck/i,                        'Processing timed out. LM Studio may be overloaded — wait a moment and click "Nudge Queue".'],
+  [/could not extract/i,                    'One or more required fields are missing. Open the failed card and use "Create" to fill them in.'],
+  [/pdf/i,                                  'PDF conversion issue — check that PyMuPDF is installed (pip install pymupdf).'],
+  [/paddle/i,                               'PaddleOCR fallback also failed. Check Settings → PaddleOCR for details.'],
+  [/duplicate/i,                            'This receipt appears to match another already in the batch — review both before exporting.'],
+  [/amount.*not found|verify manually/i,    'The extracted dollar amount doesn\'t match any total on the receipt — double-check before exporting.'],
+];
+
+function _explainError(line) {
+  for (const [rx, msg] of _ERROR_EXPLANATIONS) {
+    if (rx.test(line)) return msg;
+  }
+  return null;
+}
+
 function renderErrorPanel() {
   if (!errorLines.length) return;
-  // Reveal the combined card and the errors sub-section within it.
   progressCard.classList.remove('hidden');
   errorSection.classList.remove('hidden');
   errorCountBadge.textContent = errorLines.length;
-  errorLogEl.textContent = errorLines.join('\n');
+  // Render each error line with an inline explanation when one is available.
+  errorLogEl.innerHTML = errorLines.map(line => {
+    const exp = _explainError(line);
+    const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (!exp) return `<div class="err-line">${escaped}</div>`;
+    return `<div class="err-line">${escaped}<div class="err-exp">&#9432; ${exp}</div></div>`;
+  }).join('');
   errorLogEl.scrollTop = errorLogEl.scrollHeight;
 }
 
@@ -2576,8 +2613,8 @@ document.getElementById('paddle-test-input').addEventListener('change', async (e
     const chk = await fetch('/debug/paddle-status');
     const chkData = await chk.json();
     if (!chkData.available) {
-      statusEl.textContent = `Not available: ${chkData.reason}`;
-      statusEl.style.color = 'var(--danger)';
+      statusEl.innerHTML = `<span style="color:var(--danger)">&#10007; ${chkData.reason}</span>`
+        + (chkData.fix ? `<br><span style="color:var(--warning);font-size:10px">Fix: ${chkData.fix}</span>` : '');
       btn.disabled = false;
       e.target.value = '';
       return;
