@@ -114,6 +114,8 @@ Every card has a **×** dismiss button. **Clear Board** (appears once any cards 
 
 Once receipts reach the Completed column, a **Generate Spreadsheet** card appears. Click it to build and download the Excel workbook. The file is named `Reimbursements_EmployeeName_YYYY-MM-DD.xlsx`.
 
+The card also has a **Require review & approval** checkbox. While it's on, generation is blocked (button disabled, and the server rejects the request) until every completed receipt has been approved via the **✎ Review & Approve** button on its card — the status line shows how many receipts still need review and updates live as you approve them.
+
 ---
 
 ### Watch-Mode Daemon
@@ -399,6 +401,7 @@ Each generated workbook contains four sheets:
 |---|---|---|
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
 | `GET/POST` | `/settings/processing` | `autocrop`, `compress`, `paddleocr`, `jpeg_quality` |
+| `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |
 | `GET/POST` | `/saved-fields` | `employees`, `job_names`, `job_numbers` lists |
