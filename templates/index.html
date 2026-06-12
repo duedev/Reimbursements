@@ -100,6 +100,25 @@
 
     main { width: 100%; max-width: 1280px; margin: 0 auto; padding: 24px 18px 56px; display: grid; gap: 20px; }
 
+    /* Tab navigation */
+    .tab-bar {
+      max-width: 1280px; margin: 18px auto 0; padding: 0 18px;
+      display: flex; gap: 6px; border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      background: none; border: 1px solid transparent; border-bottom: none;
+      color: var(--muted); font-size: 14px; font-weight: 600;
+      padding: 10px 22px; border-radius: 10px 10px 0 0; cursor: pointer;
+      margin-bottom: -1px; transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--text); background: var(--surface);
+      border-color: var(--border); border-bottom-color: var(--surface);
+    }
+    .tab-panel { display: grid; gap: 20px; }
+    .tab-panel.hidden { display: none; }
+
     /* Side-by-side card pairs on wide screens */
     .row-2col { display: grid; gap: 20px; align-items: start; }
     @media (min-width: 1100px) { .row-2col { grid-template-columns: 1fr 1fr; } }
@@ -784,9 +803,52 @@
   </span>
 </div>
 
+<nav class="tab-bar">
+  <button class="tab-btn active" data-tab="workspace" onclick="switchTab('workspace')">Workspace</button>
+  <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">Settings</button>
+</nav>
+
 <main>
-  <div class="row-2col">
-  <!-- Upload card (hidden while processing) -->
+  <!-- ════════════════════════ Workspace tab ════════════════════════ -->
+  <div class="tab-panel" id="tab-workspace">
+
+  <!-- Insights dashboard — top of view, stays hidden until results exist -->
+  <div class="card hidden" id="insights-card">
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('insights-body','insights-toggle')">
+      Insights
+      <button class="section-toggle" id="insights-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="insights-body">
+      <div class="insights-grid">
+        <div class="stat-tile tile-total"><div class="stat-value" id="st-total">$0.00</div><div class="stat-label">Total Spend</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
+        <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
+        <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-box">
+          <h4>By Category</h4>
+          <div id="donut-chart"></div>
+          <div class="donut-legend" id="donut-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h4>Spend Over Time</h4>
+          <div id="timeline-chart"></div>
+        </div>
+        <div class="chart-box">
+          <h4>Top Vendors</h4>
+          <div id="vendor-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload card -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
     <div id="drop-zone">
@@ -808,7 +870,166 @@
     </div>
   </div>
 
-  <!-- Config card (hidden while processing) -->
+  <!-- Action row -->
+  <div class="btn-row">
+    <button class="btn btn-primary" id="process-btn" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+      </svg>
+      Add to Queue
+    </button>
+    <button class="btn" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger);display:none">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+      </svg>
+      Cancel Queue
+    </button>
+    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Push the queue: restart the worker and re-queue anything that isn't moving">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      Nudge Queue
+    </button>
+    <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
+      &#10005; Clear Board
+    </button>
+    <span id="status-badge" class="status-badge hidden"></span>
+    <span id="queue-badge" style="font-size:12px;color:var(--muted);display:none">
+      <span id="queue-pending-count">0</span> pending
+    </span>
+  </div>
+
+  <!-- Processing & Errors (combined) -->
+  <div class="card hidden" id="progress-card">
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
+      Processing &amp; Errors
+      <button class="section-toggle" id="progress-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="progress-body">
+      <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-meta">
+        <span id="progress-label">0 / 0</span>
+        <span id="current-file"></span>
+      </div>
+      <div id="log"></div>
+
+      <!-- Errors sub-section — revealed when an error/skip is logged -->
+      <div class="hidden" id="error-section" style="margin-top:16px;border-top:1px solid rgba(239,68,68,0.4);padding-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
+          <div class="card-title" style="color:var(--danger);margin-bottom:0">
+            Errors <span id="error-count-badge" style="font-size:11px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:10px;padding:1px 7px;margin-left:6px">0</span>
+          </div>
+          <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
+        </div>
+        <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Kanban board (hidden until processing starts) -->
+  <div class="card hidden" id="kanban-card">
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('kanban-body','kanban-toggle')">
+      Receipt Progress
+      <button class="section-toggle" id="kanban-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="kanban-body">
+    <div class="board-search">
+      <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)" autocomplete="off">
+      <span class="search-count" id="board-search-count"></span>
+    </div>
+    <div class="kanban-board">
+      <div class="kanban-col">
+        <div class="kanban-col-header">
+          Queued <span class="col-count" id="cnt-queued">0</span>
+          <button class="col-folder-btn" title="Open intake folder" onclick="openKanbanFolder('intake')">&#128193;</button>
+        </div>
+        <div class="kanban-cards" id="col-queued"></div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header">
+          Processing <span class="col-count" id="cnt-processing">0</span>
+          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('watch_staged')">&#128193;</button>
+        </div>
+        <div class="kanban-cards" id="col-processing"></div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header">
+          Completed <span class="col-count" id="cnt-completed">0</span>
+          <button class="col-folder-btn" title="Open output folder" onclick="openKanbanFolder('output')">&#128193;</button>
+        </div>
+        <div class="kanban-cards" id="col-completed"></div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header">
+          Failed <span class="col-count" id="cnt-failed">0</span>
+          <button class="col-folder-btn" title="Open failed folder" onclick="openKanbanFolder('failed')">&#128193;</button>
+        </div>
+        <div class="kanban-cards" id="col-failed"></div>
+      </div>
+    </div>
+    </div><!-- /kanban-body -->
+  </div>
+
+  <div class="row-2col">
+  <!-- Generate spreadsheet card (shown when completed results exist) -->
+  <div class="card hidden" id="generate-card">
+    <div class="card-title">Generate Spreadsheet</div>
+    <div class="gen-summary" id="gen-summary"></div>
+    <div class="btn-row">
+      <button class="btn btn-success" id="generate-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        Generate Spreadsheet
+      </button>
+      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Export CSV
+      </button>
+      <button class="btn" id="reset-btn"
+              style="background:var(--surface);border:1px solid var(--border)">
+        New Batch
+      </button>
+    </div>
+    <div class="hidden" id="download-row" style="margin-top:14px">
+      <a class="btn btn-success" id="download-btn" href="#" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Download Spreadsheet
+      </a>
+    </div>
+  </div>
+
+  <!-- Report history -->
+  <div class="card hidden" id="reports-card">
+    <div class="card-title" style="display:flex;align-items:center">
+      Report History
+      <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list">↻</button>
+    </div>
+    <div id="reports-list"></div>
+  </div>
+  </div><!-- /row-2col -->
+
+  </div><!-- /tab-workspace -->
+
+  <!-- ════════════════════════ Settings tab ════════════════════════ -->
+  <div class="tab-panel hidden" id="tab-settings">
+
+  <!-- Details & Models (moved from the main view) -->
   <div class="card" id="config-card">
     <div class="card-title">Details &amp; Models</div>
     <div class="fields" style="margin-bottom:16px">
@@ -876,194 +1097,11 @@
       </div>
     </div>
   </div>
-  </div><!-- /row-2col -->
-
-  <!-- Action row -->
-  <div class="btn-row">
-    <button class="btn btn-primary" id="process-btn" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-      </svg>
-      Add to Queue
-    </button>
-    <button class="btn" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger);display:none">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="4" y="4" width="16" height="16" rx="2"/>
-      </svg>
-      Cancel Queue
-    </button>
-    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Push the queue: restart the worker and re-queue anything that isn't moving">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-      </svg>
-      Nudge Queue
-    </button>
-    <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
-      &#10005; Clear Board
-    </button>
-    <span id="status-badge" class="status-badge hidden"></span>
-    <span id="queue-badge" style="font-size:12px;color:var(--muted);display:none">
-      <span id="queue-pending-count">0</span> pending
-    </span>
-  </div>
-
-  <!-- Progress card -->
-  <div class="card hidden" id="progress-card">
-    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
-      Processing
-      <button class="section-toggle" id="progress-toggle" tabindex="-1">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
-    </div>
-    <div id="progress-body">
-      <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
-      <div class="progress-meta">
-        <span id="progress-label">0 / 0</span>
-        <span id="current-file"></span>
-      </div>
-      <div id="log"></div>
-    </div>
-  </div>
-
-  <!-- Kanban board (hidden until processing starts) -->
-  <div class="card hidden" id="kanban-card">
-    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('kanban-body','kanban-toggle')">
-      Receipt Progress
-      <button class="section-toggle" id="kanban-toggle" tabindex="-1">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
-    </div>
-    <div id="kanban-body">
-    <div class="board-search">
-      <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)" autocomplete="off">
-      <span class="search-count" id="board-search-count"></span>
-    </div>
-    <div class="kanban-board">
-      <div class="kanban-col">
-        <div class="kanban-col-header">
-          Queued <span class="col-count" id="cnt-queued">0</span>
-          <button class="col-folder-btn" title="Open intake folder" onclick="openKanbanFolder('intake')">&#128193;</button>
-        </div>
-        <div class="kanban-cards" id="col-queued"></div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header">
-          Processing <span class="col-count" id="cnt-processing">0</span>
-          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('watch_staged')">&#128193;</button>
-        </div>
-        <div class="kanban-cards" id="col-processing"></div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header">
-          Completed <span class="col-count" id="cnt-completed">0</span>
-          <button class="col-folder-btn" title="Open output folder" onclick="openKanbanFolder('output')">&#128193;</button>
-        </div>
-        <div class="kanban-cards" id="col-completed"></div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header">
-          Failed <span class="col-count" id="cnt-failed">0</span>
-          <button class="col-folder-btn" title="Open failed folder" onclick="openKanbanFolder('failed')">&#128193;</button>
-        </div>
-        <div class="kanban-cards" id="col-failed"></div>
-      </div>
-    </div>
-    </div><!-- /kanban-body -->
-  </div>
-
-  <!-- Insights dashboard (shown when completed results exist) -->
-  <div class="card hidden" id="insights-card">
-    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('insights-body','insights-toggle')">
-      Insights
-      <button class="section-toggle" id="insights-toggle" tabindex="-1">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
-    </div>
-    <div id="insights-body">
-      <div class="insights-grid">
-        <div class="stat-tile tile-total"><div class="stat-value" id="st-total">$0.00</div><div class="stat-label">Total Spend</div></div>
-        <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
-        <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
-        <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
-        <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
-      </div>
-      <div class="charts-row">
-        <div class="chart-box">
-          <h4>By Category</h4>
-          <div id="donut-chart"></div>
-          <div class="donut-legend" id="donut-legend"></div>
-        </div>
-        <div class="chart-box">
-          <h4>Spend Over Time</h4>
-          <div id="timeline-chart"></div>
-        </div>
-        <div class="chart-box">
-          <h4>Top Vendors</h4>
-          <div id="vendor-chart"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row-2col">
-  <!-- Generate spreadsheet card (shown when completed results exist) -->
-  <div class="card hidden" id="generate-card">
-    <div class="card-title">Generate Spreadsheet</div>
-    <div class="gen-summary" id="gen-summary"></div>
-    <div class="btn-row">
-      <button class="btn btn-success" id="generate-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-        Generate Spreadsheet
-      </button>
-      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
-        </svg>
-        Export CSV
-      </button>
-      <button class="btn" id="reset-btn"
-              style="background:var(--surface);border:1px solid var(--border)">
-        New Batch
-      </button>
-    </div>
-    <div class="hidden" id="download-row" style="margin-top:14px">
-      <a class="btn btn-success" id="download-btn" href="#" download>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
-        </svg>
-        Download Spreadsheet
-      </a>
-    </div>
-  </div>
-
-  <!-- Report history -->
-  <div class="card hidden" id="reports-card">
-    <div class="card-title" style="display:flex;align-items:center">
-      Report History
-      <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list">↻</button>
-    </div>
-    <div id="reports-list"></div>
-  </div>
-  </div><!-- /row-2col -->
 
   <!-- Settings -->
-  <details class="card" id="settings-card" style="padding:0">
-    <summary style="padding:20px 24px;cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between">
-      <span class="card-title" style="margin:0">Settings</span>
-      <span style="font-size:12px;color:var(--muted)">Host folder paths</span>
-    </summary>
-    <div style="padding:0 24px 24px">
+  <div class="card" id="settings-card">
+    <div class="card-title">Settings</div>
+    <div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">
         These paths are for the folder shortcut buttons and clipboard copy — they tell the app what the intake and output folders are called on your machine.<br><br>
         <strong style="color:var(--text)">To change which folder Docker actually uses:</strong>
@@ -1190,7 +1228,8 @@
       </div>
 
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px">Save</button>
+        <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px"
+                title="Saves the host folder paths and scheduled-export settings above. Image-processing and email settings save on their own.">Save Folder Paths &amp; Schedule</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
         <button class="btn" id="restart-btn"
                 style="height:36px;padding:0 16px;font-size:13px;margin-left:auto;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--danger)"
@@ -1199,18 +1238,9 @@
         </button>
       </div>
     </div>
-  </details>
+  </div><!-- /settings-card -->
 
-  <!-- Error log -->
-  <div class="card hidden" id="error-card" style="border-color:rgba(239,68,68,0.4)">
-    <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
-      <div class="card-title" style="color:var(--danger);margin-bottom:0">
-        Errors <span id="error-count-badge" style="font-size:11px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:10px;padding:1px 7px;margin-left:6px">0</span>
-      </div>
-      <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
-    </div>
-    <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
-  </div>
+  </div><!-- /tab-settings -->
 </main>
 
 <footer style="text-align:center; padding: 18px 0 28px; color: var(--muted); font-size: 12px;">
@@ -1293,6 +1323,17 @@ function _applyThemeIcons(isDark) {
   document.documentElement.setAttribute('data-theme', saved);
   _applyThemeIcons(saved === 'dark');
 })();
+
+// ── Tab navigation ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('hidden', p.id !== 'tab-' + name);
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
 
 // ── Section collapse ───────────────────────────────────────────────────────────
 function toggleSection(bodyId, toggleId) {
@@ -2089,14 +2130,17 @@ function appendLog(text) {
   }
 }
 
-const errorCard       = document.getElementById('error-card');
+// Errors live inside the combined Processing & Errors card now.
+const errorSection    = document.getElementById('error-section');
 const errorLogEl      = document.getElementById('error-log');
 const errorCountBadge = document.getElementById('error-count-badge');
 let   errorPanelOpen  = true;
 
 function renderErrorPanel() {
   if (!errorLines.length) return;
-  errorCard.classList.remove('hidden');
+  // Reveal the combined card and the errors sub-section within it.
+  progressCard.classList.remove('hidden');
+  errorSection.classList.remove('hidden');
   errorCountBadge.textContent = errorLines.length;
   errorLogEl.textContent = errorLines.join('\n');
   errorLogEl.scrollTop = errorLogEl.scrollHeight;
