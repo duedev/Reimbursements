@@ -154,16 +154,41 @@
       display: inline-block;
     }
 
-    /* Drop zone */
+    /* Drop zone — compact */
     #drop-zone {
-      border: 2px dashed var(--border); border-radius: 10px; padding: 36px 24px;
-      text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+      border: 2px dashed var(--border); border-radius: 10px; padding: 16px 18px;
+      cursor: pointer; transition: border-color 0.15s, background 0.15s;
+      display: flex; align-items: center; gap: 14px;
     }
     #drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.06); }
-    #drop-zone svg { width: 36px; height: 36px; color: var(--muted); margin-bottom: 10px; }
-    #drop-zone p { color: var(--muted); font-size: 14px; }
+    #drop-zone svg { width: 28px; height: 28px; color: var(--muted); flex-shrink: 0; }
+    #drop-zone .dz-text { display: flex; flex-direction: column; gap: 2px; }
+    #drop-zone p { color: var(--muted); font-size: 13px; margin: 0; }
     #drop-zone p strong { color: var(--text); }
     #drop-zone input { display: none; }
+
+    /* Upload + generate side-by-side row */
+    .upload-generate-row {
+      display: flex; gap: 20px; align-items: start;
+    }
+    .upload-generate-row #upload-card {
+      flex: 1; min-width: 0;
+    }
+    .upload-generate-row #generate-card {
+      flex: 0 0 320px;
+    }
+    @media (max-width: 900px) {
+      .upload-generate-row { flex-direction: column; }
+      .upload-generate-row #generate-card { flex: none; width: 100%; }
+    }
+
+    /* File list with capped height so it doesn't push the page down */
+    #file-list {
+      max-height: 220px; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    #file-list::-webkit-scrollbar { width: 6px; }
+    #file-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 
     /* File list */
     #file-list { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
@@ -862,7 +887,10 @@
     </div>
   </div>
 
-  <!-- Upload card -->
+  <!-- Upload + Generate spreadsheet side by side -->
+  <div class="upload-generate-row">
+
+  <!-- Upload card (compact) -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
     <div id="drop-zone">
@@ -870,28 +898,69 @@
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
-      <p><strong>Drop receipt images or PDFs here</strong></p>
-      <p style="margin-top:4px">or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF, etc.</p>
+      <div class="dz-text">
+        <p><strong>Drop receipt images or PDFs here</strong></p>
+        <p>or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF…</p>
+      </div>
       <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
     </div>
-    <div id="file-list"></div>
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--muted)">
-      <span><span class="watch-count" id="intake-count" style="font-size:15px">—</span>
-        files in intake folder (auto-queued)</span>
-      <button class="btn btn-amber hidden" id="send-email-btn" style="margin-left:auto;height:32px;padding:0 14px;font-size:12px">
+    <!-- Add to Queue always stays at the top of the file section -->
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="process-btn" disabled style="height:38px;padding:0 18px;font-size:14px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+        </svg>
+        Add to Queue
+      </button>
+      <span style="font-size:12px;color:var(--muted)">
+        <span class="watch-count" id="intake-count" style="font-size:13px">—</span> in intake
+      </span>
+      <button class="btn btn-amber hidden" id="send-email-btn" style="margin-left:auto;height:32px;padding:0 12px;font-size:12px">
         &#9993; Send Report Now
       </button>
     </div>
+    <div id="file-list"></div>
   </div>
 
-  <!-- Action row -->
+  <!-- Generate spreadsheet card (shown when completed results exist) -->
+  <div class="card hidden" id="generate-card">
+    <div class="card-title">Generate Spreadsheet</div>
+    <div class="gen-summary" id="gen-summary"></div>
+    <div class="btn-row">
+      <button class="btn btn-success" id="generate-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        Generate Spreadsheet
+      </button>
+      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Export CSV
+      </button>
+      <button class="btn" id="reset-btn"
+              style="background:var(--surface);border:1px solid var(--border)">
+        New Batch
+      </button>
+    </div>
+    <div class="hidden" id="download-row" style="margin-top:14px">
+      <a class="btn btn-success" id="download-btn" href="#" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Download Spreadsheet
+      </a>
+    </div>
+  </div>
+
+  </div><!-- /upload-generate-row -->
+
+  <!-- Queue control buttons -->
   <div class="btn-row">
-    <button class="btn btn-primary" id="process-btn" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-      </svg>
-      Add to Queue
-    </button>
     <button class="btn" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger);display:none">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
         <rect x="4" y="4" width="16" height="16" rx="2"/>
@@ -970,7 +1039,7 @@
       <div class="kanban-col">
         <div class="kanban-col-header">
           Processing <span class="col-count" id="cnt-processing">0</span>
-          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('watch_staged')">&#128193;</button>
+          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('processing')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-processing"></div>
       </div>
@@ -992,42 +1061,6 @@
     </div><!-- /kanban-body -->
   </div>
 
-  <div class="row-2col">
-  <!-- Generate spreadsheet card (shown when completed results exist) -->
-  <div class="card hidden" id="generate-card">
-    <div class="card-title">Generate Spreadsheet</div>
-    <div class="gen-summary" id="gen-summary"></div>
-    <div class="btn-row">
-      <button class="btn btn-success" id="generate-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-        Generate Spreadsheet
-      </button>
-      <button class="btn" id="export-csv-btn" style="background:var(--surface);border:1px solid var(--border)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
-        </svg>
-        Export CSV
-      </button>
-      <button class="btn" id="reset-btn"
-              style="background:var(--surface);border:1px solid var(--border)">
-        New Batch
-      </button>
-    </div>
-    <div class="hidden" id="download-row" style="margin-top:14px">
-      <a class="btn btn-success" id="download-btn" href="#" download>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
-        </svg>
-        Download Spreadsheet
-      </a>
-    </div>
-  </div>
-
   <!-- Report history -->
   <div class="card hidden" id="reports-card">
     <div class="card-title" style="display:flex;align-items:center">
@@ -1036,7 +1069,6 @@
     </div>
     <div id="reports-list"></div>
   </div>
-  </div><!-- /row-2col -->
 
   </div><!-- /tab-workspace -->
 
@@ -1176,10 +1208,6 @@
           no restart needed.
         </p>
         <div style="display:flex;flex-direction:column;gap:11px">
-          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
-            <input type="checkbox" id="proc-autocrop" style="width:auto">
-            Auto-crop receipt borders <span style="color:var(--muted)">— trim the background around the receipt</span>
-          </label>
           <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
             <input type="checkbox" id="proc-compress" style="width:auto">
             Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
@@ -1895,12 +1923,16 @@ window.dismissCard = async function(filename) {
   if (el) el.remove();
   delete receiptCards[filename];
   setCounts();
-  // Notify server to clean up kanban entry
-  fetch('/kanban/remove', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename }),
-  }).catch(() => {});
+  // Notify server to remove from kanban and results; update insights afterwards
+  try {
+    await fetch('/kanban/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    });
+  } catch (_) {}
+  loadStats();
+  _updateGenerateCard();
 };
 
 // ── Inline editing on completed cards ─────────────────────────────────────────
@@ -2422,7 +2454,6 @@ async function loadSettings() {
 async function loadProcessingSettings() {
   try {
     const d = await (await fetch('/settings/processing')).json();
-    document.getElementById('proc-autocrop').checked  = d.autocrop  !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
     document.getElementById('proc-paddleocr').checked  = d.paddleocr !== false;
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
@@ -2433,7 +2464,6 @@ async function loadProcessingSettings() {
 let _procSaveTimer = null;
 async function saveProcessingSettings() {
   const body = {
-    autocrop:     document.getElementById('proc-autocrop').checked,
     compress:     document.getElementById('proc-compress').checked,
     paddleocr:    document.getElementById('proc-paddleocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
@@ -2454,7 +2484,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autocrop', 'proc-compress', 'proc-paddleocr'].forEach(id => {
+['proc-compress', 'proc-paddleocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
 });
 document.getElementById('proc-quality').addEventListener('input', (e) => {
