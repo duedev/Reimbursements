@@ -572,17 +572,33 @@ def _patch_paddle_predictor_option() -> None:
             non_self = [n for n, p in sig.parameters.items()
                         if n != "self"
                         and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+            if non_self:
+                return  # already accepts extra args; no patch needed
         except Exception:
-            non_self = ["?"]  # can't inspect — apply patch defensively
-
-        if non_self:
-            return  # already accepts extra args; no patch needed
+            pass  # can't inspect (C extension) — apply patch defensively
 
         class _Compat(orig):  # type: ignore[valid-type]
             def __init__(self, *args, **kwargs):
                 super().__init__()
 
+        _Compat.__name__ = orig.__name__
+        _Compat.__qualname__ = orig.__qualname__
+
+        # Replace attribute on the given module.
         setattr(module, attr, _Compat)
+
+        # Also scan every already-imported module for local bindings to the
+        # original class (created by `from X import PaddlePredictorOption`
+        # style imports that bypassed the module-level patch above).
+        import sys
+        for _mod in list(sys.modules.values()):
+            if _mod is None or _mod is module:
+                continue
+            try:
+                if getattr(_mod, attr, None) is orig:
+                    setattr(_mod, attr, _Compat)
+            except Exception:
+                pass
 
     try:
         import paddle.inference as _pi
