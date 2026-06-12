@@ -1240,6 +1240,19 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
 
+    # Approval gate — when enabled in settings, every receipt in the batch must
+    # have been reviewed and approved before a spreadsheet can be generated.
+    if _load_config().get("require_approval"):
+        unapproved = sum(1 for r in results_copy if not r.get("_approved"))
+        if unapproved:
+            return JSONResponse(
+                {"ok": False,
+                 "error": f"{unapproved} of {len(results_copy)} receipt(s) have not been "
+                          "reviewed and approved. Approve them on the board (or turn off "
+                          "'Require review & approval') and try again."},
+                status_code=409,
+            )
+
     # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
     # so excluded items don't leave stale duplicate flags on the remaining receipts
     results_copy = copy.deepcopy(results_copy)

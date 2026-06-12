@@ -1038,6 +1038,14 @@
         New Batch
       </button>
     </div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;cursor:pointer">
+        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer">
+        Require review &amp; approval
+        <span style="color:var(--muted)">— block generation until every completed receipt is approved</span>
+      </label>
+      <div id="approval-gate-status" style="display:none;margin-top:8px;font-size:12px;color:var(--warning)"></div>
+    </div>
     <div class="hidden" id="download-row" style="margin-top:14px">
       <a class="btn btn-success" id="download-btn" href="#" download>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1322,19 +1330,6 @@
           </label>
         </div>
         <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
-      </div>
-
-      <!-- Approval workflow -->
-      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Approval workflow</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
-          When enabled, you'll be warned before generating a spreadsheet if any completed receipts haven't been approved via the Review &amp; Approve button on each card.
-        </p>
-        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
-          <input type="checkbox" id="require-approval" style="width:auto">
-          Require approval before export <span style="color:var(--muted)">— warn when unapproved receipts exist</span>
-        </label>
-        <div style="margin-top:8px"><span id="review-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved &#10003;</span></div>
       </div>
 
       <!-- Email delivery -->
@@ -1788,6 +1783,7 @@ function connectSSE() {
       moveCard(fname, msg.status, msg.data || null, msg.model || '', msg.error || '', fsteps);
       kanbanCard.classList.remove('hidden');
       progressCard.classList.remove('hidden');
+      _updateGenerateCard();
       if (msg.status === 'done' || msg.status === 'failed') scheduleStats();
 
     } else if (msg.type === 'batch_done') {
@@ -1863,15 +1859,39 @@ function _updateQueueBadge(pending) {
 }
 
 function _updateGenerateCard() {
-  if (completedCount > 0) {
+  // Derive counts from the board so manual saves, approvals, and dismissals
+  // update the card immediately (completedCount only refreshes on batch_done).
+  const done = Object.values(receiptCards).filter(c => c.status === 'done');
+  if (done.length > 0) {
     generateCard.classList.remove('hidden');
-    const minsSaved = completedCount * 5;
+    const minsSaved = done.length * 5;
     const timeTxt = minsSaved >= 60
       ? `~${(minsSaved / 60).toFixed(1)} hrs`
       : `~${minsSaved} min`;
     genSummary.innerHTML =
-      `<span class="gen-stat stat-ok">${completedCount} processed</span>` +
+      `<span class="gen-stat stat-ok">${done.length} processed</span>` +
       `<span class="gen-stat saved-time-stat" id="saved-time-stat" style="color:var(--accent)" onclick="celebrate()" title="Estimated at 5 min/receipt for manual entry — click to celebrate again 🎉">&#9200; You saved ${timeTxt} of manual data entry</span>`;
+  } else {
+    generateCard.classList.add('hidden');
+  }
+  _updateApprovalGate(done);
+}
+
+// ── Approval gate ─────────────────────────────────────────────────────────────
+// When "Require review & approval" is on, spreadsheet generation is blocked
+// until every completed receipt has been approved (server enforces this too).
+function _updateApprovalGate(doneCards) {
+  const done = doneCards || Object.values(receiptCards).filter(c => c.status === 'done');
+  const unapproved = done.filter(c => !c.data?._approved).length;
+  const blocked = document.getElementById('require-approval').checked && unapproved > 0;
+  generateBtn.disabled = blocked;
+  generateBtn.title = blocked ? 'Blocked — receipts below still need review & approval' : '';
+  const status = document.getElementById('approval-gate-status');
+  if (blocked) {
+    status.innerHTML = `&#9873; ${unapproved} of ${done.length} receipt${done.length === 1 ? '' : 's'} still need review &amp; approval — use the Review &amp; Approve button on each completed card.`;
+    status.style.display = '';
+  } else {
+    status.style.display = 'none';
   }
 }
 
@@ -1970,7 +1990,9 @@ async function _doGenerate(excludeFilenames = []) {
     });
     if (!res.ok) {
       const txt = await res.text();
-      throw new Error(txt || `Server error: ${res.status}`);
+      let msg = txt;
+      try { msg = JSON.parse(txt).error || txt; } catch (_) {}
+      throw new Error(msg || `Server error: ${res.status}`);
     }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
@@ -1986,22 +2008,25 @@ async function _doGenerate(excludeFilenames = []) {
   } catch (err) {
     showToast(`Generation failed: ${err.message}`, false);
   } finally {
-    generateBtn.disabled = false;
     generateBtn.innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
       </svg> Generate Spreadsheet`;
+    _updateApprovalGate();  // restores disabled/enabled per the approval gate
   }
 }
 
 generateBtn.addEventListener('click', async () => {
-  // Warn if approval is required and some receipts are unapproved
-  if (document.getElementById('require-approval')?.checked) {
+  // Hard block when approval is required and receipts are still unapproved
+  // (belt and braces — the button is disabled while blocked, and the server
+  // rejects unapproved batches too)
+  if (document.getElementById('require-approval').checked) {
     const unapproved = Object.values(receiptCards)
-      .filter(c => c.status === 'done' && !c.data?._approved);
-    if (unapproved.length > 0) {
-      if (!confirm(`${unapproved.length} receipt(s) have not been approved yet.\n\nGenerate the spreadsheet anyway?`)) return;
+      .filter(c => c.status === 'done' && !c.data?._approved).length;
+    if (unapproved > 0) {
+      showToast(`${unapproved} receipt(s) still need review & approval before generating`, false);
+      return;
     }
   }
   // Check for duplicates before generating
@@ -2672,20 +2697,19 @@ async function loadReviewSettings() {
     const d = await (await fetch('/settings/review')).json();
     document.getElementById('require-approval').checked = !!d.require_approval;
   } catch (_) {}
+  _updateApprovalGate();
 }
 
 document.getElementById('require-approval').addEventListener('change', async () => {
+  const enabled = document.getElementById('require-approval').checked;
+  _updateApprovalGate();
   try {
     const res = await fetch('/settings/review', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ require_approval: document.getElementById('require-approval').checked }),
+      body: JSON.stringify({ require_approval: enabled }),
     });
     const d = await res.json();
-    if (d.ok) {
-      const msg = document.getElementById('review-saved-msg');
-      msg.style.opacity = '1';
-      setTimeout(() => { msg.style.opacity = '0'; }, 1800);
-    }
+    if (d.ok) showToast(enabled ? 'Approval required before generating' : 'Approval requirement off', true);
   } catch (_) {}
 });
 
