@@ -23,10 +23,10 @@ def _patch(mod, attr):
     try:
         non_self = [n for n,p in inspect.signature(orig.__init__).parameters.items()
                     if n != 'self' and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+        if non_self:
+            return
     except Exception:
-        non_self = ['?']
-    if non_self:
-        return
+        pass  # C extension — apply patch defensively
     class _C(orig):
         def __init__(self, *a, **kw): super().__init__()
     setattr(mod, attr, _C)

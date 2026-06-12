@@ -572,11 +572,10 @@ def _patch_paddle_predictor_option() -> None:
             non_self = [n for n, p in sig.parameters.items()
                         if n != "self"
                         and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+            if non_self:
+                return  # already accepts extra args; no patch needed
         except Exception:
-            non_self = ["?"]  # can't inspect — apply patch defensively
-
-        if non_self:
-            return  # already accepts extra args; no patch needed
+            pass  # can't inspect (C extension) — apply patch defensively
 
         class _Compat(orig):  # type: ignore[valid-type]
             def __init__(self, *args, **kwargs):
