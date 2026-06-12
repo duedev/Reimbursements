@@ -973,6 +973,36 @@
     </div>
   </div>
 
+  <!-- Employee / Job details — compact, dynamic row -->
+  <div class="card" id="details-card" style="padding:10px 16px">
+    <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 14px;margin:0">
+      <label style="margin:0">
+        Employee Name
+        <button class="manage-saved-btn" type="button" title="Manage saved employees"
+                onclick="toggleManagePanel('manage-panel-employees','saved_employees')">&#9998;</button>
+        <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name" list="employees-list" autocomplete="off">
+        <datalist id="employees-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-employees"></div>
+      </label>
+      <label style="margin:0">
+        Job Name
+        <button class="manage-saved-btn" type="button" title="Manage saved job names"
+                onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
+        <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
+        <datalist id="job-names-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-jobnames"></div>
+      </label>
+      <label style="margin:0">
+        Job Number
+        <button class="manage-saved-btn" type="button" title="Manage saved job numbers"
+                onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
+        <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
+        <datalist id="job-numbers-list"></datalist>
+        <div class="saved-manage-panel hidden" id="manage-panel-jobnumbers"></div>
+      </label>
+    </div>
+  </div>
+
   <!-- Upload + Generate spreadsheet side by side -->
   <div class="upload-generate-row">
 
@@ -1040,7 +1070,7 @@
     </div>
     <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;cursor:pointer">
-        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer">
+        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer" checked>
         Require review &amp; approval
         <span style="color:var(--muted)">— block generation until every completed receipt is approved</span>
       </label>
@@ -1115,6 +1145,7 @@
       <div class="kanban-col">
         <div class="kanban-col-header">
           Completed <span class="col-count" id="cnt-completed">0</span>
+          <span id="cnt-to-approve" style="display:none;font-size:11px;font-weight:600;color:var(--warning);margin-left:6px;background:rgba(245,158,11,0.12);border-radius:10px;padding:1px 7px"></span>
           <button class="col-folder-btn" title="Open output folder" onclick="openKanbanFolder('output')">&#128193;</button>
         </div>
         <div class="kanban-cards" id="col-completed"></div>
@@ -1177,33 +1208,7 @@
 
   <!-- Details & Models (moved from the main view) -->
   <div class="card" id="config-card">
-    <div class="card-title">Details &amp; Models</div>
-    <div class="fields" style="margin-bottom:16px">
-      <label>
-        Employee Name
-        <button class="manage-saved-btn" type="button" title="Manage saved employees"
-                onclick="toggleManagePanel('manage-panel-employees','saved_employees')">&#9998;</button>
-        <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name" list="employees-list" autocomplete="off">
-        <datalist id="employees-list"></datalist>
-        <div class="saved-manage-panel hidden" id="manage-panel-employees"></div>
-      </label>
-      <label>
-        Job Name
-        <button class="manage-saved-btn" type="button" title="Manage saved job names"
-                onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
-        <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
-        <datalist id="job-names-list"></datalist>
-        <div class="saved-manage-panel hidden" id="manage-panel-jobnames"></div>
-      </label>
-      <label>
-        Job Number
-        <button class="manage-saved-btn" type="button" title="Manage saved job numbers"
-                onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
-        <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
-        <datalist id="job-numbers-list"></datalist>
-        <div class="saved-manage-panel hidden" id="manage-panel-jobnumbers"></div>
-      </label>
-    </div>
+    <div class="card-title">Models</div>
     <!-- Two model dropdowns -->
     <div class="model-grid">
       <div>
@@ -1426,10 +1431,6 @@
       Summary
       <input type="text" id="mr-summary" placeholder="Brief description of purchase">
     </div>
-    <div style="margin:12px 0 4px;display:flex;align-items:center;gap:8px">
-      <input type="checkbox" id="mr-review-required" style="width:auto;cursor:pointer">
-      <label for="mr-review-required" style="font-weight:400;font-size:12px;color:var(--muted);cursor:pointer">Mark as requiring review</label>
-    </div>
     <div class="btn-row" style="flex-wrap:wrap;gap:8px">
       <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
       <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
@@ -1649,6 +1650,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   const needsReview    = status === 'done' && data && data._review_required && !data._approved;
   div.className = `k-card status-${status}${isApproved ? ' is-approved' : ''}${needsReview ? ' needs-review' : ''}`;
   if (data && data.date) div.dataset.date = data.date;
+  div.dataset.approved = isApproved ? '1' : '0';
 
   let inner = `<div class="k-filename">${esc(filename)}</div>`;
   const spinning = (status === 'ocr' || status === 'distilling');
@@ -1717,10 +1719,18 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
 }
 
 function insertCardSorted(col, card) {
+  const isApproved = card.dataset.approved === '1';
   const newDate = card.dataset.date || 'zzzz';
   const children = Array.from(col.children);
+  // Approved cards always go after all unapproved cards
+  if (isApproved) {
+    col.appendChild(card);
+    return;
+  }
+  // Unapproved cards: sorted by date, inserted before the first approved card
   let insertBefore = null;
   for (const child of children) {
+    if (child.dataset.approved === '1') { insertBefore = child; break; }
     if (newDate < (child.dataset.date || 'zzzz')) { insertBefore = child; break; }
   }
   insertBefore ? col.insertBefore(card, insertBefore) : col.appendChild(card);
@@ -1900,6 +1910,16 @@ function _updateApprovalGate(doneCards) {
     status.style.display = '';
   } else {
     status.style.display = 'none';
+  }
+  // Update the "to approve" counter badge in the Completed column header
+  const toApproveBadge = document.getElementById('cnt-to-approve');
+  if (toApproveBadge) {
+    if (unapproved > 0 && done.length > 0) {
+      toApproveBadge.textContent = `${unapproved} left to approve`;
+      toApproveBadge.style.display = '';
+    } else {
+      toApproveBadge.style.display = 'none';
+    }
   }
   _updateApprovalWarning();
 }
@@ -2224,8 +2244,6 @@ window.openManualReview = function(filename) {
   document.getElementById('mr-job-name').value   = data.job_name   || '';
   document.getElementById('mr-job-number').value = data.job_number || '';
   document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
-  document.getElementById('mr-review-required').checked = !!data._review_required;
-
   // Approval state
   const approveBtn   = document.getElementById('mr-approve-btn');
   const approvalBanner = document.getElementById('mr-approval-banner');
@@ -2277,7 +2295,7 @@ function _mrFormBody(overrides = {}) {
     job_name:        document.getElementById('mr-job-name').value.trim(),
     job_number:      document.getElementById('mr-job-number').value.trim(),
     summary:         document.getElementById('mr-summary').value.trim(),
-    review_required: document.getElementById('mr-review-required').checked,
+    review_required: !!(card?.data?._review_required),
     approved:        !!(card?.data?._approved),
     ...overrides,
   };
@@ -2720,7 +2738,8 @@ async function loadSettings() {
 async function loadReviewSettings() {
   try {
     const d = await (await fetch('/settings/review')).json();
-    document.getElementById('require-approval').checked = !!d.require_approval;
+    // Default to true if not explicitly set to false
+    document.getElementById('require-approval').checked = d.require_approval !== false;
     _updateApprovalWarning();
   } catch (_) {}
   _updateApprovalGate();
