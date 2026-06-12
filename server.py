@@ -39,7 +39,6 @@ from process_receipts import (
     classify_category,
     sort_key_for_receipt,
     rename_receipt_image,
-    autocrop_image_file,
     compress_image_file,
     _detect_duplicates,
     generate_spreadsheet,
@@ -61,9 +60,10 @@ HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 
 # ── Folder / config paths ──────────────────────────────────────────────────────
 
-INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
-OUT_FOLDER    = Path(OUTPUT_FOLDER)
-IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
+INTAKE_FOLDER      = Path(RECEIPTS_FOLDER)
+OUT_FOLDER         = Path(OUTPUT_FOLDER)
+IMAGES_FOLDER      = OUT_FOLDER / "receipts"    # completed receipt images land here
+PROCESSING_FOLDER  = OUT_FOLDER / "processing"  # in-flight and failed images live here
 # CONFIG_FILE is the single authoritative app-config path, defined once in
 # process_receipts and imported here so the server, watcher, and scheduler all
 # read/write the same file (see process_receipts.CONFIG_FILE).
@@ -331,25 +331,16 @@ def _ensure_worker_alive() -> bool:
 
 def _optimize_stored_image(path: Path, fname: str,
                            step_log: list | None = None) -> Path:
-    """Auto-crop + compress a processed receipt image, logging the size reduction.
+    """Compress a processed receipt image, logging the size reduction.
 
     Returns the resulting path (compression may convert PNGs etc. to ``.jpg``).
-    Appends autocrop and compress steps to step_log when provided.
+    Appends a compress step to step_log when provided.
     """
     try:
         before = path.stat().st_size
     except OSError:
         before = 0
     before_suffix = path.suffix
-
-    was_cropped = autocrop_image_file(path)
-    if step_log is not None:
-        if not _pr.AUTOCROP_ENABLED:
-            _pr._append_step(step_log, "autocrop", "Autocrop", "disabled")
-        elif was_cropped:
-            _pr._append_step(step_log, "autocrop", "Autocrop", "borders trimmed")
-        else:
-            _pr._append_step(step_log, "autocrop", "Autocrop", "no border to trim")
 
     new_path = compress_image_file(path)
     try:
@@ -418,17 +409,36 @@ def _drain_once() -> bool:
             step_log: list = []
             item["_steps"] = step_log
 
-            # Pipeline order: autocrop → compress → OCR/extraction.
-            # Crop + compress the stored file BEFORE extraction so every OCR path
-            # (LM Studio vision AND the PaddleOCR fallback, which reads the file
-            # from disk) sees the same cleaned-up image. compress_image_file may
-            # rewrite the file with a new suffix (e.g. .png → .jpg), so we capture
-            # the path it returns and feed THAT to extraction. Handing the stale
-            # pre-compress path to the worker is what raised
-            # "[Errno 2] No such file or directory" after the resize.
+            # Move to the processing folder so in-flight and failed images have a
+            # known, visible home. Files already in PROCESSING_FOLDER (e.g. a retry)
+            # are left in place; only files arriving from upload staging or intake
+            # are moved.
+            PROCESSING_FOLDER.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.parent.resolve() != PROCESSING_FOLDER.resolve():
+                dest = PROCESSING_FOLDER / fname
+                if dest.exists() and dest.resolve() != path.resolve():
+                    stem = Path(fname).stem
+                    ext  = path.suffix or ".jpg"
+                    ts   = f"{int(time.time() * 1000) % 1_000_000:06d}"
+                    dest = PROCESSING_FOLDER / f"{stem}_{ts}{ext}"
+                try:
+                    shutil.move(str(path), str(dest))
+                    path = dest
+                    item["path"] = str(path)
+                except Exception as _mv_err:
+                    _broadcast({"type": "log",
+                                "message": f"[worker] could not move {fname} to processing: {_mv_err}"})
+            _cache_item(item)
+
+            # Compress the stored file BEFORE extraction so every OCR path
+            # (LM Studio vision AND PaddleOCR, which reads from disk) sees the same
+            # optimised image. compress_image_file may rewrite with a new suffix
+            # (e.g. .png → .jpg); capture the returned path and feed THAT to
+            # extraction so we never hand a stale path to the worker.
             IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
             path = _optimize_stored_image(path, fname, step_log)
             item["path"] = str(path)
+            _cache_item(item)  # update cache with post-compression path
 
             def make_cb(fn: str, steps: list):
                 def cb(status: str, data=None, model: str = "") -> None:
@@ -664,6 +674,21 @@ def _run_stall_checker() -> None:
         for fname in stalled:
             with _item_cache_lock:
                 cached = _item_cache.get(fname)
+
+            if not cached:
+                # Try processing folder (exact + fuzzy extension match)
+                stem = Path(fname).stem
+                for name in [fname] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
+                    candidate = PROCESSING_FOLDER / name
+                    if candidate.exists():
+                        cached = {
+                            "filename":   fname,
+                            "path":       str(candidate),
+                            "employee":   _last_context.get("employee", "Employee"),
+                            "job_name":   _last_context.get("job_name", ""),
+                            "job_number": _last_context.get("job_number", ""),
+                        }
+                        break
 
             if not cached:
                 # Last resort: look in intake folder
@@ -1034,23 +1059,41 @@ async def events_global():
 
 @app.get("/receipt-image")
 async def get_receipt_image(filename: str = ""):
-    """Serve a receipt image by filename for UI previews (searches output/receipts dirs)."""
+    """Serve a receipt image by filename for UI previews.
+
+    Searches completed-receipts, processing, and intake folders.  Falls back to a
+    fuzzy extension match so a card whose original .png was compressed to .jpg can
+    still show its preview image.
+    """
     if not filename or ".." in filename or "/" in filename or "\\" in filename:
         return JSONResponse({"error": "invalid"}, status_code=400)
     ext_map = {
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
         ".gif": "image/gif",  ".webp": "image/webp", ".bmp": "image/bmp",
     }
-    search: list[Path] = [IMAGES_FOLDER, INTAKE_FOLDER]
+    search: list[Path] = [IMAGES_FOLDER, PROCESSING_FOLDER, INTAKE_FOLDER]
     try:
         search += [d for d in IMAGES_FOLDER.iterdir() if d.is_dir()]
     except Exception:
         pass
+    try:
+        search += [d for d in PROCESSING_FOLDER.iterdir() if d.is_dir()]
+    except Exception:
+        pass
+    # Exact name match
     for folder in search:
         p = folder / filename
         if p.exists() and p.is_file():
             mt = ext_map.get(p.suffix.lower(), "image/jpeg")
             return FileResponse(str(p), media_type=mt)
+    # Fuzzy extension match — handles .png → .jpg renames after compression
+    stem = Path(filename).stem
+    for folder in search:
+        for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
+            p = folder / (stem + ext)
+            if p.exists() and p.is_file():
+                mt = ext_map.get(ext, "image/jpeg")
+                return FileResponse(str(p), media_type=mt)
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
@@ -1496,7 +1539,16 @@ async def retry_receipt(body: RetryRequest):
         kdata = entry.get("data") or {}
         img_path_str = kdata.get("_image_path")
 
-    # 3. Try intake folder directly
+    # 3. Try processing folder (exact match and fuzzy extension match for renamed files)
+    if not img_path_str or not Path(img_path_str).exists():
+        stem = Path(filename).stem
+        for name in [filename] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
+            candidate = PROCESSING_FOLDER / name
+            if candidate.exists():
+                img_path_str = str(candidate)
+                break
+
+    # 4. Try intake folder directly
     if not img_path_str or not Path(img_path_str).exists():
         candidate = INTAKE_FOLDER / filename
         if candidate.exists():
@@ -1565,6 +1617,20 @@ async def queue_unstick():
         with _item_cache_lock:
             cached = _item_cache.get(fname)
         if not cached:
+            # Try processing folder (exact + fuzzy)
+            stem = Path(fname).stem
+            for name in [fname] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
+                candidate = PROCESSING_FOLDER / name
+                if candidate.exists():
+                    cached = {
+                        "filename":   fname,
+                        "path":       str(candidate),
+                        "employee":   _last_context.get("employee", "Employee"),
+                        "job_name":   _last_context.get("job_name", ""),
+                        "job_number": _last_context.get("job_number", ""),
+                    }
+                    break
+        if not cached:
             candidate = INTAKE_FOLDER / fname
             if candidate.exists():
                 cached = {
@@ -1617,6 +1683,20 @@ async def queue_nudge():
         with _item_cache_lock:
             cached = _item_cache.get(fname)
         if not cached:
+            # Try processing folder first
+            stem = Path(fname).stem
+            for name in [fname] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
+                candidate = PROCESSING_FOLDER / name
+                if candidate.exists():
+                    cached = {
+                        "filename":   fname,
+                        "path":       str(candidate),
+                        "employee":   _last_context.get("employee", "Employee"),
+                        "job_name":   _last_context.get("job_name", ""),
+                        "job_number": _last_context.get("job_number", ""),
+                    }
+                    break
+        if not cached:
             candidate = INTAKE_FOLDER / fname
             if candidate.exists():
                 cached = {
@@ -1650,10 +1730,19 @@ async def queue_nudge():
 
 @app.post("/kanban/remove")
 async def kanban_remove(body: RetryRequest):
-    """Remove a single item from the kanban (client-initiated dismiss)."""
+    """Remove a single item from the kanban (client-initiated dismiss).
+
+    Also removes the item from _results so the insights dashboard reflects the
+    dismissal immediately.
+    """
     filename = body.filename
     with _kanban_lock:
         _kanban.pop(filename, None)
+    with _results_lock:
+        _results[:] = [
+            r for r in _results
+            if r.get("_file") != filename and r.get("_new_filename") != filename
+        ]
     _persist_state()
     return JSONResponse({"ok": True})
 
@@ -1756,7 +1845,10 @@ def _open_folder_native(folder: Path) -> None:
 @app.get("/folders")
 async def get_folders():
     """Return configured folder paths for the UI."""
-    paths = {"output": str(OUTPUT_FOLDER)}
+    paths = {
+        "output":     str(OUTPUT_FOLDER),
+        "processing": str(PROCESSING_FOLDER),
+    }
     try:
         from watch_mode import WATCH_INBOX, WATCH_STAGED, WATCH_STATE
         paths["watch_inbox"]  = str(WATCH_INBOX)

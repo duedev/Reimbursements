@@ -413,7 +413,7 @@ def encode_image(path: Path) -> tuple[str, str]:
     raw = Image.open(path)
     if getattr(raw, "format", None) == "MPO":
         raw.seek(0)
-    img = autocrop_receipt(raw.convert("RGB"))
+    img = raw.convert("RGB")
     if max(img.size) > IMAGE_MAX_PX:
         ratio = IMAGE_MAX_PX / max(img.size)
         img = img.resize(
