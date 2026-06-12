@@ -391,17 +391,17 @@ def compress_image_file(path: Path) -> Path:
     if not COMPRESS_ENABLED:
         return path
     try:
+        target = path.with_suffix(".jpg")
         with Image.open(path) as raw:
             if getattr(raw, "format", None) == "MPO":
                 raw.seek(0)
             img = raw.convert("RGB")
-        if max(img.size) > STORE_MAX_PX:
-            ratio = STORE_MAX_PX / max(img.size)
-            img = img.resize(
-                (round(img.width * ratio), round(img.height * ratio)), Image.LANCZOS,
-            )
-        target = path.with_suffix(".jpg")
-        img.save(target, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            if max(img.size) > STORE_MAX_PX:
+                ratio = STORE_MAX_PX / max(img.size)
+                img = img.resize(
+                    (round(img.width * ratio), round(img.height * ratio)), Image.LANCZOS,
+                )
+            img.save(target, format="JPEG", quality=JPEG_QUALITY, optimize=True)
         if target != path and path.exists():
             path.unlink()
         return target
@@ -448,6 +448,24 @@ def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
 
 # ── AI extraction ──────────────────────────────────────────────────────────────
 
+def _normalize_flags(flags) -> list[dict]:
+    """Coerce flags to a list of {"flag": str} dicts.
+
+    LLMs occasionally return flags as bare strings instead of the expected
+    {"flag": "..."} dicts.  Normalise here so every downstream consumer can
+    safely call .get("flag") without an AttributeError.
+    """
+    if not flags:
+        return []
+    result = []
+    for f in flags:
+        if isinstance(f, dict):
+            result.append(f)
+        elif f:
+            result.append({"flag": str(f)})
+    return result
+
+
 def _is_low_confidence(data: Optional[dict]) -> bool:
     if data is None:
         return True
@@ -462,7 +480,7 @@ def _has_ocr_flag(data: Optional[dict]) -> bool:
     """True if the distillation model flagged an OCR error in this receipt."""
     if not data:
         return False
-    flags = data.get("flags") or []
+    flags = _normalize_flags(data.get("flags") or [])
     return any("ocr error" in (f.get("flag") or "").lower() for f in flags)
 
 
@@ -706,8 +724,7 @@ def _unified_distillation(
         raw = _strip_json(raw)
         try:
             result = json.loads(raw)
-            if "flags" not in result:
-                result["flags"] = []
+            result["flags"] = _normalize_flags(result.get("flags") or [])
             # normalise "summary" field name to "ai_summary" used downstream
             if "summary" in result and "ai_summary" not in result:
                 result["ai_summary"] = result.pop("summary")
@@ -755,8 +772,7 @@ def _extract_with_model(
         raw = _strip_json(raw)
         try:
             result = json.loads(raw)
-            if "flags" not in result:
-                result["flags"] = []
+            result["flags"] = _normalize_flags(result.get("flags") or [])
             if "summary" in result and "ai_summary" not in result:
                 result["ai_summary"] = result.pop("summary")
             return result
@@ -1339,7 +1355,7 @@ def process_receipts_batch(
         data["job_name"]   = job_name_default or None
         data["job_number"] = job_number_default or None
 
-        flags_list = data.get("flags") or []
+        flags_list = _normalize_flags(data.get("flags") or [])
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 

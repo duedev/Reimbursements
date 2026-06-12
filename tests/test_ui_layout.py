@@ -35,10 +35,11 @@ def test_processing_and_errors_combined(page):
     assert "Processing &amp; Errors" in page
     assert 'id="error-section"' in page
     assert 'id="error-card"' not in page
-    # Error sub-section lives inside the progress card body
+    # progress-card is below kanban-card (user-requested layout order)
+    kanban = page.find('id="kanban-card"')
     prog = page.find('id="progress-card"')
-    body_end = page.find('id="kanban-card"')
-    assert prog < page.find('id="error-section"') < body_end
+    err = page.find('id="error-section"')
+    assert kanban < prog < err  # kanban first, then progress card containing error section
 
 
 def test_insights_at_top_of_workspace(page):
