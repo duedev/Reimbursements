@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # download at runtime.  Apply the same PaddlePredictorOption compat shim used
 # at runtime (process_receipts._patch_paddle_predictor_option) so the init
 # succeeds even when paddlepaddle and paddleocr minor versions diverge.
-RUN python -c "
+RUN python - <<'PYEOF' || true
 import inspect
 
 def _patch(mod, attr):
@@ -46,7 +46,7 @@ except TypeError:
         PaddleOCR(use_textline_orientation=False, lang='en')
     except TypeError:
         PaddleOCR(use_angle_cls=True, lang='en')
-" || true
+PYEOF
 
 COPY . .
 
