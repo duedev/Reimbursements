@@ -28,6 +28,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from process_receipts import (
+    CONFIG_FILE,
     IMAGE_EXTENSIONS,
     LMSTUDIO_BASE_URL,
     MAX_PARALLEL_REQUESTS,
@@ -58,10 +59,10 @@ EMAIL_TO     = os.getenv("EMAIL_TO", "")
 EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Weekly Reimbursement Report")
 
 STATE_FILE = WATCH_STATE / "receipts_state.json"
-# Shared app config — written by the web UI's Settings → Email section. When
-# present, its values take precedence over the SMTP_* environment variables so
-# email can be configured without editing docker-compose.yml or restarting.
-CONFIG_FILE = _OUTPUT_DIR / ".app_config.json"
+# Shared app config (CONFIG_FILE) is imported from process_receipts so the
+# watcher reads the exact same file the web UI writes — its Settings → Email
+# values take precedence over the SMTP_* environment variables, so email can be
+# configured without editing docker-compose.yml or restarting.
 
 
 def load_email_config() -> dict:

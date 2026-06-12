@@ -54,6 +54,7 @@ from process_receipts import (
     SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
     RECEIPTS_FOLDER,
+    CONFIG_FILE,
 )
 
 HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
@@ -63,7 +64,9 @@ HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 INTAKE_FOLDER = Path(RECEIPTS_FOLDER)
 OUT_FOLDER    = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER = OUT_FOLDER / "receipts"   # processed receipt images land here
-CONFIG_FILE   = OUT_FOLDER / ".app_config.json"
+# CONFIG_FILE is the single authoritative app-config path, defined once in
+# process_receipts and imported here so the server, watcher, and scheduler all
+# read/write the same file (see process_receipts.CONFIG_FILE).
 STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snapshot
 
 # ── Stall checker config ───────────────────────────────────────────────────────
@@ -199,9 +202,15 @@ def _remove_subscriber(q: Queue) -> None:
 
 # ── Kanban helpers ─────────────────────────────────────────────────────────────
 
-def _update_kanban(filename: str, status: str, data, model: str = "") -> None:
+def _update_kanban(filename: str, status: str, data, model: str = "",
+                   steps: list | None = None) -> None:
+    safe = _safe_receipt_data(data)
+    # For mid-processing statuses (ocr, distilling) data is None; attach the
+    # current step-log snapshot so reconnecting clients can see live progress.
+    if steps is not None:
+        safe["_steps"] = steps
     with _kanban_lock:
-        _kanban[filename] = {"status": status, "data": _safe_receipt_data(data), "model": model}
+        _kanban[filename] = {"status": status, "data": safe, "model": model}
     with _status_ts_lock:
         _status_timestamps[filename] = time.time()
 
@@ -222,7 +231,7 @@ def _safe_receipt_data(data) -> dict:
               "expense_description", "summary", "ai_summary", "_flag", "_category",
               "_new_filename", "_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
-              "_distill_seconds", "_ocr_engine"):
+              "_distill_seconds", "_ocr_engine", "_steps"):
         if k in data:
             out[k] = data[k]
     return out
@@ -320,27 +329,56 @@ def _ensure_worker_alive() -> bool:
         return True
 
 
-def _optimize_stored_image(path: Path, fname: str) -> Path:
+def _optimize_stored_image(path: Path, fname: str,
+                           step_log: list | None = None) -> Path:
     """Auto-crop + compress a processed receipt image, logging the size reduction.
 
     Returns the resulting path (compression may convert PNGs etc. to ``.jpg``).
+    Appends autocrop and compress steps to step_log when provided.
     """
     try:
         before = path.stat().st_size
     except OSError:
         before = 0
-    autocrop_image_file(path)
+    before_suffix = path.suffix
+
+    was_cropped = autocrop_image_file(path)
+    if step_log is not None:
+        if not _pr.AUTOCROP_ENABLED:
+            _pr._append_step(step_log, "autocrop", "Autocrop", "disabled")
+        elif was_cropped:
+            _pr._append_step(step_log, "autocrop", "Autocrop", "borders trimmed")
+        else:
+            _pr._append_step(step_log, "autocrop", "Autocrop", "no border to trim")
+
     new_path = compress_image_file(path)
     try:
         after = new_path.stat().st_size
     except OSError:
         after = before
+
     if before and after and after < before:
         pct = round((1 - after / before) * 100)
         _broadcast({
             "type": "log",
             "message": f"[image] {fname}: {before // 1024} KB → {after // 1024} KB (−{pct}%)",
         })
+
+    if step_log is not None:
+        if not _pr.COMPRESS_ENABLED:
+            _pr._append_step(step_log, "compress", "Compress", "disabled")
+        else:
+            parts: list[str] = []
+            if before and after:
+                parts.append(f"{before // 1024} KB → {after // 1024} KB")
+                if after < before:
+                    pct = round((1 - after / before) * 100)
+                    parts.append(f"−{pct}%")
+            if new_path.suffix.lower() != before_suffix.lower():
+                parts.append(f"{before_suffix} → .jpg")
+            _pr._append_step(step_log, "compress", "Compress",
+                             "  ".join(parts) if parts else "no change")
+
     return new_path
 
 
@@ -376,19 +414,39 @@ def _drain_once() -> bool:
             fname = item["filename"]
             path  = Path(item["path"])
 
-            def make_cb(fn: str):
+            # Create a fresh per-item step log for every receipt.
+            step_log: list = []
+            item["_steps"] = step_log
+
+            # Pipeline order: autocrop → compress → OCR/extraction.
+            # Crop + compress the stored file BEFORE extraction so every OCR path
+            # (LM Studio vision AND the PaddleOCR fallback, which reads the file
+            # from disk) sees the same cleaned-up image. compress_image_file may
+            # rewrite the file with a new suffix (e.g. .png → .jpg), so we capture
+            # the path it returns and feed THAT to extraction. Handing the stale
+            # pre-compress path to the worker is what raised
+            # "[Errno 2] No such file or directory" after the resize.
+            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+            path = _optimize_stored_image(path, fname, step_log)
+            item["path"] = str(path)
+
+            def make_cb(fn: str, steps: list):
                 def cb(status: str, data=None, model: str = "") -> None:
-                    _update_kanban(fn, status, data, model)
+                    steps_now = list(steps)
+                    _update_kanban(fn, status, data, model, steps_now)
                     _broadcast({
                         "type":     "kanban_update",
                         "filename": fn,
                         "status":   status,
                         "data":     _safe_receipt_data(data),
                         "model":    model,
+                        "steps":    steps_now,
                     })
                 return cb
 
-            future = ex.submit(_extract_receipt_with_status, client, path, make_cb(fname))
+            future = ex.submit(
+                _extract_receipt_with_status, client, path, make_cb(fname, step_log), step_log,
+            )
             futures_map[future] = item
 
         for future in concurrent.futures.as_completed(futures_map):
@@ -397,6 +455,7 @@ def _drain_once() -> bool:
             item  = futures_map[future]
             fname = item["filename"]
             path  = Path(item["path"])
+            steps = item.get("_steps", [])
             try:
                 data = future.result()
             except Exception as exc:
@@ -413,6 +472,9 @@ def _drain_once() -> bool:
                     partial["_file"]   = fname
                     conf, _            = _compute_confidence(data)
                     partial["_confidence"] = conf
+                # Always attach the step log so failed cards show what was tried
+                if "_steps" not in partial:
+                    partial["_steps"] = steps
                 _update_kanban(fname, "failed", partial)
                 _broadcast({
                     "type":     "kanban_update",
@@ -421,6 +483,7 @@ def _drain_once() -> bool:
                     "data":     _safe_receipt_data(partial),
                     "model":    "",
                     "error":    fail_reason,
+                    "steps":    partial.get("_steps", []),
                 })
                 continue
 
@@ -437,8 +500,22 @@ def _drain_once() -> bool:
             conf, _ = _compute_confidence(data)
             data["_confidence"] = conf
 
+            # Append classify and audit steps to the log
+            _pr._append_step(steps, "classify", "Classify", f"category: {category}")
+            if data.get("_amount_verified"):
+                _pr._append_step(steps, "audit", "Audit",
+                                 f"${data.get('amount', 0):.2f} verified against OCR text")
+            elif audit_flag:
+                _pr._append_step(steps, "audit", "Audit",
+                                 audit_flag, ok=False)
+
+            # Finalize step list in data (supersedes the snapshot set by _finish)
+            data["_steps"] = list(steps)
+
+            # File was already autocropped + compressed before extraction (see the
+            # submit loop above); item["path"] points at that resized file.
             IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
-            path = _optimize_stored_image(path, fname)
+            path = Path(item["path"])
             final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
             data["_new_filename"] = final_path.name
             data["_file"]         = fname
@@ -459,6 +536,7 @@ def _drain_once() -> bool:
                 "status":   "done",
                 "data":     _safe_receipt_data(data),
                 "model":    "",
+                "steps":    data.get("_steps", []),
             })
             _broadcast({
                 "type":    "log",

@@ -53,6 +53,16 @@ APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
+
+# ── Single authoritative app-config location ────────────────────────────────────
+# The web server, the watch daemon, and the scheduler ALL read and write this one
+# file. It is defined here, in the shared module, so there is exactly one source of
+# truth — previously server.py and watch_mode.py each recomputed their own path,
+# which let a Docker-internal copy and a host-output copy drift apart. It lives
+# under the mounted OUTPUT_FOLDER so settings survive container rebuilds.
+APP_CONFIG_FILENAME = ".app_config.json"
+CONFIG_FILE         = Path(OUTPUT_FOLDER) / APP_CONFIG_FILENAME
+
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 PDF_EXTENSIONS       = {".pdf"}
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
@@ -277,6 +287,22 @@ def initialize_models() -> str:
 
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
+#
+# CANONICAL PER-RECEIPT PIPELINE ORDER:  autocrop → compress → OCR/text extraction
+#
+#   1. autocrop  — trim uniform background borders (autocrop_image_file / the
+#                  in-memory autocrop_receipt inside encode_image).
+#   2. compress  — re-encode/downscale the stored file to an optimized JPEG
+#                  (compress_image_file). This may REWRITE the file with a new
+#                  suffix (e.g. .png/.jpeg → .jpg), so callers MUST use the path it
+#                  RETURNS for every later step — feeding the stale pre-compress
+#                  path to OCR is what caused "[Errno 2] No such file or directory".
+#   3. OCR/text  — only now run extraction (LM Studio vision/OCR or the PaddleOCR
+#                  fallback) so every OCR path reads the same cleaned-up image.
+#
+# Cropping/compressing BEFORE extraction is what makes autocrop actually reach the
+# OCR engines (the PaddleOCR fallback reads the file from disk, not via
+# encode_image), and keeps the file path handed between steps consistent.
 
 AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
 AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
@@ -556,6 +582,117 @@ def _extract_paddle_ocr(image_path: Path) -> Optional[str]:
         return None
 
 
+# ── Per-item step log ──────────────────────────────────────────────────────────
+
+def _append_step(
+    steps: Optional[list],
+    step: str,
+    label: str,
+    detail: str = "",
+    *,
+    ok: bool = True,
+    duration_s: float = 0.0,
+) -> None:
+    """Append one processing step to the per-item step log. No-op when steps is None."""
+    if steps is None:
+        return
+    steps.append({
+        "step":       step,
+        "label":      label,
+        "detail":     detail,
+        "ok":         ok,
+        "duration_s": round(duration_s, 2),
+    })
+
+
+# ── Offline rule-based distillation ────────────────────────────────────────────
+# When LM Studio is disabled/unreachable the OCR text (from PaddleOCR) still needs
+# to be turned into structured fields. Sending it to the LM Studio distillation
+# model would fail too, so receipts that successfully OCR'd would otherwise land in
+# "failed". This pure-regex parser is the genuine PaddleOCR fallback: no model
+# required, so an imported image still produces a usable (if lower-confidence)
+# result when the AI backend is down.
+
+_DATE_PATTERNS = (
+    # ISO  2026-05-01
+    (re.compile(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b"), "ymd"),
+    # US   05/01/2026  or 5-1-26
+    (re.compile(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b"), "mdy"),
+    # Month name  May 1, 2026 / 1 May 2026
+    (re.compile(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b"), "mname"),
+    (re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})\b"), "dname"),
+)
+
+
+def _find_date_in_text(text: str) -> str:
+    """Best-effort extraction of a transaction date as YYYY-MM-DD ('' if none)."""
+    def _norm_year(y: int) -> int:
+        return y + 2000 if y < 100 else y
+
+    for rx, kind in _DATE_PATTERNS:
+        for m in rx.finditer(text):
+            try:
+                if kind == "ymd":
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                elif kind == "mdy":
+                    mo, d, y = int(m.group(1)), int(m.group(2)), _norm_year(int(m.group(3)))
+                elif kind == "mname":
+                    mo = MONTH_MAP.get(m.group(1).lower())
+                    d, y = int(m.group(2)), int(m.group(3))
+                else:  # dname
+                    mo = MONTH_MAP.get(m.group(2).lower())
+                    d, y = int(m.group(1)), int(m.group(3))
+                if not mo:
+                    continue
+                return date(y, mo, d).isoformat()
+            except (ValueError, TypeError):
+                continue
+    return ""
+
+
+def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
+    """Rule-based field extraction from raw OCR text — no LLM involved.
+
+    Returns the same schema the LM distillation produces (so the rest of the
+    pipeline is unchanged), or None when there isn't enough to work with. Always
+    flags the receipt for manual review since fields were parsed heuristically.
+    """
+    if not ocr_text or not ocr_text.strip():
+        return None
+
+    candidates = extract_candidate_totals(ocr_text)
+    amount = max(candidates) if candidates else 0.0
+
+    vendor = ""
+    for line in ocr_text.splitlines():
+        s = line.strip()
+        if len(s) >= 3 and any(c.isalpha() for c in s):
+            vendor = s[:60]
+            break
+
+    if not amount or not vendor:
+        return None
+
+    low = ocr_text.lower()
+    if any(v in low for v in FUEL_VENDORS) or any(k in low for k in FUEL_KEYWORDS):
+        category = "fuel"
+    elif any(v in low for v in MATS_VENDORS):
+        category = "mats"
+    else:
+        category = "misc"
+
+    return {
+        "date":                _find_date_in_text(ocr_text),
+        "vendor":              vendor,
+        "amount":              amount,
+        "category":            category,
+        "expense_description": None,
+        "ai_summary":          vendor,
+        "flags": [{"flag": "Parsed locally without AI (LM Studio unavailable) — verify fields"}],
+        "_local_parse": True,
+    }
+
+
 def _unified_distillation(
     client: OpenAI, ocr_text: str, *, _retry: bool = True,
 ) -> Optional[dict]:
@@ -663,14 +800,16 @@ def _extract_receipt_with_status(
     client: OpenAI,
     image_path: Path,
     status_cb: Optional[Callable],  # (status, data, model) → None
+    step_log: Optional[list] = None,
 ) -> Optional[dict]:
     """
-    2-stage pipeline with Kanban status callbacks.
+    2-stage pipeline with Kanban status callbacks and per-item step logging.
     If _active_ocr_model is set and differs from _active_distill_model:
       Stage 1: OCR model extracts raw text
       Stage 2: distillation model returns structured data + summary + flags
     Otherwise:
       Single stage: distillation model analyzes the image directly.
+    Each branch is recorded in step_log (if provided) for the per-item process log.
     """
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
@@ -686,6 +825,8 @@ def _extract_receipt_with_status(
                 data["_ocr_seconds"] = round(ocr_seconds, 1)
             if distill_seconds:
                 data["_distill_seconds"] = round(distill_seconds, 1)
+            if step_log is not None:
+                data["_steps"] = list(step_log)
         return data
 
     def _distill_text(ocr_text: str, ocr_seconds: float,
@@ -693,9 +834,33 @@ def _extract_receipt_with_status(
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _unified_distillation(client, ocr_text)
+        distill_dur = time.perf_counter() - t_distill
+        local_used = False
+
+        if data is None:
+            # LM Studio distillation unreachable/failed → record failure, try offline parser
+            _append_step(step_log, "distillation", "Distillation",
+                         f"{_active_distill_model} – no response",
+                         ok=False, duration_s=distill_dur)
+            data = _local_distill_from_ocr(ocr_text)
+            local_used = data is not None
+            if local_used:
+                _append_step(step_log, "local_parse", "Local parse",
+                             "offline regex parser (LM Studio unavailable)", ok=True)
+
         distill_seconds = time.perf_counter() - t_distill
         if _is_low_confidence(data):
+            if not local_used and data is not None:
+                # LM Studio responded but result was too sparse to use
+                _append_step(step_log, "distillation", "Distillation",
+                             f"{_active_distill_model} – incomplete extraction",
+                             ok=False, duration_s=distill_dur)
             return None
+
+        # Result passes confidence check — record success if LM Studio handled it
+        if not local_used:
+            _append_step(step_log, "distillation", "Distillation",
+                         _active_distill_model or "", ok=True, duration_s=distill_dur)
         data["_raw_ocr"] = ocr_text
         if engine:
             data["_ocr_engine"] = engine
@@ -708,16 +873,28 @@ def _extract_receipt_with_status(
             ocr_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
             ocr_seconds = time.perf_counter() - t_ocr
             if not ocr_text:
+                _append_step(step_log, "lm_ocr", "OCR (LM Studio)",
+                             f"{_active_ocr_model} – no response",
+                             ok=False, duration_s=ocr_seconds)
                 # LM Studio OCR stage failed/unreachable — try local PaddleOCR
                 _cb("ocr", model="paddleocr")
                 t_ocr = time.perf_counter()
                 ocr_text = _extract_paddle_ocr(image_path)
                 ocr_seconds = time.perf_counter() - t_ocr
                 if ocr_text:
+                    _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                                 "fallback – LM Studio unavailable",
+                                 ok=True, duration_s=ocr_seconds)
                     data = _distill_text(ocr_text, ocr_seconds, engine="paddleocr")
                     if data is not None:
                         return data
+                else:
+                    _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                                 "no text extracted", ok=False, duration_s=ocr_seconds)
                 ocr_text = None
+            else:
+                _append_step(step_log, "lm_ocr", "OCR (LM Studio)",
+                             _active_ocr_model, ok=True, duration_s=ocr_seconds)
             if ocr_text:
                 data = _distill_text(ocr_text, ocr_seconds)
                 if data is not None:
@@ -728,17 +905,27 @@ def _extract_receipt_with_status(
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _extract_with_model(client, image_path, _active_distill_model)
+        vision_dur = time.perf_counter() - t_distill
         if data is not None:
-            return _finish(data, distill_seconds=time.perf_counter() - t_distill)
+            _append_step(step_log, "vision", "Vision",
+                         _active_distill_model or "", ok=True, duration_s=vision_dur)
+            return _finish(data, distill_seconds=vision_dur)
+        _append_step(step_log, "vision", "Vision",
+                     f"{_active_distill_model} – no response", ok=False, duration_s=vision_dur)
 
         # Direct vision failed too — last resort: PaddleOCR text + distillation
         # (covers vision-incapable distill models while the text API still works)
         _cb("ocr", model="paddleocr")
         t_ocr = time.perf_counter()
         ocr_text = _extract_paddle_ocr(image_path)
+        paddle_dur = time.perf_counter() - t_ocr
         if ocr_text:
-            return _distill_text(ocr_text, time.perf_counter() - t_ocr,
-                                 engine="paddleocr")
+            _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                         "last-resort fallback after vision failed",
+                         ok=True, duration_s=paddle_dur)
+            return _distill_text(ocr_text, paddle_dur, engine="paddleocr")
+        _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                     "no text extracted", ok=False, duration_s=paddle_dur)
         return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")
