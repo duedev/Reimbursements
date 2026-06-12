@@ -1542,7 +1542,7 @@ function escJs(str) {
 }
 function showToast(msg, ok) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  t.innerHTML = msg;
   t.className = `toast ${ok ? 'toast-ok' : 'toast-err'} show`;
   setTimeout(() => t.classList.remove('show'), 3500);
 }
@@ -1737,6 +1737,7 @@ function moveCard(filename, newStatus, data, model, errorMsg, steps) {
   if (boardSearchInput.value.trim()) applyBoardSearch();
   const hasCards = Object.keys(receiptCards).length > 0;
   document.getElementById('clear-board-btn').classList.toggle('hidden', !hasCards);
+  _updateApprovalWarning();
 }
 
 // ── Kanban folder shortcuts ────────────────────────────────────────────────────
@@ -1900,6 +1901,18 @@ function _updateApprovalGate(doneCards) {
   } else {
     status.style.display = 'none';
   }
+  _updateApprovalWarning();
+}
+
+function _updateApprovalWarning() {
+  const chk = document.getElementById('require-approval');
+  const warn = document.getElementById('approval-warning');
+  const cntEl = document.getElementById('unapproved-count');
+  if (!chk || !warn || !cntEl) return;
+  if (!chk.checked) { warn.style.display = 'none'; return; }
+  const unapproved = Object.values(receiptCards).filter(c => c.status === 'done' && !c.data?._approved).length;
+  cntEl.textContent = unapproved;
+  warn.style.display = unapproved > 0 ? '' : 'none';
 }
 
 // ── Add to Queue (file upload) ────────────────────────────────────────────────
@@ -2187,6 +2200,11 @@ function toDateInputValue(str) {
 // ── Manual Review Modal ───────────────────────────────────────────────────────
 let _mrFilename = '';
 
+function _closeReviewModal() {
+  closeLightbox(); // close lightbox if user opened it from inside the modal
+  document.getElementById('manual-review-modal').classList.add('hidden');
+}
+
 window.openManualReview = function(filename) {
   _mrFilename = filename;
   const card = receiptCards[filename];
@@ -2245,7 +2263,7 @@ window.openManualReview = function(filename) {
 };
 
 document.getElementById('mr-cancel-btn').addEventListener('click', () => {
-  document.getElementById('manual-review-modal').classList.add('hidden');
+  _closeReviewModal();
 });
 
 function _mrFormBody(overrides = {}) {
@@ -2278,7 +2296,7 @@ document.getElementById('mr-save-btn').addEventListener('click', async () => {
     });
     const d = await res.json();
     if (d.ok) {
-      document.getElementById('manual-review-modal').classList.add('hidden');
+      _closeReviewModal();
       showToast(`${_mrFilename} saved`, true);
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
@@ -2703,6 +2721,7 @@ async function loadReviewSettings() {
   try {
     const d = await (await fetch('/settings/review')).json();
     document.getElementById('require-approval').checked = !!d.require_approval;
+    _updateApprovalWarning();
   } catch (_) {}
   _updateApprovalGate();
 }
@@ -3018,7 +3037,14 @@ function closeLightbox() {
   document.body.style.overflow = '';
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'Escape') {
+    const reviewModal = document.getElementById('manual-review-modal');
+    if (!reviewModal.classList.contains('hidden')) {
+      _closeReviewModal();
+    } else {
+      closeLightbox();
+    }
+  }
 });
 
 // ── Saved-fields manage panel ─────────────────────────────────────────────────
