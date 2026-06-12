@@ -229,7 +229,7 @@ def _safe_receipt_data(data) -> dict:
     out = {}
     for k in ("date", "vendor", "amount", "category", "job_name", "job_number",
               "expense_description", "summary", "ai_summary", "_flag", "_category",
-              "_new_filename", "_file", "flags", "_confidence", "_error",
+              "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
               "_distill_seconds", "_ocr_engine", "_steps"):
         if k in data:
@@ -482,6 +482,13 @@ def _drain_once() -> bool:
                     partial["_file"]   = fname
                     conf, _            = _compute_confidence(data)
                     partial["_confidence"] = conf
+                else:
+                    partial["_file"] = fname
+                # Track the compressed filename so the UI can find the image even
+                # when the extension changed (e.g. photo.webp → photo.jpg).
+                compressed_name = path.name
+                if compressed_name != fname:
+                    partial["_compressed_file"] = compressed_name
                 # Always attach the step log so failed cards show what was tried
                 if "_steps" not in partial:
                     partial["_steps"] = steps
@@ -502,7 +509,8 @@ def _drain_once() -> bool:
             data["job_name"]   = item.get("job_name") or None
             data["job_number"] = item.get("job_number") or None
             audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
-            flags = data.get("flags") or []
+            flags = _pr._normalize_flags(data.get("flags") or [])
+            data["flags"] = flags  # ensure normalised form is stored
             if flags and not data.get("_flag"):
                 data["_flag"] = flags[0].get("flag", "")
             if audit_flag and not data.get("_flag"):
@@ -2171,6 +2179,56 @@ async def remove_saved_field(body: RemoveFieldRequest):
     cfg[body.list_key] = lst
     _save_config(cfg)
     return JSONResponse({"ok": True})
+
+
+# ── PaddleOCR diagnostics ──────────────────────────────────────────────────────
+
+@app.get("/debug/paddle-status")
+async def paddle_status():
+    """Check whether PaddleOCR is installed and loadable."""
+    def _check():
+        try:
+            from paddleocr import PaddleOCR  # noqa: F401
+            engine = _pr._get_paddle_engine()
+            if engine is None:
+                return {"available": False, "reason": "PaddleOCR import succeeded but engine failed to initialise"}
+            return {"available": True, "engine": str(type(engine).__name__)}
+        except ImportError as exc:
+            return {"available": False, "reason": f"PaddleOCR not installed: {exc}"}
+        except Exception as exc:
+            return {"available": False, "reason": str(exc)}
+
+    result = await asyncio.get_event_loop().run_in_executor(None, _check)
+    return JSONResponse(result)
+
+
+@app.post("/debug/paddle-test")
+async def paddle_test(files: list[UploadFile] = File(...)):
+    """Run PaddleOCR on an uploaded image and return the extracted text."""
+    if not files:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+
+    f = files[0]
+    suffix = Path(f.filename or "test.jpg").suffix or ".jpg"
+    tmp = PROCESSING_FOLDER / f"_paddle_test{suffix}"
+    PROCESSING_FOLDER.mkdir(parents=True, exist_ok=True)
+    try:
+        content = await f.read()
+        tmp.write_bytes(content)
+
+        def _run():
+            return _pr._extract_paddle_ocr(tmp)
+
+        text = await asyncio.get_event_loop().run_in_executor(None, _run)
+        return JSONResponse({
+            "ok": text is not None,
+            "text": text or "",
+            "chars": len(text) if text else 0,
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ── Admin / maintenance ────────────────────────────────────────────────────────

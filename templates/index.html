@@ -788,6 +788,66 @@
       color: var(--warning); height: 38px; padding: 0 14px; font-size: 13px;
     }
     .btn-unstick:not(:disabled):hover { background: rgba(245,158,11,0.2); }
+
+    /* Drop zone mobile vs desktop text */
+    .dz-mobile { display: none; }
+    @media (max-width: 640px) {
+      .dz-desktop { display: none; }
+      .dz-mobile  { display: block; }
+    }
+
+    /* ── Mobile / responsive overrides ───────────────────────────────────── */
+    @media (max-width: 640px) {
+      /* Header — collapse on small screens */
+      header { padding: 0 12px; gap: 8px; height: auto; min-height: 52px; flex-wrap: wrap; }
+      header h1 { font-size: 16px; }
+      header .tagline { display: none; }
+      .tutorial-link .tl-text { display: none; }
+      .tutorial-link { padding: 5px 8px; }
+
+      /* Main content area */
+      main { padding: 14px 10px 40px; gap: 14px; }
+
+      /* Tab bar */
+      .tab-bar { padding: 0 10px; margin-top: 12px; }
+      .tab-btn { padding: 8px 14px; font-size: 13px; }
+
+      /* Paths banner */
+      .paths-banner { padding: 0 10px; font-size: 11px; gap: 6px 14px; }
+      .paths-banner code { max-width: 180px; }
+
+      /* Upload card drop zone */
+      #drop-zone { padding: 14px 12px; gap: 10px; }
+
+      /* Kanban board — 1 column on very small screens */
+      .kanban-board { grid-template-columns: 1fr; }
+
+      /* Insights grid — 2 cols on mobile */
+      .insights-grid { grid-template-columns: 1fr 1fr; }
+
+      /* Settings form grids */
+      .fields[style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
+      .modal-fields { grid-template-columns: 1fr !important; }
+
+      /* Btn row wrapping */
+      .btn-row { gap: 8px; }
+      .btn { height: 40px; font-size: 14px; padding: 0 16px; }
+
+      /* Log height on mobile */
+      #log { height: 120px; font-size: 11px; }
+    }
+
+    @media (max-width: 480px) {
+      header h1 { font-size: 15px; }
+      .gh-link { display: none; }
+    }
+
+    /* Touch-friendly tap area improvements */
+    @media (hover: none) {
+      .k-card:hover { box-shadow: none; border-color: var(--border); }
+      .k-dismiss-btn { opacity: 0.7; }
+      .k-edit-hint { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -806,7 +866,7 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13" aria-hidden="true">
       <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
     </svg>
-    Tutorial
+    <span class="tl-text">Tutorial</span>
   </a>
   <a class="gh-link" href="https://github.com/duedev/Reimbursements" target="_blank" rel="noopener" title="View source on GitHub">
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -893,17 +953,19 @@
   <!-- Upload card (compact) -->
   <div class="card" id="upload-card">
     <div class="card-title">Receipt Images</div>
-    <div id="drop-zone">
+    <label id="drop-zone" for="file-input">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
       <div class="dz-text">
-        <p><strong>Drop receipt images or PDFs here</strong></p>
-        <p>or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF…</p>
+        <p class="dz-desktop"><strong>Drop receipt images or PDFs here</strong></p>
+        <p class="dz-desktop">or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF…</p>
+        <p class="dz-mobile"><strong>Tap to select receipts</strong></p>
+        <p class="dz-mobile" style="font-size:12px">JPG, PNG, WEBP, PDF supported</p>
       </div>
       <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
-    </div>
+    </label>
     <!-- Add to Queue always stays at the top of the file section -->
     <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
       <button class="btn btn-primary" id="process-btn" disabled style="height:38px;padding:0 18px;font-size:14px">
@@ -982,37 +1044,6 @@
     </span>
   </div>
 
-  <!-- Processing & Errors (combined) -->
-  <div class="card hidden" id="progress-card">
-    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
-      Processing &amp; Errors
-      <button class="section-toggle" id="progress-toggle" tabindex="-1">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
-    </div>
-    <div id="progress-body">
-      <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
-      <div class="progress-meta">
-        <span id="progress-label">0 / 0</span>
-        <span id="current-file"></span>
-      </div>
-      <div id="log"></div>
-
-      <!-- Errors sub-section — revealed when an error/skip is logged -->
-      <div class="hidden" id="error-section" style="margin-top:16px;border-top:1px solid rgba(239,68,68,0.4);padding-top:14px">
-        <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
-          <div class="card-title" style="color:var(--danger);margin-bottom:0">
-            Errors <span id="error-count-badge" style="font-size:11px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:10px;padding:1px 7px;margin-left:6px">0</span>
-          </div>
-          <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
-        </div>
-        <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
-      </div>
-    </div>
-  </div>
-
   <!-- Kanban board (hidden until processing starts) -->
   <div class="card hidden" id="kanban-card">
     <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('kanban-body','kanban-toggle')">
@@ -1059,6 +1090,37 @@
       </div>
     </div>
     </div><!-- /kanban-body -->
+  </div>
+
+  <!-- Processing & Errors (combined) — below receipt progress -->
+  <div class="card hidden" id="progress-card">
+    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
+      Processing &amp; Errors
+      <button class="section-toggle" id="progress-toggle" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+    </div>
+    <div id="progress-body">
+      <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-meta">
+        <span id="progress-label">0 / 0</span>
+        <span id="current-file"></span>
+      </div>
+      <div id="log"></div>
+
+      <!-- Errors sub-section — revealed when an error/skip is logged -->
+      <div class="hidden" id="error-section" style="margin-top:16px;border-top:1px solid rgba(239,68,68,0.4);padding-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" id="error-toggle">
+          <div class="card-title" style="color:var(--danger);margin-bottom:0">
+            Errors <span id="error-count-badge" style="font-size:11px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:10px;padding:1px 7px;margin-left:6px">0</span>
+          </div>
+          <span id="error-chevron" style="color:var(--muted);font-size:13px;transition:transform 0.2s">▼</span>
+        </div>
+        <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;color:#fca5a5;white-space:pre-wrap;max-height:160px;overflow-y:auto"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Report history -->
@@ -1212,10 +1274,17 @@
             <input type="checkbox" id="proc-compress" style="width:auto">
             Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
           </label>
-          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
-            <input type="checkbox" id="proc-paddleocr" style="width:auto">
-            PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
-          </label>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
+              <input type="checkbox" id="proc-paddleocr" style="width:auto">
+              PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
+            </label>
+            <button class="copy-btn" id="paddle-test-btn" title="Upload a receipt image to test PaddleOCR extraction" style="flex-shrink:0">
+              Test PaddleOCR
+            </button>
+            <input type="file" id="paddle-test-input" accept="image/*" style="display:none">
+            <span id="paddle-test-status" style="font-size:11px;color:var(--muted)"></span>
+          </div>
           <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
             <span style="min-width:96px">JPEG quality</span>
             <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
@@ -1427,13 +1496,14 @@ function showToast(msg, ok) {
 }
 
 // ── Drag and drop ─────────────────────────────────────────────────────────────
-dropZone.addEventListener('click', () => fileInput.click());
+// Drop zone is now a <label for="file-input"> so clicking/tapping it natively
+// triggers the file picker — no programmatic .click() needed.
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]);
 });
-fileInput.addEventListener('change', () => addFiles([...fileInput.files]));
+fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
 
 function addFiles(newFiles) {
   const valid = newFiles.filter(f =>
@@ -1562,8 +1632,8 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     }
   }
 
-  // Image view button (available on all cards that have a resolvable file)
-  const imgFile = (data && (data._new_filename || data._file)) || filename;
+  // Image view button — prefer renamed output file, fall back to compressed or original
+  const imgFile = (data && (data._new_filename || data._compressed_file || data._file)) || filename;
   const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
   inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}')" title="View receipt image">&#128247; View</button>`;
 
@@ -2044,8 +2114,8 @@ window.openManualReview = function(filename) {
   document.getElementById('mr-job-number').value = data.job_number || '';
   document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
 
-  // Load receipt image preview
-  const imgFile = data._new_filename || data._file || filename;
+  // Load receipt image preview — prefer renamed output, fall back to compressed or original
+  const imgFile = data._new_filename || data._compressed_file || data._file || filename;
   const previewWrap = document.getElementById('mr-preview-wrap');
   const previewImg  = document.getElementById('mr-preview-img');
   previewImg.src = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
@@ -2486,6 +2556,69 @@ async function saveProcessingSettings() {
 
 ['proc-compress', 'proc-paddleocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
+});
+
+// ── PaddleOCR test ────────────────────────────────────────────────────────────
+document.getElementById('paddle-test-btn').addEventListener('click', () => {
+  document.getElementById('paddle-test-input').click();
+});
+document.getElementById('paddle-test-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('paddle-test-status');
+  const btn = document.getElementById('paddle-test-btn');
+  statusEl.textContent = 'Running PaddleOCR…';
+  statusEl.style.color = 'var(--muted)';
+  btn.disabled = true;
+
+  // First check if PaddleOCR is available
+  try {
+    const chk = await fetch('/debug/paddle-status');
+    const chkData = await chk.json();
+    if (!chkData.available) {
+      statusEl.textContent = `Not available: ${chkData.reason}`;
+      statusEl.style.color = 'var(--danger)';
+      btn.disabled = false;
+      e.target.value = '';
+      return;
+    }
+  } catch (_) {}
+
+  try {
+    const form = new FormData();
+    form.append('files', file, file.name);
+    const res = await fetch('/debug/paddle-test', { method: 'POST', body: form });
+    const d = await res.json();
+    if (d.ok && d.text) {
+      statusEl.textContent = `✓ ${d.chars} chars extracted`;
+      statusEl.style.color = 'var(--success)';
+      // Show a lightbox with the extracted text
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'white-space:pre-wrap;font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:60vh;overflow-y:auto;margin-top:10px';
+      pre.textContent = d.text;
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
+      modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <strong style="font-size:14px">PaddleOCR — Extracted Text</strong>
+          <button style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1" onclick="this.closest('[style*=position]').remove()">✕</button>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${d.chars} characters from <strong>${esc(file.name)}</strong></p>
+      </div>`;
+      modal.querySelector('div').appendChild(pre);
+      modal.addEventListener('click', ev => { if (ev.target === modal) modal.remove(); });
+      document.body.appendChild(modal);
+    } else {
+      statusEl.textContent = d.ok ? '⚠ No text extracted' : `✗ ${d.error || 'failed'}`;
+      statusEl.style.color = d.ok ? 'var(--warning)' : 'var(--danger)';
+    }
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+    e.target.value = '';
+  }
 });
 document.getElementById('proc-quality').addEventListener('input', (e) => {
   document.getElementById('proc-quality-val').textContent = `${e.target.value} %`;
