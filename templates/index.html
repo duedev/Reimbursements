@@ -1406,7 +1406,7 @@
 <div class="modal-overlay hidden" id="manual-review-modal">
   <div class="modal-box">
     <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
-    <p class="modal-sub" id="mr-modal-sub">Review the extracted data for <strong id="mr-filename-label"></strong>.</p>
+    <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
     <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
       &#10003; This receipt is approved
     </div>
@@ -2157,7 +2157,6 @@ let _mrFilename = '';
 
 window.openManualReview = function(filename) {
   _mrFilename = filename;
-  document.getElementById('mr-filename-label').textContent = filename;
   const card = receiptCards[filename];
   const isDone = card?.status === 'done';
   const isFailed = card?.status === 'failed';
