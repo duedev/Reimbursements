@@ -1542,6 +1542,17 @@
     <div class="card-title">Maintenance</div>
     <div class="action-row" style="margin-top:0">
       <span class="status-note" style="flex:1;min-width:220px">
+        Find files left behind in the receipts and processing folders that no completed
+        result or queue item references. Report only — nothing is deleted.
+      </span>
+      <button class="btn btn-outline-accent btn-md" id="orphan-scan-btn"
+              title="Scan the working folders for unreferenced (orphaned) files">
+        &#128269; Check Orphaned Files
+      </button>
+    </div>
+    <div id="orphan-results" class="hidden" style="margin-top:10px"></div>
+    <div class="action-row" style="margin-top:14px">
+      <span class="status-note" style="flex:1;min-width:220px">
         Restart the server process if the app misbehaves — Docker relaunches it automatically
         and the page reloads itself. Processed receipts are preserved.
       </span>
@@ -2082,10 +2093,13 @@ function _updateApprovalGate(doneCards) {
   } else {
     status.style.display = 'none';
   }
-  // Update the "to approve" counter badge in the Completed column header
+  // Update the "to approve" counter badge in the Completed column header —
+  // only shown while "Require review & approval" (Generate Spreadsheet card)
+  // is checked, since the count is meaningless when the gate is off.
+  const requireApproval = document.getElementById('require-approval').checked;
   const toApproveBadge = document.getElementById('cnt-to-approve');
   if (toApproveBadge) {
-    if (unapproved > 0 && done.length > 0) {
+    if (requireApproval && unapproved > 0 && done.length > 0) {
       toApproveBadge.textContent = `${unapproved} left to approve`;
       toApproveBadge.style.display = '';
     } else {
@@ -3236,6 +3250,46 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
     }
   } catch (err) {
     showToast(`Settings error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Orphaned-file check ───────────────────────────────────────────────────────
+function _fmtBytes(n) {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+document.getElementById('orphan-scan-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('orphan-scan-btn');
+  const box = document.getElementById('orphan-results');
+  btn.disabled = true;
+  box.classList.remove('hidden');
+  box.innerHTML = '<span class="status-note">Scanning folders…</span>';
+  try {
+    const res = await fetch('/maintenance/orphans');
+    const d = await res.json();
+    if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
+    if (!d.count && !(d.empty_dirs || []).length) {
+      box.innerHTML = `<span class="status-note" style="color:var(--success)">&#10003; No orphaned files — ${d.scanned} file(s) checked, all referenced.</span>`;
+    } else {
+      const rows = d.orphans.map(o =>
+        `<tr><td style="padding:2px 10px 2px 0;color:var(--muted)">${esc(o.folder)}</td>` +
+        `<td style="padding:2px 10px 2px 0;word-break:break-all">${esc(o.name)}</td>` +
+        `<td style="padding:2px 10px 2px 0;text-align:right;white-space:nowrap">${_fmtBytes(o.size)}</td>` +
+        `<td style="padding:2px 0;color:var(--muted);white-space:nowrap">${esc((o.modified || '').replace('T', ' '))}</td></tr>`).join('');
+      const dirs = (d.empty_dirs || []).map(x =>
+        `<div class="status-note">Empty temp folder: ${esc(x)}</div>`).join('');
+      box.innerHTML =
+        `<div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:6px">` +
+        `&#9888; ${d.count} orphaned file(s) — ${_fmtBytes(d.total_size)} (checked ${d.scanned})</div>` +
+        (rows ? `<table style="font-size:12.5px;border-collapse:collapse">${rows}</table>` : '') + dirs +
+        `<div class="status-note" style="margin-top:6px">Not referenced by any completed receipt, board card, or queued item — review and delete manually from the output folder if no longer needed.</div>`;
+    }
+  } catch (err) {
+    box.innerHTML = `<span class="status-note" style="color:var(--danger)">Scan failed: ${esc(err.message)}</span>`;
   } finally {
     btn.disabled = false;
   }

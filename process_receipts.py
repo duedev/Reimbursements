@@ -100,9 +100,10 @@ FUEL_VENDORS = {
 
 FUEL_KEYWORDS = {
     "gas", "gasoline", "diesel", "petrol", "fuel", "pump", "gallon",
-    "gallons", "unleaded", "regular", "premium", "e85", "fill-up",
+    "gallons", "unleaded", "e85", "fill-up",
     "fill up", "fueling", "service station", "gas pump", "octane",
-    "auto fuel", "motor fuel",
+    "auto fuel", "motor fuel", "regular unleaded", "premium unleaded",
+    "price/gal", "per gallon",
 }
 
 MATS_VENDORS = {
@@ -110,6 +111,26 @@ MATS_VENDORS = {
     "harbor freight", "fastenal", "grainger", "blueprint", "print shop",
     "reprographics", "planning department", "building supply",
 }
+
+
+def _kw_pattern(kw: str) -> "re.Pattern[str]":
+    """Word-boundary regex for one vendor/keyword match against lowercased text.
+
+    Plain substring matching misfired badly on raw OCR text: "76" matched street
+    addresses, store numbers and any price ending in .76, and "gas" matched
+    "Las Vegas".  Purely numeric brands ("76") additionally must not touch
+    digits, decimal points, '#', '$' or ',' so prices, store numbers, addresses
+    and zip codes never count as a fuel-vendor sighting.
+    """
+    esc = re.escape(kw)
+    if kw.isdigit():
+        return re.compile(rf"(?<![a-z0-9.,#$]){esc}(?![a-z0-9.,])")
+    return re.compile(rf"(?<![a-z0-9]){esc}(?![a-z0-9])")
+
+
+_FUEL_VENDOR_PATTERNS  = {kw: _kw_pattern(kw) for kw in FUEL_VENDORS}
+_FUEL_KEYWORD_PATTERNS = {kw: _kw_pattern(kw) for kw in FUEL_KEYWORDS}
+_MATS_VENDOR_PATTERNS  = {kw: _kw_pattern(kw) for kw in MATS_VENDORS}
 
 MONTH_MAP: dict[str, int] = {
     "january": 1,   "february": 2,  "march": 3,
@@ -770,8 +791,12 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
     if not ocr_text or not ocr_text.strip():
         return None
 
-    candidates = extract_candidate_totals(ocr_text)
-    amount = max(candidates) if candidates else 0.0
+    # Prefer the printed grand total; only when no total line exists fall back
+    # to the largest money value (some receipts only print the bare number).
+    amount = extract_best_total(ocr_text)
+    if not amount:
+        candidates = extract_candidate_totals(ocr_text)
+        amount = max(candidates) if candidates else 0.0
 
     vendor = ""
     for line in ocr_text.splitlines():
@@ -784,9 +809,10 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         return None
 
     low = ocr_text.lower()
-    if any(v in low for v in FUEL_VENDORS) or any(k in low for k in FUEL_KEYWORDS):
+    if (any(rx.search(low) for rx in _FUEL_VENDOR_PATTERNS.values())
+            or any(rx.search(low) for rx in _FUEL_KEYWORD_PATTERNS.values())):
         category = "fuel"
-    elif any(v in low for v in MATS_VENDORS):
+    elif any(rx.search(low) for rx in _MATS_VENDOR_PATTERNS.values()):
         category = "mats"
     else:
         category = "misc"
@@ -956,6 +982,14 @@ def _extract_receipt_with_status(
                 _append_step(step_log, "local_parse", "Local parse",
                              "offline regex parser (LM Studio unavailable)", ok=True)
 
+        # Ground the model's amount in the OCR text it was given: a value that
+        # appears nowhere in the text is replaced by the printed grand total.
+        if data is not None and not local_used:
+            note = reconcile_amount(data, ocr_text)
+            if note:
+                data["flags"] = _normalize_flags(data.get("flags") or []) + [{"flag": note}]
+                _append_step(step_log, "reconcile", "Amount check", note)
+
         distill_seconds = time.perf_counter() - t_distill
         if _is_low_confidence(data):
             if not local_used and data is not None:
@@ -1057,6 +1091,26 @@ _TOTAL_KEYWORD_RE = re.compile(
 )
 _MONEY_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})")
 
+# Lines whose money value IS the receipt's final amount, strongest first.
+_GRAND_TOTAL_RE = re.compile(
+    r"\b(grand\s*total|total\s*due|amount\s*due|balance\s*due)\b", re.IGNORECASE)
+_PLAIN_TOTAL_RE = re.compile(r"\btotal\b", re.IGNORECASE)
+_SUBTOTAL_RE    = re.compile(r"\bsub[-\s]?total\b", re.IGNORECASE)
+# A "total" line that is really something else (subtotal, tax, tender, change…)
+_NON_GRAND_LINE_RE = re.compile(
+    r"\b(sub[-\s]?total|subtotal|tax|savings|discount|tender(?:ed)?|tend|"
+    r"cash|change|points|rewards?)\b", re.IGNORECASE)
+
+
+def _money_values(s: str) -> list[float]:
+    out = []
+    for m in _MONEY_RE.finditer(s):
+        try:
+            out.append(round(float(m.group(1).replace(",", "")), 2))
+        except ValueError:
+            pass
+    return out
+
 
 def extract_candidate_totals(text: str) -> list[float]:
     """Money values found on total-like lines of raw receipt text.
@@ -1067,22 +1121,78 @@ def extract_candidate_totals(text: str) -> list[float]:
     if not text:
         return []
 
-    def _vals(s: str) -> list[float]:
-        out = []
-        for m in _MONEY_RE.finditer(s):
-            try:
-                out.append(round(float(m.group(1).replace(",", "")), 2))
-            except ValueError:
-                pass
-        return out
-
     keyword_vals: list[float] = []
     for line in text.splitlines():
         if _TOTAL_KEYWORD_RE.search(line):
-            keyword_vals.extend(_vals(line))
+            keyword_vals.extend(_money_values(line))
     if keyword_vals:
         return sorted(set(keyword_vals))
-    return sorted(set(_vals(text)))
+    return sorted(set(_money_values(text)))
+
+
+def extract_best_total(text: str) -> Optional[float]:
+    """Best guess at the receipt's printed grand total, or None.
+
+    Tier 1: lines naming the final amount explicitly (GRAND TOTAL, TOTAL DUE,
+    AMOUNT DUE, BALANCE DUE).  Tier 2: plain TOTAL lines that aren't really a
+    subtotal/tax/tender/change line.  Within a tier the largest value wins
+    (e.g. FUEL TOTAL vs. the combined TOTAL on a fuel + car-wash receipt).
+    """
+    if not text:
+        return None
+    tier1: list[float] = []
+    tier2: list[float] = []
+    for line in text.splitlines():
+        if _GRAND_TOTAL_RE.search(line):
+            tier1.extend(v for v in _money_values(line) if v > 0)
+        elif _PLAIN_TOTAL_RE.search(line) and not _NON_GRAND_LINE_RE.search(line):
+            tier2.extend(v for v in _money_values(line) if v > 0)
+    for vals in (tier1, tier2):
+        if vals:
+            return max(vals)
+    return None
+
+
+def reconcile_amount(data: Optional[dict], raw_text: str) -> Optional[str]:
+    """Replace a hallucinated amount with the receipt's printed grand total.
+
+    The distillation model only ever sees the OCR text, so an extracted amount
+    that appears nowhere in that text cannot be a faithful copy of the receipt.
+    When the text prints an explicit total line, adopt that value instead.
+    Returns a human-readable note (used as a review flag) when the amount was
+    changed, or None when it was left alone.
+    """
+    if not data or not raw_text:
+        return None
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+
+    best = extract_best_total(raw_text)
+
+    if amount > 0:
+        # Model copied the pre-tax SUBTOTAL? The printed grand total wins.
+        if best and best > amount + 0.005:
+            sub_vals = [v for line in raw_text.splitlines()
+                        if _SUBTOTAL_RE.search(line)
+                        for v in _money_values(line)]
+            if any(abs(amount - v) < 0.005 for v in sub_vals):
+                data["amount"] = best
+                return (f"Amount corrected: ${amount:.2f} is the pre-tax subtotal; "
+                        f"receipt total is ${best:.2f} — verify")
+        candidates = extract_candidate_totals(raw_text)
+        if any(abs(amount - c) < 0.005 for c in candidates):
+            return None        # amount is printed on the receipt — keep it
+
+    if not best or abs(best - amount) < 0.005:
+        return None
+
+    data["amount"] = best
+    if amount > 0:
+        return (f"Amount corrected: model said ${amount:.2f} but receipt prints "
+                f"total ${best:.2f} — verify")
+    return f"Amount taken from printed total ${best:.2f} — verify"
 
 
 def audit_amount(data: Optional[dict], raw_text: str) -> Optional[str]:
@@ -1132,17 +1242,19 @@ def classify_category(data: dict) -> str:
 
     # Fuel: AI-extracted vendor name is strongest signal (+3); fuel vendor found in
     # raw OCR text but not in extracted vendor adds a secondary signal (+2); fuel
-    # keywords anywhere in the combined text add +1 each.
-    fuel_score = sum(3 for kw in FUEL_VENDORS if kw in vendor)
-    fuel_score += sum(2 for kw in FUEL_VENDORS if kw in raw_ocr and kw not in vendor)
-    fuel_score += sum(1 for kw in FUEL_KEYWORDS if kw in combined)
+    # keywords anywhere in the combined text add +1 each.  All matches are
+    # word-bounded (see _kw_pattern) so generic receipt text can't fake a signal.
+    fuel_score = sum(3 for rx in _FUEL_VENDOR_PATTERNS.values() if rx.search(vendor))
+    fuel_score += sum(2 for rx in _FUEL_VENDOR_PATTERNS.values()
+                      if rx.search(raw_ocr) and not rx.search(vendor))
+    fuel_score += sum(1 for rx in _FUEL_KEYWORD_PATTERNS.values() if rx.search(combined))
 
     if fuel_score >= 3:
         return "fuel"
     if model_cat == "fuel" and fuel_score >= 1:
         return "fuel"
 
-    if any(kw in vendor for kw in MATS_VENDORS):
+    if any(rx.search(vendor) for rx in _MATS_VENDOR_PATTERNS.values()):
         return "mats"
 
     return model_cat
