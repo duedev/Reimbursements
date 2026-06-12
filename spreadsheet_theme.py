@@ -22,7 +22,7 @@ COLOR_HEADER_BG   = "3B82F6"
 COLOR_HEADER_FG   = "FFFFFF"
 COLOR_META_BG     = "EBF5FB"
 COLOR_ROW_PLAIN   = "FFFFFF"
-COLOR_ROW_ALT     = "F1F5F9"
+COLOR_ROW_ALT     = "E4EEF8"
 COLOR_SUBTOTAL_BG = "FEF9C3"
 COLOR_SUBTOTAL_FG = "1F2937"
 COLOR_TOTAL_BG    = "2C3E50"
@@ -39,6 +39,12 @@ TAB_COLORS = {
     "Fuel":          "F5A623",
     "Materials":     "2DD482",
     "Miscellaneous": "8B5CF6",
+}
+# Light background color used for per-receipt header rows in image sheets
+RECEIPT_HEADER_COLORS = {
+    "Fuel":          "FFF3CC",   # light amber
+    "Materials":     "D4FAE8",   # light green
+    "Miscellaneous": "EDE9FF",   # light purple
 }
 # Amount thresholds mirrored from the model's flagging rules (process_receipts)
 CATEGORY_THRESHOLDS = {"fuel": 200, "mats": 500, "misc": 300}
@@ -383,12 +389,30 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
     ws.row_dimensions[current_row].height = 28
     current_row += 1
 
+    header_fill_color = RECEIPT_HEADER_COLORS.get(sheet_name, "F1F5F9")
+    header_sep = Side(style="medium", color="9CA3AF")
+
     for i, data in enumerate(receipts):
         img_path_str = data.get("_image_path", "")
         filename     = data.get("_new_filename") or data.get("_file") or ""
 
         # Summary row reference (None if pre-calc wasn't provided)
         sr = summary_data_rows[i] if summary_data_rows and i < len(summary_data_rows) else None
+
+        # Colored receipt header row — visually separates each receipt
+        _flood(ws, current_row, _fill(header_fill_color), cols=range(1, LAST_COL + 1))
+        ws.merge_cells(f"A{current_row}:H{current_row}")
+        hdr_label = f"Receipt {i + 1}" + (f"  ·  {filename}" if filename else "")
+        hdr_cell = ws.cell(row=current_row, column=1, value=hdr_label)
+        hdr_cell.fill = _fill(header_fill_color)
+        hdr_cell.font = _font(bold=True, size=10, color="374151")
+        hdr_cell.alignment = _align(h="left", wrap=False)
+        hdr_cell.border = Border(
+            top=header_sep, bottom=Side(style="thin", color="9CA3AF"),
+            left=header_sep, right=header_sep,
+        )
+        ws.row_dimensions[current_row].height = 16
+        current_row += 1
 
         anchors.append(f"A{current_row}")
 
@@ -565,12 +589,20 @@ def build_themed_workbook(
     _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"], subtotal_rows["misc"])
     current_row += 1
 
-    # Muted generated-by footer
+    # Muted generated-by footer — placed in the Summary column so Column A stays narrow
     foot_text = f"Generated {datetime.now().strftime('%B %d, %Y')} by Receipt Processor"
     if build_tag:
         foot_text += f" · build {build_tag}"
-    foot = ws.cell(row=current_row + 1, column=1, value=foot_text)
+    foot_row = current_row + 1
+    foot = ws.cell(row=foot_row, column=COL_SUMMARY, value=foot_text)
     foot.font = _font(size=9, color="8A93A6")
+    foot.alignment = _align(h="left", wrap=False)
+
+    # GitHub hyperlink in the Notes column on the same footer row
+    gh_cell = ws.cell(row=foot_row, column=COL_NOTES, value="github.com/duedev/Reimbursements")
+    gh_cell.hyperlink = "https://github.com/duedev/Reimbursements"
+    gh_cell.font = _font(size=9, color=COLOR_ACCENT)
+    gh_cell.alignment = _align(h="left", wrap=False)
 
     _autosize_columns(ws)
 
