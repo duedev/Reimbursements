@@ -229,7 +229,8 @@ def _safe_receipt_data(data) -> dict:
               "expense_description", "summary", "ai_summary", "_flag", "_category",
               "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
-              "_distill_seconds", "_ocr_engine", "_steps"):
+              "_distill_seconds", "_ocr_engine", "_steps",
+              "_review_required", "_approved"):
         if k in data:
             out[k] = data[k]
     return out
@@ -515,6 +516,10 @@ def _drain_once() -> bool:
                 data["_flag"] = audit_flag
             conf, _ = _compute_confidence(data)
             data["_confidence"] = conf
+            # Auto-flag for review when extraction has issues or low confidence
+            if not data.get("_review_required"):
+                data["_review_required"] = bool(data.get("_flag")) or (conf is not None and conf < 60)
+            data.setdefault("_approved", False)
 
             # Append classify and audit steps to the log
             _pr._append_step(steps, "classify", "Classify", f"category: {category}")
@@ -1158,14 +1163,16 @@ async def check_duplicates():
 
 
 class ManualReceiptRequest(BaseModel):
-    filename:   str
-    vendor:     str = ""
-    date:       str = ""
-    amount:     str = ""
-    category:   str = "misc"
-    job_name:   str = ""
-    job_number: str = ""
-    summary:    str = ""
+    filename:        str
+    vendor:          str = ""
+    date:            str = ""
+    amount:          str = ""
+    category:        str = "misc"
+    job_name:        str = ""
+    job_number:      str = ""
+    summary:         str = ""
+    review_required: bool = False
+    approved:        bool = False
 
 
 @app.post("/results/add-manual")
@@ -1177,23 +1184,32 @@ async def add_manual_result(body: ManualReceiptRequest):
         amt = 0.0
 
     data: dict = {
-        "vendor":       body.vendor.strip() or "Unknown",
-        "date":         body.date.strip(),
-        "amount":       amt,
-        "category":     body.category or "misc",
-        "_category":    body.category or "misc",
-        "job_name":     body.job_name.strip() or _last_context.get("job_name") or None,
-        "job_number":   body.job_number.strip() or _last_context.get("job_number") or None,
-        "ai_summary":   body.summary.strip(),
-        "_flag":        "Manual entry",
-        "_file":        body.filename,
-        "_confidence":  None,
+        "vendor":           body.vendor.strip() or "Unknown",
+        "date":             body.date.strip(),
+        "amount":           amt,
+        "category":         body.category or "misc",
+        "_category":        body.category or "misc",
+        "job_name":         body.job_name.strip() or _last_context.get("job_name") or None,
+        "job_number":       body.job_number.strip() or _last_context.get("job_number") or None,
+        "ai_summary":       body.summary.strip(),
+        "_flag":            "Manual entry",
+        "_file":            body.filename,
+        "_confidence":      None,
+        "_review_required": body.review_required,
+        "_approved":        body.approved,
     }
 
     with _results_lock:
         for r in _results:
             if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                # Preserve fields not managed by this form
+                preserved = {k: r[k] for k in ("_new_filename", "_compressed_file",
+                             "_image_path", "_proc_seconds", "_ocr_seconds",
+                             "_distill_seconds", "_ocr_engine", "_steps", "_raw_ocr")
+                             if k in r}
                 r.update(data)
+                r.update(preserved)
+                data = dict(r)
                 break
         else:
             _results.append(data)
@@ -1503,6 +1519,72 @@ async def update_result(body: UpdateResultRequest):
         "model":    "",
     })
     return JSONResponse({"ok": True, "data": _safe_receipt_data(updated)})
+
+
+# ── Review / approval endpoints ────────────────────────────────────────────────
+
+class ApprovalRequest(BaseModel):
+    filename: str
+    approved: bool
+
+
+@app.post("/results/set-approval")
+async def set_approval(body: ApprovalRequest):
+    """Set or remove approval on a completed receipt."""
+    with _results_lock:
+        target = None
+        for r in _results:
+            if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                target = r
+                break
+        if target is None:
+            return JSONResponse({"ok": False, "error": "Receipt not found"}, status_code=404)
+        target["_approved"] = body.approved
+        updated = dict(target)
+
+    kanban_key = updated.get("_file") or body.filename
+    _update_kanban(kanban_key, "done", updated)
+    _persist_state()
+    _broadcast({
+        "type":     "kanban_update",
+        "filename": kanban_key,
+        "status":   "done",
+        "data":     _safe_receipt_data(updated),
+        "model":    "",
+    })
+    return JSONResponse({"ok": True, "data": _safe_receipt_data(updated)})
+
+
+class ReviewRequiredRequest(BaseModel):
+    filename: str
+    review_required: bool
+
+
+@app.post("/results/set-review-required")
+async def set_review_required_endpoint(body: ReviewRequiredRequest):
+    """Toggle the 'review required' flag on a completed receipt."""
+    with _results_lock:
+        target = None
+        for r in _results:
+            if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                target = r
+                break
+        if target is None:
+            return JSONResponse({"ok": False, "error": "Receipt not found"}, status_code=404)
+        target["_review_required"] = body.review_required
+        updated = dict(target)
+
+    kanban_key = updated.get("_file") or body.filename
+    _update_kanban(kanban_key, "done", updated)
+    _persist_state()
+    _broadcast({
+        "type":     "kanban_update",
+        "filename": kanban_key,
+        "status":   "done",
+        "data":     _safe_receipt_data(updated),
+        "model":    "",
+    })
+    return JSONResponse({"ok": True})
 
 
 @app.post("/results/clear")
@@ -1989,6 +2071,30 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         _save_config(cfg)
         applied = _apply_processing_config(cfg)
         return JSONResponse({"ok": True, **applied})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Review / approval settings ────────────────────────────────────────────────
+
+class ReviewSettingsRequest(BaseModel):
+    require_approval: bool | None = None
+
+
+@app.get("/settings/review")
+async def get_review_settings():
+    cfg = _load_config()
+    return JSONResponse({"require_approval": bool(cfg.get("require_approval", False))})
+
+
+@app.post("/settings/review")
+async def save_review_settings(body: ReviewSettingsRequest):
+    try:
+        cfg = _load_config()
+        if body.require_approval is not None:
+            cfg["require_approval"] = bool(body.require_approval)
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 

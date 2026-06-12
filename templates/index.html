@@ -357,11 +357,29 @@
       max-width: 100%; width: auto; min-width: 70px; box-shadow: var(--ring);
     }
     select.k-edit-input { padding: 2px 4px; }
-    .k-edit-hint {
-      font-size: 9px; color: var(--muted); margin-top: 6px; opacity: 0;
-      transition: opacity 0.15s; user-select: none;
+    .k-review-badge {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 600;
     }
-    .k-card:hover .k-edit-hint { opacity: 0.8; }
+    .k-approved-badge {
+      background: rgba(45,212,130,0.15); color: var(--success);
+      border: 1px solid rgba(45,212,130,0.35);
+    }
+    .k-needs-review-badge {
+      background: rgba(245,166,35,0.15); color: var(--warning);
+      border: 1px solid rgba(245,166,35,0.35);
+    }
+    .k-review-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); font-size: 11px; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .k-review-btn:hover { background: rgba(79,142,247,0.12); border-color: var(--accent); }
+    .k-review-btn.is-approved { border-color: rgba(45,212,130,0.45); color: var(--success); }
+    .k-card.status-done.needs-review { border-left-color: var(--warning); }
+    .k-card.status-done.is-approved  { border-left-color: var(--success); }
     .k-card.status-done    { border-left: 3px solid var(--success); }
     .k-card.status-failed  { border-left: 3px solid var(--danger); }
     .k-card.status-ocr     { border-left: 3px solid var(--accent); }
@@ -1306,6 +1324,19 @@
         <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
       </div>
 
+      <!-- Approval workflow -->
+      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Approval workflow</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+          When enabled, you'll be warned before generating a spreadsheet if any completed receipts haven't been approved via the Review &amp; Approve button on each card.
+        </p>
+        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
+          <input type="checkbox" id="require-approval" style="width:auto">
+          Require approval before export <span style="color:var(--muted)">— warn when unapproved receipts exist</span>
+        </label>
+        <div style="margin-top:8px"><span id="review-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved &#10003;</span></div>
+      </div>
+
       <!-- Email delivery -->
       <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
         <div style="font-size:13px;font-weight:600;margin-bottom:4px">Email delivery</div>
@@ -1374,9 +1405,11 @@
 <!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="manual-review-modal">
   <div class="modal-box">
-    <h3>&#9998; Manual Review</h3>
-    <p class="modal-sub">Automatic extraction was incomplete for <strong id="mr-filename-label"></strong>.
-      Fill in what you know — all fields optional. The entry will be flagged as a manual review.</p>
+    <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
+    <p class="modal-sub" id="mr-modal-sub">Review the extracted data for <strong id="mr-filename-label"></strong>.</p>
+    <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
+      &#10003; This receipt is approved
+    </div>
     <div class="mr-preview-wrap" id="mr-preview-wrap" style="display:none">
       <img id="mr-preview-img" class="mr-preview" src="" alt="Receipt image">
     </div>
@@ -1398,8 +1431,13 @@
       Summary
       <input type="text" id="mr-summary" placeholder="Brief description of purchase">
     </div>
-    <div class="btn-row">
-      <button class="btn btn-success" id="mr-save-btn">Save to Results</button>
+    <div style="margin:12px 0 4px;display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="mr-review-required" style="width:auto;cursor:pointer">
+      <label for="mr-review-required" style="font-weight:400;font-size:12px;color:var(--muted);cursor:pointer">Mark as requiring review</label>
+    </div>
+    <div class="btn-row" style="flex-wrap:wrap;gap:8px">
+      <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
+      <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
       <button class="btn" id="mr-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
     </div>
   </div>
@@ -1605,7 +1643,9 @@ window.toggleStepLog = function(e, filename) {
 function makeCard(filename, status, data, model, errorMsg, steps) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
-  div.className = `k-card status-${status}`;
+  const isApproved     = status === 'done' && data && data._approved;
+  const needsReview    = status === 'done' && data && data._review_required && !data._approved;
+  div.className = `k-card status-${status}${isApproved ? ' is-approved' : ''}${needsReview ? ' needs-review' : ''}`;
   if (data && data.date) div.dataset.date = data.date;
 
   let inner = `<div class="k-filename">${esc(filename)}</div>`;
@@ -1617,25 +1657,22 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   if (data && data._confidence != null) inner += confBadge(data._confidence);
   if (data && data._amount_verified === true)
     inner += `<span class="k-verified" title="Amount cross-checked against OCR text">&#10003; verified</span>`;
+  if (isApproved)
+    inner += `<span class="k-review-badge k-approved-badge">&#10003; Approved</span>`;
+  else if (needsReview)
+    inner += `<span class="k-review-badge k-needs-review-badge">&#9873; Needs Review</span>`;
   inner += `</div>`;
 
   if (data && data.vendor) {
-    const editable = status === 'done';
-    const ed = (field, content) => editable
-      ? `<span class="k-edit" title="Click to edit" onclick="startInlineEdit(event,this,'${esc(filename)}','${field}')">${content}</span>`
-      : content;
     const cat = (data._category || data.category || 'misc').toLowerCase();
-    const catHtml = editable
-      ? `<span class="k-edit" title="Click to change category" onclick="startInlineEdit(event,this,'${esc(filename)}','category')">${catBadge(cat)}</span>`
-      : catBadge(cat);
-    inner += `<div class="k-vendor">${ed('vendor', esc(data.vendor))} ${catHtml}</div>`;
+    inner += `<div class="k-vendor">${esc(data.vendor)} ${catBadge(cat)}</div>`;
     const amtStr = data.amount != null
-      ? ` &bull; ${ed('amount', `<span class="k-amount">$${parseFloat(data.amount).toFixed(2)}</span>`)}`
-      : (editable ? ` &bull; ${ed('amount', '<span class="k-amount">$—</span>')}` : '');
-    inner += `<div class="k-meta">${ed('date', esc(data.date || (editable ? 'no date' : '')))}${amtStr}</div>`;
+      ? ` &bull; <span class="k-amount">$${parseFloat(data.amount).toFixed(2)}</span>`
+      : '';
+    inner += `<div class="k-meta">${esc(data.date || '')}${amtStr}</div>`;
     const summaryText = data.summary || data.ai_summary;
-    if (summaryText || editable) {
-      inner += `<div class="k-summary">${ed('ai_summary', `"${esc(summaryText || 'add summary…')}"`)}</div>`;
+    if (summaryText) {
+      inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
     if (status === 'done' && data._proc_seconds) {
@@ -1654,15 +1691,14 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
     inner += `<button class="k-retry-btn" onclick="retryReceipt('${esc(filename)}')">&#8635; Retry</button>`;
-    inner += `<button class="k-create-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Create</button>`;
+    inner += `<button class="k-review-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Review</button>`;
     inner += `</div>`;
   }
 
   if (status === 'done') {
-    inner += `<div style="margin-top:6px">`;
-    inner += `<button class="k-create-btn" onclick="openManualReview('${esc(filename)}')">&#9998; Edit All</button>`;
+    inner += `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">`;
+    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${esc(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
     inner += `</div>`;
-    inner += `<div class="k-edit-hint">Tip: click any field to edit it in place</div>`;
   }
 
   // Step log toggle — shown whenever there are recorded processing steps
@@ -1960,6 +1996,14 @@ async function _doGenerate(excludeFilenames = []) {
 }
 
 generateBtn.addEventListener('click', async () => {
+  // Warn if approval is required and some receipts are unapproved
+  if (document.getElementById('require-approval')?.checked) {
+    const unapproved = Object.values(receiptCards)
+      .filter(c => c.status === 'done' && !c.data?._approved);
+    if (unapproved.length > 0) {
+      if (!confirm(`${unapproved.length} receipt(s) have not been approved yet.\n\nGenerate the spreadsheet anyway?`)) return;
+    }
+  }
   // Check for duplicates before generating
   try {
     const res  = await fetch('/results/check-duplicates');
@@ -2115,9 +2159,15 @@ window.openManualReview = function(filename) {
   _mrFilename = filename;
   document.getElementById('mr-filename-label').textContent = filename;
   const card = receiptCards[filename];
-  const isEdit = card?.status === 'done';
-  document.querySelector('#manual-review-modal h3').textContent = isEdit ? '✎ Edit Receipt' : '✎ Manual Review';
+  const isDone = card?.status === 'done';
+  const isFailed = card?.status === 'failed';
   const data = card?.data || {};
+
+  document.getElementById('mr-modal-title').textContent = isDone ? '✎ Review & Approve' : '✎ Manual Review';
+  document.getElementById('mr-modal-sub').innerHTML = isDone
+    ? `Review, edit, and approve the receipt for <strong>${esc(filename)}</strong>.`
+    : `Automatic extraction was incomplete for <strong>${esc(filename)}</strong>. Fill in what you know — all fields optional.`;
+
   document.getElementById('mr-vendor').value     = data.vendor     || '';
   document.getElementById('mr-date').value       = toDateInputValue(data.date || '');
   document.getElementById('mr-amount').value     = data.amount != null ? data.amount : '';
@@ -2125,6 +2175,31 @@ window.openManualReview = function(filename) {
   document.getElementById('mr-job-name').value   = data.job_name   || '';
   document.getElementById('mr-job-number').value = data.job_number || '';
   document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
+  document.getElementById('mr-review-required').checked = !!data._review_required;
+
+  // Approval state
+  const approveBtn   = document.getElementById('mr-approve-btn');
+  const approvalBanner = document.getElementById('mr-approval-banner');
+  if (isDone) {
+    approveBtn.style.display = '';
+    if (data._approved) {
+      approvalBanner.style.display = '';
+      approveBtn.textContent = '✗ Remove Approval';
+      approveBtn.className = 'btn';
+      approveBtn.style.cssText = 'background:rgba(244,86,106,0.1);border-color:rgba(244,86,106,0.4);color:var(--danger)';
+    } else {
+      approvalBanner.style.display = 'none';
+      approveBtn.textContent = '✓ Approve';
+      approveBtn.className = 'btn btn-success';
+      approveBtn.style.cssText = '';
+    }
+  } else {
+    approveBtn.style.display = 'none';
+    approvalBanner.style.display = 'none';
+  }
+
+  // Save button label
+  document.getElementById('mr-save-btn').textContent = isDone ? 'Save Changes' : 'Save to Results';
 
   // Load receipt image preview — prefer renamed output, fall back to compressed or original
   const imgFile = data._new_filename || data._compressed_file || data._file || filename;
@@ -2142,30 +2217,38 @@ document.getElementById('mr-cancel-btn').addEventListener('click', () => {
   document.getElementById('manual-review-modal').classList.add('hidden');
 });
 
+function _mrFormBody(overrides = {}) {
+  const card = receiptCards[_mrFilename];
+  return {
+    filename:        _mrFilename,
+    vendor:          document.getElementById('mr-vendor').value.trim(),
+    date:            document.getElementById('mr-date').value.trim(),
+    amount:          document.getElementById('mr-amount').value.trim(),
+    category:        document.getElementById('mr-category').value,
+    job_name:        document.getElementById('mr-job-name').value.trim(),
+    job_number:      document.getElementById('mr-job-number').value.trim(),
+    summary:         document.getElementById('mr-summary').value.trim(),
+    review_required: document.getElementById('mr-review-required').checked,
+    approved:        !!(card?.data?._approved),
+    ...overrides,
+  };
+}
+
 document.getElementById('mr-save-btn').addEventListener('click', async () => {
   const btn = document.getElementById('mr-save-btn');
+  const origLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Saving…';
   try {
     const res = await fetch('/results/add-manual', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filename:   _mrFilename,
-        vendor:     document.getElementById('mr-vendor').value.trim(),
-        date:       document.getElementById('mr-date').value.trim(),
-        amount:     document.getElementById('mr-amount').value.trim(),
-        category:   document.getElementById('mr-category').value,
-        job_name:   document.getElementById('mr-job-name').value.trim(),
-        job_number: document.getElementById('mr-job-number').value.trim(),
-        summary:    document.getElementById('mr-summary').value.trim(),
-      }),
+      body: JSON.stringify(_mrFormBody()),
     });
     const d = await res.json();
     if (d.ok) {
       document.getElementById('manual-review-modal').classList.add('hidden');
-      showToast(`${_mrFilename} added to results`, true);
-      // SSE kanban_update will move the card to done
+      showToast(`${_mrFilename} saved`, true);
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
@@ -2173,7 +2256,33 @@ document.getElementById('mr-save-btn').addEventListener('click', async () => {
     showToast(`Error: ${err.message}`, false);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Save to Results';
+    btn.textContent = origLabel;
+  }
+});
+
+document.getElementById('mr-approve-btn').addEventListener('click', async () => {
+  const card = receiptCards[_mrFilename];
+  const isCurrentlyApproved = !!(card?.data?._approved);
+  const newApproved = !isCurrentlyApproved;
+  const btn = document.getElementById('mr-approve-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/results/add-manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_mrFormBody({ approved: newApproved })),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      document.getElementById('manual-review-modal').classList.add('hidden');
+      showToast(newApproved ? `&#10003; ${_mrFilename} approved` : `Approval removed`, newApproved);
+    } else {
+      showToast(`Error: ${d.error || 'unknown'}`, false);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -2554,8 +2663,32 @@ async function loadSettings() {
   } catch (_) {}
   loadSchedule();
   loadProcessingSettings();
+  loadReviewSettings();
   loadEmailSettings();
 }
+
+// ── Review / approval settings ────────────────────────────────────────────────
+async function loadReviewSettings() {
+  try {
+    const d = await (await fetch('/settings/review')).json();
+    document.getElementById('require-approval').checked = !!d.require_approval;
+  } catch (_) {}
+}
+
+document.getElementById('require-approval').addEventListener('change', async () => {
+  try {
+    const res = await fetch('/settings/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ require_approval: document.getElementById('require-approval').checked }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      const msg = document.getElementById('review-saved-msg');
+      msg.style.opacity = '1';
+      setTimeout(() => { msg.style.opacity = '0'; }, 1800);
+    }
+  } catch (_) {}
+});
 
 // ── Image-processing settings ─────────────────────────────────────────────────
 async function loadProcessingSettings() {
