@@ -29,10 +29,10 @@
       --ring:     0 0 0 3px rgba(79,142,247,0.25);
     }
     [data-theme="light"] {
-      --bg:       #eef2f8;
-      --surface:  #ffffff;
-      --surface2: #f6f8fc;
-      --border:   #d4dce8;
+      --bg:       #dde4ee;
+      --surface:  #edf1f7;
+      --surface2: #e4eaf3;
+      --border:   #aab6c8;
       --accent:   #2563eb;
       --accent-h: #1d4ed8;
       --accent-2: #7c3aed;
@@ -42,20 +42,20 @@
       --text:     #0f172a;
       --muted:    #5b6b82;
       --amber:    #b45309;
-      --shadow:   0 4px 24px rgba(15,23,42,0.08);
-      --shadow-sm:0 2px 8px rgba(15,23,42,0.06);
+      --shadow:   0 4px 24px rgba(15,23,42,0.10);
+      --shadow-sm:0 2px 8px rgba(15,23,42,0.08);
       --ring:     0 0 0 3px rgba(37,99,235,0.18);
     }
     [data-theme="light"] input[type=text], [data-theme="light"] select {
-      background: #ffffff; color: #0f172a;
+      background: #e8edf6; color: #0f172a; border-color: var(--border);
     }
-    [data-theme="light"] select option { background: #ffffff; }
-    [data-theme="light"] #log { background: rgba(0,0,0,0.05); color: #334155; }
-    [data-theme="light"] .k-card { background: #f8fafc; }
-    [data-theme="light"] .toast-ok  { background: #dcfce7; color: #166534; }
-    [data-theme="light"] .toast-err { background: #fee2e2; color: #991b1b; }
-    [data-theme="light"] .modal-box { background: var(--surface); }
-    [data-theme="light"] .saved-manage-panel { background: #f1f5f9; }
+    [data-theme="light"] select option { background: #edf1f7; }
+    [data-theme="light"] #log { background: rgba(0,0,0,0.07); color: #2d3a4a; }
+    [data-theme="light"] .k-card { background: #e8edf6; border-color: var(--border); }
+    [data-theme="light"] .toast-ok  { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+    [data-theme="light"] .toast-err { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    [data-theme="light"] .modal-box { background: #edf1f7; border: 1px solid var(--border); }
+    [data-theme="light"] .saved-manage-panel { background: #e0e7f0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -654,9 +654,17 @@
     }
     .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
     .theme-toggle svg { width: 14px; height: 14px; }
-    .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 10px; transition: color 0.15s; }
+    .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; transition: color 0.15s; }
     .gh-link:hover { color: var(--text); }
     .gh-link svg { width: 20px; height: 20px; }
+    .tutorial-link {
+      display: inline-flex; align-items: center; gap: 5px;
+      color: var(--muted); margin-right: 10px;
+      font-size: 12px; font-weight: 500; text-decoration: none;
+      border: 1px solid var(--border); border-radius: 7px;
+      padding: 4px 9px; transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .tutorial-link:hover { color: var(--accent); border-color: var(--accent); background: rgba(37,99,235,0.06); }
 
     /* Section collapse */
     .section-toggle {
@@ -769,6 +777,12 @@
   <h1>Receipt <span>Processor</span>
     <span class="tagline">Local-AI expense reports — nothing leaves your machine</span>
   </h1>
+  <a class="tutorial-link" href="https://github.com/duedev/Reimbursements/blob/main/TUTORIAL.md" target="_blank" rel="noopener" title="Non-technical usage guide">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+    </svg>
+    Tutorial
+  </a>
   <a class="gh-link" href="https://github.com/duedev/Reimbursements" target="_blank" rel="noopener" title="View source on GitHub">
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
@@ -1631,10 +1645,12 @@ function connectSSE() {
       if (msg.status === 'done' || msg.status === 'failed') scheduleStats();
 
     } else if (msg.type === 'batch_done') {
+      const prevCompleted = completedCount;
       completedCount = msg.completed || 0;
       _updateQueueBadge(msg.pending || 0);
       _updateGenerateCard();
-      if (completedCount > 0) {
+      const newlyDone = completedCount - prevCompleted;
+      if (newlyDone > 0) {
         showToast(`Batch complete — ${completedCount} receipt(s) ready`, true);
         celebrate();
       }
