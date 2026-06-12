@@ -29,7 +29,18 @@ def _patch(mod, attr):
         pass  # C extension — apply patch defensively
     class _C(orig):
         def __init__(self, *a, **kw): super().__init__()
+    _C.__name__ = orig.__name__
+    _C.__qualname__ = orig.__qualname__
     setattr(mod, attr, _C)
+    import sys
+    for _m in list(sys.modules.values()):
+        if _m is None or _m is mod:
+            continue
+        try:
+            if getattr(_m, attr, None) is orig:
+                setattr(_m, attr, _C)
+        except Exception:
+            pass
 
 try:
     import paddle.inference as _pi; _patch(_pi, 'PaddlePredictorOption')
