@@ -119,21 +119,35 @@
     .tab-panel { display: grid; gap: 20px; }
     .tab-panel.hidden { display: none; }
 
-    /* Side-by-side card pairs on wide screens */
-    .row-2col { display: grid; gap: 20px; align-items: start; }
-    @media (min-width: 1100px) { .row-2col { grid-template-columns: 1fr 1fr; } }
+    /* Visually hidden but still focusable — keyboard access to the file input */
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
 
-    /* Host folder paths banner */
+    /* Visible keyboard focus everywhere */
+    button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+
+    /* Host folder paths banner — quiet chips below the header */
     .paths-banner {
       max-width: 1280px; margin: 14px auto 0; padding: 0 18px;
-      display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center;
+      display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
       font-size: 12px; color: var(--muted);
     }
-    .paths-banner .path-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .paths-banner .path-item {
+      display: flex; align-items: center; gap: 7px; min-width: 0;
+      background: color-mix(in srgb, var(--surface) 70%, transparent);
+      border: 1px solid var(--border); border-radius: 99px; padding: 4px 6px 4px 12px;
+    }
+    .paths-banner .path-item svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.8; }
     .paths-banner code {
-      cursor: pointer; text-decoration: underline dotted;
+      cursor: pointer; text-decoration: underline dotted; font-family: ui-monospace, monospace;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
     }
+    .paths-banner code:hover { color: var(--text); }
+    .paths-banner .copy-btn { border-radius: 99px; }
 
     .card {
       background: var(--surface);
@@ -161,11 +175,11 @@
       display: flex; align-items: center; gap: 14px;
     }
     #drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    #drop-zone:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
     #drop-zone svg { width: 28px; height: 28px; color: var(--muted); flex-shrink: 0; }
     #drop-zone .dz-text { display: flex; flex-direction: column; gap: 2px; }
     #drop-zone p { color: var(--muted); font-size: 13px; margin: 0; }
     #drop-zone p strong { color: var(--text); }
-    #drop-zone input { display: none; }
 
     /* Upload + generate side-by-side row */
     .upload-generate-row {
@@ -192,6 +206,11 @@
 
     /* File list */
     #file-list { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
+    #file-list:empty { display: none; }  /* no dead space below the buttons when nothing is selected */
+
+    /* Intake-folder hint row */
+    .intake-note { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; }
+    .intake-note strong { color: var(--text); font-variant-numeric: tabular-nums; }
     .file-item {
       display: flex; align-items: center; gap: 10px;
       background: rgba(255,255,255,0.04); border-radius: 7px;
@@ -240,6 +259,26 @@
     }
     .btn-success:not(:disabled):hover { filter: brightness(1.08); box-shadow: 0 4px 16px rgba(45,212,130,0.4); }
     .btn-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+    /* Button sizes — one scale instead of per-button inline styles */
+    .btn-md { height: 38px; padding: 0 18px; font-size: 14px; }
+    .btn-sm { height: 32px; padding: 0 13px; font-size: 12.5px; border-radius: 8px; }
+
+    /* Quiet outline variants for secondary / contextual actions */
+    .btn-outline-accent {
+      background: rgba(79,142,247,0.12); border: 1px solid var(--accent); color: var(--accent);
+    }
+    .btn-outline-accent:not(:disabled):hover { background: rgba(79,142,247,0.22); }
+    .btn-outline-amber {
+      background: rgba(217,119,6,0.12); border: 1px solid var(--amber); color: var(--amber);
+    }
+    .btn-outline-amber:not(:disabled):hover { background: rgba(217,119,6,0.22); }
+    .btn-outline-danger {
+      background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.35); color: var(--danger);
+    }
+    .btn-outline-danger:not(:disabled):hover { background: rgba(239,68,68,0.2); }
+    .btn-neutral { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+    .btn-neutral:not(:disabled):hover { border-color: var(--accent); }
 
     /* Progress */
     .progress-wrap { background: rgba(255,255,255,0.07); border-radius: 99px; height: 8px; overflow: hidden; }
@@ -320,6 +359,7 @@
       transition: color 0.15s, background 0.15s;
     }
     .col-folder-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+    .col-folder-btn svg { width: 13px; height: 13px; display: block; }
     .kanban-cards {
       padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 60px;
       max-height: 560px; overflow-y: auto;
@@ -328,6 +368,21 @@
     .kanban-cards::-webkit-scrollbar { width: 8px; }
     .kanban-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
     .kanban-cards::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* Empty-state hints so blank columns explain themselves */
+    .kanban-cards:empty::after {
+      content: "Empty"; display: block; text-align: center;
+      padding: 20px 10px; font-size: 11px; color: var(--muted); opacity: 0.65;
+    }
+    .kanban-col:nth-child(1) .kanban-cards:empty::after { content: "Waiting for new receipts"; }
+    .kanban-col:nth-child(2) .kanban-cards:empty::after { content: "Nothing processing"; }
+    .kanban-col:nth-child(3) .kanban-cards:empty::after { content: "Finished receipts land here"; }
+    .kanban-col:nth-child(4) .kanban-cards:empty::after { content: "No failures"; }
+
+    /* Card head: title + contextual toolbar on one row */
+    .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    .card-head .card-title { margin-bottom: 0; cursor: pointer; flex: 1; min-width: 160px; }
+    .card-head .board-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .k-proc-time { margin-top: 4px; font-size: 10.5px; color: var(--muted); }
     .saved-time-stat { cursor: pointer; }
     .saved-time-stat:hover { filter: brightness(1.25); text-decoration: underline dotted; }
@@ -717,6 +772,42 @@
     }
     .tutorial-link:hover { color: var(--accent); border-color: var(--accent); background: rgba(37,99,235,0.06); }
 
+    /* LM Studio connection chip — always-visible engine health */
+    .lm-chip {
+      display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+      background: none; border: 1px solid var(--border); border-radius: 99px;
+      color: var(--muted); font-size: 12px; font-weight: 500; padding: 5px 12px;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+    }
+    .lm-chip:hover { color: var(--text); border-color: var(--accent); }
+    .lm-chip .lm-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .lm-chip[data-state="ok"]   .lm-dot { background: var(--success); }
+    .lm-chip[data-state="warn"] .lm-dot { background: var(--warning); }
+    .lm-chip[data-state="err"]  .lm-dot { background: var(--danger); }
+
+    /* Settings sections — shared heading / description rhythm */
+    .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
+    .section-desc strong { color: var(--text); }
+    .inline-code {
+      font-size: 11px; font-family: ui-monospace, monospace;
+      background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;
+    }
+    [data-theme="light"] .inline-code { background: rgba(15,23,42,0.08); }
+    .check-label { display: flex; align-items: center; gap: 8px; flex-direction: row; font-weight: 400; cursor: pointer; }
+    .check-label input[type=checkbox] { width: auto; accent-color: var(--accent); }
+    .action-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .status-note { font-size: 12px; color: var(--muted); }
+
+    /* Field label with a trailing manage button */
+    .field-label-row { display: flex; align-items: center; gap: 2px; }
+
+    /* Form grid variants (replaces brittle inline grid styles) */
+    .fields-2col { grid-template-columns: 1fr 1fr; }
+    .fields-21   { grid-template-columns: 2fr 1fr; }
+    .fields-1col { grid-template-columns: 1fr; }
+    .fields-auto { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
     /* Section collapse */
     .section-toggle {
       background: none; border: none; color: var(--muted); cursor: pointer;
@@ -852,8 +943,12 @@
       .insights-grid { grid-template-columns: 1fr 1fr; }
 
       /* Settings form grids */
-      .fields[style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
+      .fields-2col, .fields-21 { grid-template-columns: 1fr; }
       .modal-fields { grid-template-columns: 1fr !important; }
+
+      /* Header LM Studio chip — dot only */
+      .lm-chip .lm-text { display: none; }
+      .lm-chip { padding: 5px 8px; }
 
       /* Btn row wrapping */
       .btn-row { gap: 8px; }
@@ -874,6 +969,17 @@
       .k-dismiss-btn { opacity: 0.7; }
       .k-edit-hint { display: none; }
     }
+
+    /* Respect reduced-motion preferences */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .confetti-bit { display: none; }
+      html { scroll-behavior: auto; }
+    }
   </style>
 </head>
 <body>
@@ -888,6 +994,11 @@
   <h1>Receipt <span>Processor</span>
     <span class="tagline">Local-AI expense reports — nothing leaves your machine</span>
   </h1>
+  <button class="lm-chip" id="lm-status-chip" data-state="" onclick="switchTab('settings')"
+          title="LM Studio connection — click to open model settings">
+    <span class="lm-dot"></span>
+    <span class="lm-text" id="lm-status-text">Checking AI engine…</span>
+  </button>
   <a class="tutorial-link" href="https://github.com/duedev/Reimbursements/blob/main/TUTORIAL.md" target="_blank" rel="noopener" title="Non-technical usage guide">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13" aria-hidden="true">
       <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
@@ -899,7 +1010,7 @@
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
     </svg>
   </a>
-  <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
+  <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode" onclick="toggleTheme()">
     <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
     </svg>
@@ -915,22 +1026,36 @@
 
 <!-- Host folder paths — the real folders on your computer -->
 <div class="paths-banner" id="paths-banner">
-  <span class="path-item">&#128194; Drop receipts in:
+  <span class="path-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+    </svg>
+    Drop receipts in:
     <code id="watch-folder-path" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
-    <button class="copy-btn" id="open-watch-folder-btn" title="Open folder">Open</button>
+    <button class="copy-btn" id="open-watch-folder-btn" title="Open intake folder" aria-label="Open intake folder">Open</button>
   </span>
-  <span class="path-item">&#128202; Reports:
+  <span class="path-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-6m4 6V7m4 10v-3M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+    </svg>
+    Reports:
     <code id="folder-path" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
-    <button class="copy-btn" id="open-folder-btn" title="Open folder">Open</button>
+    <button class="copy-btn" id="open-folder-btn" title="Open reports folder" aria-label="Open reports folder">Open</button>
   </span>
-  <span class="path-item hidden" id="export-path-item">&#9729;&#65039; Auto-export:
+  <span class="path-item hidden" id="export-path-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
+    </svg>
+    Auto-export:
     <code id="export-folder-path" title="Click to copy" onclick="copyFolderPath('export-folder-path')">—</code>
   </span>
 </div>
 
-<nav class="tab-bar">
-  <button class="tab-btn active" data-tab="workspace" onclick="switchTab('workspace')">Workspace</button>
-  <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">Settings</button>
+<nav class="tab-bar" role="tablist" aria-label="Main sections">
+  <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-workspace"
+          data-tab="workspace" onclick="switchTab('workspace')">Workspace</button>
+  <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-settings"
+          data-tab="settings" onclick="switchTab('settings')">Settings</button>
 </nav>
 
 <main>
@@ -973,29 +1098,35 @@
     </div>
   </div>
 
-  <!-- Employee / Job details — compact, dynamic row -->
-  <div class="card" id="details-card" style="padding:10px 16px">
-    <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 14px;margin:0">
+  <!-- Employee / Job details — who and what the report is for -->
+  <div class="card" id="details-card" style="padding:16px 20px">
+    <div class="card-title" style="margin-bottom:10px">Report Details
+      <span style="font-weight:400;text-transform:none;letter-spacing:0">— used in the report header &amp; file name; entries are remembered</span>
+    </div>
+    <div class="fields fields-auto" style="gap:10px 14px;margin:0">
       <label style="margin:0">
-        Employee Name
-        <button class="manage-saved-btn" type="button" title="Manage saved employees"
-                onclick="toggleManagePanel('manage-panel-employees','saved_employees')">&#9998;</button>
+        <span class="field-label-row">Employee Name
+          <button class="manage-saved-btn" type="button" title="Manage saved employees" aria-label="Manage saved employees"
+                  onclick="toggleManagePanel('manage-panel-employees','saved_employees')">&#9998;</button>
+        </span>
         <input type="text" id="employee" value="Duane Hamilton" placeholder="Employee Name" list="employees-list" autocomplete="off">
         <datalist id="employees-list"></datalist>
         <div class="saved-manage-panel hidden" id="manage-panel-employees"></div>
       </label>
       <label style="margin:0">
-        Job Name
-        <button class="manage-saved-btn" type="button" title="Manage saved job names"
-                onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
+        <span class="field-label-row">Job Name
+          <button class="manage-saved-btn" type="button" title="Manage saved job names" aria-label="Manage saved job names"
+                  onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
+        </span>
         <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
         <datalist id="job-names-list"></datalist>
         <div class="saved-manage-panel hidden" id="manage-panel-jobnames"></div>
       </label>
       <label style="margin:0">
-        Job Number
-        <button class="manage-saved-btn" type="button" title="Manage saved job numbers"
-                onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
+        <span class="field-label-row">Job Number
+          <button class="manage-saved-btn" type="button" title="Manage saved job numbers" aria-label="Manage saved job numbers"
+                  onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
+        </span>
         <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
         <datalist id="job-numbers-list"></datalist>
         <div class="saved-manage-panel hidden" id="manage-panel-jobnumbers"></div>
@@ -1008,9 +1139,9 @@
 
   <!-- Upload card (compact) -->
   <div class="card" id="upload-card">
-    <div class="card-title">Receipt Images</div>
+    <div class="card-title">Add Receipts</div>
     <label id="drop-zone" for="file-input">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
@@ -1020,21 +1151,25 @@
         <p class="dz-mobile"><strong>Tap to select receipts</strong></p>
         <p class="dz-mobile" style="font-size:12px">JPG, PNG, WEBP, PDF supported</p>
       </div>
-      <input type="file" id="file-input" multiple accept="image/*,.pdf,application/pdf">
+      <input type="file" id="file-input" class="sr-only" multiple accept="image/*,.pdf,application/pdf"
+             aria-label="Choose receipt images or PDFs">
     </label>
     <!-- Add to Queue always stays at the top of the file section -->
-    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
-      <button class="btn btn-primary" id="process-btn" disabled style="height:38px;padding:0 18px;font-size:14px">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-md" id="process-btn" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
         </svg>
         Add to Queue
       </button>
-      <span style="font-size:12px;color:var(--muted)">
-        <span class="watch-count" id="intake-count" style="font-size:13px">—</span> in intake
+      <span class="status-note" id="file-count-note"></span>
+      <span class="intake-note hidden" id="intake-row">
+        <span><strong id="intake-count">0</strong> waiting in intake folder</span>
+        <button class="btn btn-outline-accent btn-sm" id="queue-intake-btn"
+                title="Add every file currently in the intake folder to the queue">Queue intake files</button>
       </span>
-      <button class="btn btn-amber hidden" id="send-email-btn" style="margin-left:auto;height:32px;padding:0 12px;font-size:12px">
-        &#9993; Send Report Now
+      <button class="btn btn-amber btn-sm hidden" id="send-email-btn" style="margin-left:auto">
+        Send Report Now
       </button>
     </div>
     <div id="file-list"></div>
@@ -1042,35 +1177,34 @@
 
   <!-- Generate spreadsheet card (shown when completed results exist) -->
   <div class="card hidden" id="generate-card">
-    <div class="card-title">Generate Spreadsheet</div>
+    <div class="card-title">Export Report</div>
     <div class="gen-summary" id="gen-summary"></div>
     <div class="btn-row">
       <button class="btn btn-success" id="generate-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
         </svg>
         Generate Spreadsheet
       </button>
-      <button class="btn" id="export-csv-btn"
-              style="background:rgba(79,142,247,0.15);border:1px solid var(--accent);color:var(--accent)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <button class="btn btn-outline-accent btn-md" id="export-csv-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
         </svg>
         Export CSV
       </button>
-      <button class="btn" id="reset-btn"
-              style="background:rgba(217,119,6,0.15);border:1px solid var(--amber);color:var(--amber)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <button class="btn btn-outline-amber btn-md" id="reset-btn"
+              title="Clear all completed receipts and start over">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
         New Batch
       </button>
     </div>
     <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;cursor:pointer">
-        <input type="checkbox" id="require-approval" style="width:auto;cursor:pointer" checked>
+      <label class="check-label" style="font-size:12px">
+        <input type="checkbox" id="require-approval" checked>
         Require review &amp; approval
         <span style="color:var(--muted)">— block generation until every completed receipt is approved</span>
       </label>
@@ -1078,7 +1212,7 @@
     </div>
     <div class="hidden" id="download-row" style="margin-top:14px">
       <a class="btn btn-success" id="download-btn" href="#" download>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
         </svg>
@@ -1089,56 +1223,62 @@
 
   </div><!-- /upload-generate-row -->
 
-  <!-- Queue control buttons -->
-  <div class="btn-row">
-    <button class="btn" id="stop-btn" style="background:#374151;border:1px solid var(--danger);color:var(--danger);display:none">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="4" y="4" width="16" height="16" rx="2"/>
-      </svg>
-      Cancel Queue
-    </button>
-    <button class="btn btn-unstick hidden" id="unstick-btn" style="height:38px" title="Push the queue: restart the worker and re-queue anything that isn't moving">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-      </svg>
-      Nudge Queue
-    </button>
-    <button class="btn btn-danger hidden" id="clear-board-btn" style="height:38px;padding:0 16px;font-size:13px" title="Clear all kanban items and reset the board">
-      &#10005; Clear Board
-    </button>
-    <span id="status-badge" class="status-badge hidden"></span>
-    <span id="queue-badge" style="font-size:12px;color:var(--muted);display:none">
-      <span id="queue-pending-count">0</span> pending
-    </span>
-  </div>
-
   <!-- Kanban board (hidden until processing starts) -->
   <div class="card hidden" id="kanban-card">
-    <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('kanban-body','kanban-toggle')">
-      Receipt Progress
-      <button class="section-toggle" id="kanban-toggle" tabindex="-1">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
+    <div class="card-head">
+      <div class="card-title" onclick="toggleSection('kanban-body','kanban-toggle')">
+        Receipt Progress
+        <button class="section-toggle" id="kanban-toggle" tabindex="-1" aria-label="Collapse section">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+      </div>
+      <!-- Queue controls live with the board they act on -->
+      <div class="board-toolbar">
+        <span id="queue-badge" class="status-note" style="display:none">
+          <span id="queue-pending-count">0</span> pending
+        </span>
+        <span id="status-badge" class="status-badge hidden"></span>
+        <button class="btn btn-unstick btn-md hidden" id="unstick-btn" title="Push the queue: restart the worker and re-queue anything that isn't moving">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+          Nudge Queue
+        </button>
+        <button class="btn btn-outline-danger btn-md" id="stop-btn" style="display:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+          </svg>
+          Cancel Queue
+        </button>
+        <button class="btn btn-danger btn-md hidden" id="clear-board-btn" title="Clear all kanban items and reset the board">
+          &#10005; Clear Board
+        </button>
+      </div>
     </div>
     <div id="kanban-body">
     <div class="board-search">
-      <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)" autocomplete="off">
-      <span class="search-count" id="board-search-count"></span>
+      <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)"
+             autocomplete="off" aria-label="Search receipts" title="Press / to focus">
+      <span class="search-count" id="board-search-count" aria-live="polite"></span>
     </div>
     <div class="kanban-board">
       <div class="kanban-col">
         <div class="kanban-col-header">
           Queued <span class="col-count" id="cnt-queued">0</span>
-          <button class="col-folder-btn" title="Open intake folder" onclick="openKanbanFolder('intake')">&#128193;</button>
+          <button class="col-folder-btn" title="Open intake folder" aria-label="Open intake folder" onclick="openKanbanFolder('intake')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          </button>
         </div>
         <div class="kanban-cards" id="col-queued"></div>
       </div>
       <div class="kanban-col">
         <div class="kanban-col-header">
           Processing <span class="col-count" id="cnt-processing">0</span>
-          <button class="col-folder-btn" title="Open processing folder" onclick="openKanbanFolder('processing')">&#128193;</button>
+          <button class="col-folder-btn" title="Open processing folder" aria-label="Open processing folder" onclick="openKanbanFolder('processing')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          </button>
         </div>
         <div class="kanban-cards" id="col-processing"></div>
       </div>
@@ -1146,14 +1286,18 @@
         <div class="kanban-col-header">
           Completed <span class="col-count" id="cnt-completed">0</span>
           <span id="cnt-to-approve" style="display:none;font-size:11px;font-weight:600;color:var(--warning);margin-left:6px;background:rgba(245,158,11,0.12);border-radius:10px;padding:1px 7px"></span>
-          <button class="col-folder-btn" title="Open output folder" onclick="openKanbanFolder('output')">&#128193;</button>
+          <button class="col-folder-btn" title="Open output folder" aria-label="Open output folder" onclick="openKanbanFolder('output')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          </button>
         </div>
         <div class="kanban-cards" id="col-completed"></div>
       </div>
       <div class="kanban-col">
         <div class="kanban-col-header">
           Failed <span class="col-count" id="cnt-failed">0</span>
-          <button class="col-folder-btn" title="Open failed folder" onclick="openKanbanFolder('failed')">&#128193;</button>
+          <button class="col-folder-btn" title="Open failed folder" aria-label="Open failed folder" onclick="openKanbanFolder('failed')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          </button>
         </div>
         <div class="kanban-cards" id="col-failed"></div>
       </div>
@@ -1196,7 +1340,7 @@
   <div class="card hidden" id="reports-card">
     <div class="card-title" style="display:flex;align-items:center">
       Report History
-      <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list">↻</button>
+      <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list" aria-label="Refresh report list">↻ Refresh</button>
     </div>
     <div id="reports-list"></div>
   </div>
@@ -1206,9 +1350,12 @@
   <!-- ════════════════════════ Settings tab ════════════════════════ -->
   <div class="tab-panel hidden" id="tab-settings">
 
-  <!-- Details & Models (moved from the main view) -->
+  <!-- AI Models -->
   <div class="card" id="config-card">
-    <div class="card-title">Models</div>
+    <div class="card-title">AI Models</div>
+    <p class="section-desc">
+      Pick which LM Studio models read your receipts. Changes apply to the next receipt — no restart needed.
+    </p>
     <!-- Two model dropdowns -->
     <div class="model-grid">
       <div>
@@ -1231,9 +1378,9 @@
       </div>
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer"
+      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
              title="Let the model reason step-by-step before answering. Off is faster and usually just as accurate for receipts.">
-        <input type="checkbox" id="reasoning-toggle" style="width:auto">
+        <input type="checkbox" id="reasoning-toggle">
         Reasoning mode
       </label>
       <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
@@ -1249,18 +1396,20 @@
     </div>
   </div>
 
-  <!-- Settings -->
+  <!-- Folders & scheduled export — saved together by the one button below -->
   <div class="card" id="settings-card">
-    <div class="card-title">Settings</div>
+    <div class="card-title">Folders &amp; Scheduled Export</div>
     <div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">
-        These paths are for the folder shortcut buttons and clipboard copy — they tell the app what the intake and output folders are called on your machine.<br><br>
-        <strong style="color:var(--text)">To change which folder Docker actually uses:</strong>
-        create a <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">.env</code> file next to
-        <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">docker-compose.yml</code> with
-        <code style="font-size:11px;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px">INTAKE_PATH=/your/path</code> and restart the container.
+      <div class="section-heading">Folder shortcuts</div>
+      <p class="section-desc">
+        These paths drive the folder shortcut buttons and clipboard copy — they tell the app what the
+        intake and output folders are called on your machine.
+        <strong>To change which folder Docker actually uses:</strong>
+        create a <code class="inline-code">.env</code> file next to
+        <code class="inline-code">docker-compose.yml</code> with
+        <code class="inline-code">INTAKE_PATH=/your/path</code> and restart the container.
       </p>
-      <div class="fields" style="grid-template-columns:1fr 1fr">
+      <div class="fields fields-2col">
         <label>
           Intake folder
           <input type="text" id="setting-intake-path" placeholder="/Users/yourname/Desktop/receipts">
@@ -1271,15 +1420,15 @@
         </label>
       </div>
       <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Scheduled export</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+        <div class="section-heading">Scheduled export</div>
+        <p class="section-desc">
           Automatically generate the spreadsheet into the export folder on a schedule.
           Point the export folder at a Dropbox / Google Drive / OneDrive sync folder for
           automatic cloud upload — or add a Dropbox token / enable email below.
         </p>
         <div class="fields" style="grid-template-columns:auto auto 1fr;align-items:end;gap:12px">
-          <label style="display:flex;align-items:center;gap:8px;flex-direction:row">
-            <input type="checkbox" id="sched-enabled" style="width:auto"> Enabled
+          <label class="check-label">
+            <input type="checkbox" id="sched-enabled"> Enabled
           </label>
           <label>
             Time
@@ -1295,104 +1444,113 @@
             Dropbox access token <span style="color:var(--muted);font-weight:400">(optional — leave blank to keep saved token)</span>
             <input type="password" id="sched-dropbox" placeholder="sl.B...">
           </label>
-          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;padding-bottom:8px">
-            <input type="checkbox" id="sched-email" style="width:auto"> Email report
+          <label class="check-label" style="padding-bottom:8px">
+            <input type="checkbox" id="sched-email"> Email report
           </label>
         </div>
-        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn" id="sched-run-now-btn" style="height:32px;padding:0 14px;font-size:12px">Run now</button>
-          <span id="sched-status" style="font-size:12px;color:var(--muted)"></span>
-        </div>
-      </div>
-
-      <!-- Image processing -->
-      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Image processing</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
-          Applied to every receipt as it's processed. Changes take effect on the next receipt —
-          no restart needed.
-        </p>
-        <div style="display:flex;flex-direction:column;gap:11px">
-          <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
-            <input type="checkbox" id="proc-compress" style="width:auto">
-            Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
-          </label>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-weight:400">
-              <input type="checkbox" id="proc-paddleocr" style="width:auto">
-              PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
-            </label>
-            <button class="copy-btn" id="paddle-test-btn" title="Upload a receipt image to test PaddleOCR extraction" style="flex-shrink:0">
-              Test PaddleOCR
-            </button>
-            <input type="file" id="paddle-test-input" accept="image/*" style="display:none">
-            <span id="paddle-test-status" style="font-size:11px;color:var(--muted)"></span>
-          </div>
-          <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
-            <span style="min-width:96px">JPEG quality</span>
-            <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
-            <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
-          </label>
-        </div>
-        <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
-      </div>
-
-      <!-- Email delivery -->
-      <div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:16px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:4px">Email delivery</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
-          SMTP account used for <strong style="color:var(--text)">Send Report Now</strong> and the scheduled export's
-          <strong style="color:var(--text)">Email report</strong> option. For Gmail/Outlook, use an App Password.
-          <span id="email-config-status" style="font-weight:600"></span>
-        </p>
-        <div class="fields" style="grid-template-columns:2fr 1fr">
-          <label>SMTP host
-            <input type="text" id="email-host" placeholder="smtp.gmail.com" autocomplete="off">
-          </label>
-          <label>Port
-            <input type="number" id="email-port" value="587" autocomplete="off">
-          </label>
-        </div>
-        <div class="fields" style="grid-template-columns:1fr 1fr;margin-top:10px">
-          <label>Username
-            <input type="text" id="email-user" placeholder="you@gmail.com" autocomplete="off">
-          </label>
-          <label>Password / App Password
-            <input type="password" id="email-pass" placeholder="••••••••" autocomplete="new-password">
-          </label>
-        </div>
-        <div class="fields" style="grid-template-columns:1fr 1fr;margin-top:10px">
-          <label>From address <span style="color:var(--muted);font-weight:400">(optional)</span>
-            <input type="text" id="email-from" placeholder="defaults to username" autocomplete="off">
-          </label>
-          <label>Send to <span style="color:var(--muted);font-weight:400">(comma-separated)</span>
-            <input type="text" id="email-to" placeholder="boss@company.com" autocomplete="off">
-          </label>
-        </div>
-        <div class="fields" style="grid-template-columns:1fr;margin-top:10px">
-          <label>Subject
-            <input type="text" id="email-subject" placeholder="Weekly Reimbursement Report" autocomplete="off">
-          </label>
-        </div>
-        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary" id="email-save-btn" style="height:32px;padding:0 14px;font-size:12px">Save email settings</button>
-          <button class="btn" id="email-test-btn" style="height:32px;padding:0 14px;font-size:12px">Send test email</button>
-          <span id="email-status" style="font-size:12px;color:var(--muted)"></span>
+        <div class="action-row">
+          <button class="btn btn-neutral btn-sm" id="sched-run-now-btn">Run now</button>
+          <span id="sched-status" class="status-note"></span>
         </div>
       </div>
-
-      <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-primary" id="save-settings-btn" style="height:36px;padding:0 18px;font-size:13px"
-                title="Saves the host folder paths and scheduled-export settings above. Image-processing and email settings save on their own.">Save Folder Paths &amp; Schedule</button>
+      <div class="action-row" style="border-top:1px solid var(--border);padding-top:14px">
+        <button class="btn btn-primary btn-md" id="save-settings-btn"
+                title="Saves the folder paths and scheduled-export settings above. Image-processing and email settings save on their own.">Save Folder Paths &amp; Schedule</button>
         <span id="settings-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
-        <button class="btn" id="restart-btn"
-                style="height:36px;padding:0 16px;font-size:13px;margin-left:auto;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--danger)"
-                title="Restart the server process (Docker will relaunch automatically)">
-          &#8635; Restart App
-        </button>
       </div>
     </div>
   </div><!-- /settings-card -->
+
+  <!-- Image processing — saves automatically on change -->
+  <div class="card" id="processing-card">
+    <div class="card-title">Image Processing</div>
+    <p class="section-desc">
+      Applied to every receipt as it's processed. Changes save automatically and take effect
+      on the next receipt — no restart needed.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <label class="check-label">
+        <input type="checkbox" id="proc-compress">
+        Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
+      </label>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label class="check-label">
+          <input type="checkbox" id="proc-paddleocr">
+          PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
+        </label>
+        <button class="copy-btn" id="paddle-test-btn" title="Upload a receipt image to test PaddleOCR extraction" style="flex-shrink:0">
+          Test PaddleOCR
+        </button>
+        <input type="file" id="paddle-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test PaddleOCR">
+        <span id="paddle-test-status" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
+        <span style="min-width:96px">JPEG quality</span>
+        <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
+        <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
+      </label>
+    </div>
+    <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
+  </div>
+
+  <!-- Email delivery — has its own save button -->
+  <div class="card" id="email-card">
+    <div class="card-title">Email Delivery</div>
+    <p class="section-desc">
+      SMTP account used for <strong>Send Report Now</strong> and the scheduled export's
+      <strong>Email report</strong> option. For Gmail/Outlook, use an App Password.
+      <span id="email-config-status" style="font-weight:600"></span>
+    </p>
+    <div class="fields fields-21">
+      <label>SMTP host
+        <input type="text" id="email-host" placeholder="smtp.gmail.com" autocomplete="off">
+      </label>
+      <label>Port
+        <input type="number" id="email-port" value="587" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-2col" style="margin-top:10px">
+      <label>Username
+        <input type="text" id="email-user" placeholder="you@gmail.com" autocomplete="off">
+      </label>
+      <label>Password / App Password
+        <input type="password" id="email-pass" placeholder="••••••••" autocomplete="new-password">
+      </label>
+    </div>
+    <div class="fields fields-2col" style="margin-top:10px">
+      <label>From address <span style="color:var(--muted);font-weight:400">(optional)</span>
+        <input type="text" id="email-from" placeholder="defaults to username" autocomplete="off">
+      </label>
+      <label>Send to <span style="color:var(--muted);font-weight:400">(comma-separated)</span>
+        <input type="text" id="email-to" placeholder="boss@company.com" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-1col" style="margin-top:10px">
+      <label>Subject
+        <input type="text" id="email-subject" placeholder="Weekly Reimbursement Report" autocomplete="off">
+      </label>
+    </div>
+    <div class="action-row">
+      <button class="btn btn-primary btn-sm" id="email-save-btn">Save email settings</button>
+      <button class="btn btn-neutral btn-sm" id="email-test-btn">Send test email</button>
+      <span id="email-status" class="status-note"></span>
+    </div>
+  </div>
+
+  <!-- Maintenance — kept apart from everyday settings -->
+  <div class="card" id="admin-card">
+    <div class="card-title">Maintenance</div>
+    <div class="action-row" style="margin-top:0">
+      <span class="status-note" style="flex:1;min-width:220px">
+        Restart the server process if the app misbehaves — Docker relaunches it automatically
+        and the page reloads itself. Processed receipts are preserved.
+      </span>
+      <button class="btn btn-outline-danger btn-md" id="restart-btn"
+              title="Restart the server process (Docker will relaunch automatically)">
+        &#8635; Restart App
+      </button>
+    </div>
+  </div>
 
   </div><!-- /tab-settings -->
 </main>
@@ -1403,7 +1561,7 @@
 </footer>
 
 <!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
-<div class="modal-overlay hidden" id="manual-review-modal">
+<div class="modal-overlay hidden" id="manual-review-modal" role="dialog" aria-modal="true" aria-labelledby="mr-modal-title">
   <div class="modal-box">
     <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
     <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
@@ -1440,9 +1598,9 @@
 </div>
 
 <!-- ── Duplicate Review Dialog ─────────────────────────────────────────────── -->
-<div class="modal-overlay hidden" id="dup-modal">
+<div class="modal-overlay hidden" id="dup-modal" role="dialog" aria-modal="true" aria-labelledby="dup-modal-title">
   <div class="modal-box" style="width:640px">
-    <h3>&#9888; Possible Duplicate Receipts</h3>
+    <h3 id="dup-modal-title">&#9888; Possible Duplicate Receipts</h3>
     <p class="modal-sub">Receipts below share the same vendor, date, and amount.
       Check the ones to <strong>exclude</strong> from the spreadsheet — unchecked items will be included.</p>
     <div id="dup-groups-container"></div>
@@ -1454,12 +1612,12 @@
 </div>
 
 <!-- Image lightbox -->
-<div id="img-lightbox" style="display:none" onclick="closeLightbox()">
-  <button class="lb-close" onclick="closeLightbox()" title="Close">&#10005;</button>
+<div id="img-lightbox" style="display:none" onclick="closeLightbox()" role="dialog" aria-modal="true" aria-label="Receipt image preview">
+  <button class="lb-close" onclick="closeLightbox()" title="Close" aria-label="Close image preview">&#10005;</button>
   <img id="lb-img" src="" alt="Receipt">
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 // ── Theme toggle ──────────────────────────────────────────────────────────────
@@ -1487,7 +1645,9 @@ function switchTab(name) {
     p.classList.toggle('hidden', p.id !== 'tab-' + name);
   });
   document.querySelectorAll('.tab-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === name);
+    const active = b.dataset.tab === name;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1577,10 +1737,21 @@ function renderFileList() {
     item.innerHTML = `
       <span class="fname">${esc(f.name)}</span>
       <span class="fsize">${(f.size/1024).toFixed(0)} KB</span>
-      <button title="Remove" onclick="removeFile(${i})">×</button>`;
+      <button title="Remove" aria-label="Remove ${esc(f.name)}" onclick="removeFile(${i})">×</button>`;
     fileList.appendChild(item);
   });
   processBtn.disabled = selectedFiles.length === 0;
+  // Selection summary so the action button's effect is predictable
+  const note = document.getElementById('file-count-note');
+  if (note) {
+    if (selectedFiles.length === 0) {
+      note.textContent = '';
+    } else {
+      const totalKb = selectedFiles.reduce((s, f) => s + f.size, 0) / 1024;
+      const sizeTxt = totalKb >= 1024 ? `${(totalKb / 1024).toFixed(1)} MB` : `${Math.round(totalKb)} KB`;
+      note.textContent = `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} selected · ${sizeTxt}`;
+    }
+  }
 }
 window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 
@@ -1712,7 +1883,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
   }
 
-  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss">&#10005;</button>`;
+  inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss" aria-label="Dismiss ${esc(filename)}">&#10005;</button>`;
 
   div.innerHTML = inner;
   return div;
@@ -1977,9 +2148,37 @@ async function loadIntakeCount() {
     const res = await fetch('/intake/files');
     if (!res.ok) return;
     const d = await res.json();
-    document.getElementById('intake-count').textContent = d.count || 0;
+    const n = d.count || 0;
+    document.getElementById('intake-count').textContent = n;
+    // Only surface the intake row when there is actually something to queue
+    document.getElementById('intake-row').classList.toggle('hidden', n === 0);
   } catch (_) {}
 }
+
+// ── Queue intake files (manual enqueue of everything in the intake folder) ────
+document.getElementById('queue-intake-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('queue-intake-btn');
+  btn.disabled = true;
+  try {
+    const form = new FormData();
+    form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
+    form.append('job_name', document.getElementById('job-name').value.trim());
+    form.append('job_number', document.getElementById('job-number').value.trim());
+    const res = await fetch('/queue/add-intake', { method: 'POST', body: form });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
+    _saveFields();
+    const skippedMsg = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
+    showToast(`${(d.queued || []).length} intake file(s) added to queue${skippedMsg}`, true);
+    progressCard.classList.remove('hidden');
+    kanbanCard.classList.remove('hidden');
+  } catch (err) {
+    showToast(`Queue error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+    loadIntakeCount();
+  }
+});
 
 // ── Cancel queue ──────────────────────────────────────────────────────────────
 stopBtn.addEventListener('click', async () => {
@@ -2083,6 +2282,8 @@ generateBtn.addEventListener('click', async () => {
 
 // ── New Batch (clear completed results) ───────────────────────────────────────
 resetBtn.addEventListener('click', async () => {
+  // Destructive — same confirmation courtesy as Clear Board
+  if (!confirm('Start a new batch? This clears all completed receipts from the board.')) return;
   await fetch('/results/clear', { method: 'POST' });
   downloadRow.classList.add('hidden');
   // SSE results_cleared event handles kanban cleanup
@@ -2605,7 +2806,10 @@ document.getElementById('reasoning-toggle').addEventListener('change', async (e)
   } catch (err) { e.target.checked = !enabled; showToast(`Error: ${err.message}`, false); }
 });
 
-document.getElementById('refresh-models-btn').addEventListener('click', loadModels);
+document.getElementById('refresh-models-btn').addEventListener('click', () => {
+  loadModels();
+  loadLMStudioModels();   // also refresh the loaded-models strip + header chip
+});
 
 // ── Output folder + watch status ──────────────────────────────────────────────
 async function loadWatchStatus() {
@@ -2650,6 +2854,14 @@ function copyFolderPath(elementId) {
   );
 }
 
+function _setLmChip(state, text) {
+  const chip = document.getElementById('lm-status-chip');
+  if (!chip) return;
+  chip.dataset.state = state;
+  document.getElementById('lm-status-text').textContent = text;
+  chip.title = `LM Studio: ${text} — click to open model settings`;
+}
+
 async function loadLMStudioModels() {
   try {
     const res  = await fetch('/models/lmstudio');
@@ -2659,13 +2871,17 @@ async function loadLMStudioModels() {
       strip.innerHTML = data.loaded.map(id =>
         `<div class="model-row"><div class="model-dot loaded"></div><span class="model-name">${esc(id)}</span></div>`
       ).join('');
+      _setLmChip('ok', `LM Studio · ${data.loaded.length} model${data.loaded.length === 1 ? '' : 's'}`);
     } else if (data.ok) {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
+      _setLmChip('warn', 'No models loaded');
     } else {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>';
+      _setLmChip('err', 'LM Studio offline');
     }
   } catch (_) {
     document.getElementById('model-strip').innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>';
+    _setLmChip('err', 'LM Studio offline');
   }
 }
 
@@ -3323,6 +3539,9 @@ loadSettings();
 loadSavedFields();
 loadStats();
 loadReports();
+// Keep the intake count and the LM Studio health chip honest while the page idles
+setInterval(loadIntakeCount, 15000);
+setInterval(loadLMStudioModels, 30000);
 </script>
 </body>
 </html>
