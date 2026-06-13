@@ -66,6 +66,16 @@
       background-attachment: fixed;
       color: var(--text); min-height: 100vh;
     }
+    /* Light mode gets a soft, warm wash — gentle teal + amber over a warm
+       neutral base. Deliberately avoids the purple/indigo "AI default" look. */
+    [data-theme="light"] body {
+      background:
+        radial-gradient(1100px 520px at 88% -10%, rgba(13,148,136,0.13), transparent 60%),
+        radial-gradient(820px 460px at -6% 4%, rgba(245,166,35,0.11), transparent 58%),
+        radial-gradient(700px 380px at 50% 108%, rgba(45,212,130,0.08), transparent 60%),
+        linear-gradient(180deg, #eef4f1 0%, #e8eef0 55%, #ece8e1 100%);
+      background-attachment: fixed;
+    }
 
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -183,17 +193,27 @@
 
     /* Upload + generate side-by-side row */
     .upload-generate-row {
-      display: flex; gap: 20px; align-items: start;
+      display: flex; gap: 20px; align-items: stretch;
     }
-    .upload-generate-row #upload-card {
-      flex: 1; min-width: 0;
-    }
+    /* Add Receipts and Export Report split the row evenly and match heights */
+    .upload-generate-row #upload-card,
     .upload-generate-row #generate-card {
-      flex: 0 0 320px;
+      flex: 1 1 0; min-width: 0;
+      display: flex; flex-direction: column;
     }
+    /* Export Report holds a lot — lay it out as a column and let the action
+       grid + download row breathe so it fills the shared height cleanly. */
+    #generate-card .gen-actions {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px;
+    }
+    #generate-card .gen-actions .btn { width: 100%; justify-content: center; }
+    #generate-card .gen-actions #generate-btn { grid-column: 1 / -1; }
+    #generate-card .gen-approval { margin-top: auto; }
     @media (max-width: 900px) {
       .upload-generate-row { flex-direction: column; }
+      .upload-generate-row #upload-card,
       .upload-generate-row #generate-card { flex: none; width: 100%; }
+      #generate-card .gen-actions { grid-template-columns: 1fr; }
     }
 
     /* File list with capped height so it doesn't push the page down */
@@ -279,6 +299,16 @@
     .btn-outline-danger:not(:disabled):hover { background: rgba(239,68,68,0.2); }
     .btn-neutral { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
     .btn-neutral:not(:disabled):hover { border-color: var(--accent); }
+    /* Clear, visible Cancel — solid fill + strong border so it doesn't read as
+       a disabled/secondary control in dialogs. */
+    .btn-cancel {
+      background: var(--surface2); border: 2px solid var(--muted);
+      color: var(--text); font-weight: 600;
+    }
+    .btn-cancel:not(:disabled):hover {
+      border-color: var(--danger); color: var(--danger);
+      background: rgba(244,86,106,0.10);
+    }
 
     /* Progress */
     .progress-wrap { background: rgba(255,255,255,0.07); border-radius: 99px; height: 8px; overflow: hidden; }
@@ -854,6 +884,17 @@
       font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .empty-note { color: var(--muted); font-size: 12px; text-align: center; padding: 30px 0; }
 
+    /* Spend-over-time caption + legend */
+    .tl-caption { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px;
+      font-size: 11px; color: var(--muted); align-items: center; }
+    .tl-caption strong { color: var(--text); font-variant-numeric: tabular-nums; }
+    .tl-caption .tl-key { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+    .tl-caption .tl-key i { display: inline-block; width: 12px; height: 0; flex-shrink: 0; }
+    .tl-caption .tl-bar { width: 9px; height: 9px; border-radius: 2px;
+      background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+    .tl-caption .tl-cum { border-top: 2px solid var(--success); }
+    .tl-caption .tl-avg { border-top: 2px dashed var(--warning); }
+
     /* Verified badge */
     .k-verified { display: inline-block; font-size: 9px; font-weight: 700;
       padding: 1px 6px; border-radius: 4px; letter-spacing: 0.03em;
@@ -1179,7 +1220,7 @@
   <div class="card hidden" id="generate-card">
     <div class="card-title">Export Report</div>
     <div class="gen-summary" id="gen-summary"></div>
-    <div class="btn-row">
+    <div class="gen-actions">
       <button class="btn btn-success" id="generate-btn">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round"
@@ -1202,7 +1243,7 @@
         New Batch
       </button>
     </div>
-    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+    <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <label class="check-label" style="font-size:12px">
         <input type="checkbox" id="require-approval" checked>
         Require review &amp; approval
@@ -1218,6 +1259,16 @@
         </svg>
         Download Spreadsheet
       </a>
+      <div class="hidden" id="copy-images-reminder"
+           style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;
+                  border-left:3px solid var(--accent);background:rgba(79,142,247,0.10);color:var(--text)">
+        <strong>&#128247; Don't forget your receipt images.</strong>
+        The workbook embeds them, but the original files live in the output
+        <code class="inline-code">receipts</code> folder. Copy them alongside the report if you
+        need the standalone photos.
+        <button class="btn btn-outline-accent btn-sm" style="margin-top:8px"
+                onclick="openKanbanFolder('output')">Open output folder</button>
+      </div>
     </div>
   </div>
 
@@ -1543,10 +1594,11 @@
     <div class="action-row" style="margin-top:0">
       <span class="status-note" style="flex:1;min-width:220px">
         Find files left behind in the receipts and processing folders that no completed
-        result or queue item references. Report only — nothing is deleted.
+        result or queue item references. Each is reported with its full location; the scan
+        also lets you delete emptied job/temp folders. Scanning itself deletes nothing.
       </span>
       <button class="btn btn-outline-accent btn-md" id="orphan-scan-btn"
-              title="Scan the working folders for unreferenced (orphaned) files">
+              title="Scan the working folders for unreferenced (orphaned) files and empty folders">
         &#128269; Check Orphaned Files
       </button>
     </div>
@@ -1603,7 +1655,7 @@
     <div class="btn-row" style="flex-wrap:wrap;gap:8px">
       <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
       <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
-      <button class="btn" id="mr-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
+      <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
     </div>
   </div>
 </div>
@@ -1617,7 +1669,7 @@
     <div id="dup-groups-container"></div>
     <div class="btn-row" style="margin-top:16px">
       <button class="btn btn-success" id="dup-generate-btn">Generate Spreadsheet</button>
-      <button class="btn" id="dup-cancel-btn" style="background:var(--surface);border:1px solid var(--border)">Cancel</button>
+      <button class="btn btn-cancel" id="dup-cancel-btn">Cancel</button>
     </div>
   </div>
 </div>
@@ -1692,6 +1744,14 @@ const genSummary   = document.getElementById('gen-summary');
 const downloadRow  = document.getElementById('download-row');
 const downloadBtn  = document.getElementById('download-btn');
 const resetBtn     = document.getElementById('reset-btn');
+
+// Once the workbook is downloaded, remind the user the original receipt images
+// live in the output folder so they can be copied alongside the report.
+downloadBtn.addEventListener('click', () => {
+  const reminder = document.getElementById('copy-images-reminder');
+  if (reminder) reminder.classList.remove('hidden');
+  showToast('Spreadsheet downloaded — remember to copy the receipt images from the output folder too', true);
+});
 const uploadCard   = document.getElementById('upload-card');
 const configCard   = document.getElementById('config-card');
 const distillSelect = document.getElementById('distill-model-select');
@@ -1799,7 +1859,10 @@ function shortModelName(model) {
 function confBadge(conf) {
   if (conf == null) return '';
   const cls = conf >= 75 ? 'k-conf-high' : conf >= 45 ? 'k-conf-medium' : 'k-conf-low';
-  return `<span class="k-confidence ${cls}">${conf}%</span>`;
+  const lvl = conf >= 75 ? 'high' : conf >= 45 ? 'medium' : 'low';
+  const tip = `AI extraction confidence: ${conf}% (${lvl}). How sure the model is it read this `
+            + `receipt's vendor, date, and amount correctly. Low-confidence receipts are auto-flagged for review.`;
+  return `<span class="k-confidence ${cls}" title="${tip}">${conf}% conf</span>`;
 }
 
 // ── Per-item step log ──────────────────────────────────────────────────────────
@@ -1844,9 +1907,9 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   if (data && data._amount_verified === true)
     inner += `<span class="k-verified" title="Amount cross-checked against OCR text">&#10003; verified</span>`;
   if (isApproved)
-    inner += `<span class="k-review-badge k-approved-badge">&#10003; Approved</span>`;
+    inner += `<span class="k-review-badge k-approved-badge" title="Reviewed &amp; approved — cleared to be included in the report. When 'Require review &amp; approval' is on, every completed receipt must show this before you can generate the spreadsheet.">&#10003; Approved</span>`;
   else if (needsReview)
-    inner += `<span class="k-review-badge k-needs-review-badge">&#9873; Needs Review</span>`;
+    inner += `<span class="k-review-badge k-needs-review-badge" title="Flagged for review — open 'Review &amp; Approve' to check the extracted data, then approve it. Generation stays blocked while any receipt still needs review.">&#9873; Needs Review</span>`;
   inner += `</div>`;
 
   if (data && data.vendor) {
@@ -2256,6 +2319,7 @@ async function _doGenerate(excludeFilenames = []) {
     downloadBtn.href = url;
     downloadBtn.download = fname;
     downloadRow.classList.remove('hidden');
+    document.getElementById('copy-images-reminder')?.classList.add('hidden');
     showToast('Spreadsheet ready — click Download', true);
     loadReports();
   } catch (err) {
@@ -3262,6 +3326,56 @@ function _fmtBytes(n) {
   return `${n} B`;
 }
 
+function renderOrphanResults(d) {
+  const box = document.getElementById('orphan-results');
+  if (!d.count && !(d.empty_dirs || []).length) {
+    box.innerHTML = `<span class="status-note" style="color:var(--success)">&#10003; No orphaned files — ${d.scanned} file(s) checked, all referenced.</span>`;
+    return;
+  }
+  // Each orphan shows its folder, name, size, age — plus the full on-disk location.
+  const items = d.orphans.map(o => `
+    <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+        <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">${esc(o.folder)}</span>
+        <span style="word-break:break-all;font-weight:600">${esc(o.name)}</span>
+        <span style="margin-left:auto;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums">${_fmtBytes(o.size)}</span>
+        <span style="color:var(--muted);white-space:nowrap;font-size:11px">${esc((o.modified || '').replace('T', ' '))}</span>
+      </div>
+      <div style="margin-top:2px;font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);word-break:break-all"
+           title="Full location">&#128205; ${esc(o.path || o.name)}</div>
+    </div>`).join('');
+  const dirs = (d.empty_dirs || []).map(x =>
+    `<div class="status-note">Empty temp folder: <code class="inline-code">${esc(x)}</code></div>`).join('');
+  box.innerHTML =
+    (d.count
+      ? `<div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:6px">` +
+        `&#9888; ${d.count} orphaned file(s) — ${_fmtBytes(d.total_size)} (checked ${d.scanned})</div>${items}`
+      : `<div class="status-note">${d.scanned} file(s) checked — no orphaned files, only empty folders below.</div>`) +
+    dirs +
+    `<div class="action-row" style="margin-top:10px">
+       <span class="status-note" style="flex:1;min-width:200px">Full locations shown above. Empty job/temp folders (referenced or not) can be cleared automatically.</span>
+       <button class="btn btn-outline-amber btn-sm" id="cleanup-dirs-btn">&#128465; Delete empty folders</button>
+     </div>`;
+  const cb = document.getElementById('cleanup-dirs-btn');
+  if (cb) cb.addEventListener('click', cleanupEmptyDirs);
+}
+
+async function cleanupEmptyDirs() {
+  const btn = document.getElementById('cleanup-dirs-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⌛ Deleting…'; }
+  try {
+    const res = await fetch('/maintenance/cleanup-empty-dirs', { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
+    showToast(d.count ? `Removed ${d.count} empty folder(s)` : 'No empty folders to remove', true);
+    const r2 = await fetch('/maintenance/orphans');   // re-scan to refresh the report
+    renderOrphanResults(await r2.json());
+  } catch (err) {
+    showToast(`Cleanup failed: ${err.message}`, false);
+    if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete empty folders'; }
+  }
+}
+
 document.getElementById('orphan-scan-btn').addEventListener('click', async () => {
   const btn = document.getElementById('orphan-scan-btn');
   const box = document.getElementById('orphan-results');
@@ -3272,22 +3386,7 @@ document.getElementById('orphan-scan-btn').addEventListener('click', async () =>
     const res = await fetch('/maintenance/orphans');
     const d = await res.json();
     if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
-    if (!d.count && !(d.empty_dirs || []).length) {
-      box.innerHTML = `<span class="status-note" style="color:var(--success)">&#10003; No orphaned files — ${d.scanned} file(s) checked, all referenced.</span>`;
-    } else {
-      const rows = d.orphans.map(o =>
-        `<tr><td style="padding:2px 10px 2px 0;color:var(--muted)">${esc(o.folder)}</td>` +
-        `<td style="padding:2px 10px 2px 0;word-break:break-all">${esc(o.name)}</td>` +
-        `<td style="padding:2px 10px 2px 0;text-align:right;white-space:nowrap">${_fmtBytes(o.size)}</td>` +
-        `<td style="padding:2px 0;color:var(--muted);white-space:nowrap">${esc((o.modified || '').replace('T', ' '))}</td></tr>`).join('');
-      const dirs = (d.empty_dirs || []).map(x =>
-        `<div class="status-note">Empty temp folder: ${esc(x)}</div>`).join('');
-      box.innerHTML =
-        `<div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:6px">` +
-        `&#9888; ${d.count} orphaned file(s) — ${_fmtBytes(d.total_size)} (checked ${d.scanned})</div>` +
-        (rows ? `<table style="font-size:12.5px;border-collapse:collapse">${rows}</table>` : '') + dirs +
-        `<div class="status-note" style="margin-top:6px">Not referenced by any completed receipt, board card, or queued item — review and delete manually from the output folder if no longer needed.</div>`;
-    }
+    renderOrphanResults(d);
   } catch (err) {
     box.innerHTML = `<span class="status-note" style="color:var(--danger)">Scan failed: ${esc(err.message)}</span>`;
   } finally {
@@ -3414,7 +3513,7 @@ async function loadStats() {
       s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
 
     renderDonut(s.by_category, s.total);
-    renderTimeline(s.timeline);
+    renderTimeline(s);
     renderVendors(s.top_vendors);
   } catch (_) {}
 }
@@ -3452,31 +3551,73 @@ function renderDonut(byCat, total) {
     </div>`).join('');
 }
 
-function renderTimeline(timeline) {
+function renderTimeline(stats) {
   const box = document.getElementById('timeline-chart');
+  const timeline = (stats && stats.timeline) || [];
   if (!timeline.length) { box.innerHTML = '<div class="empty-note">No dated receipts</div>'; return; }
-  const W = 460, H = 150, padB = 22, padL = 4, padR = 4;
-  const max = Math.max(...timeline.map(t => t.total));
+
+  const W = 460, H = 168, padT = 14, padB = 26, padL = 40, padR = 8;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
   const n = timeline.length;
-  const slot = (W - padL - padR) / n;
-  const barW = Math.max(4, Math.min(34, slot * 0.65));
-  let bars = '';
+  const max = Math.max(...timeline.map(t => t.total), 1);
+  const cumMax = Math.max(...timeline.map(t => t.cumulative || 0), 1);
+  const total = stats.timeline_total != null ? stats.timeline_total
+              : timeline.reduce((a, t) => a + t.total, 0);
+  const avg = total / n;
+  const slot = plotW / n;
+  const barW = Math.max(4, Math.min(34, slot * 0.62));
+  const yOf = v => padT + plotH - (v / max) * plotH;
+
+  // Horizontal gridlines + $ axis labels (0, mid, max)
+  let grid = '';
+  [0, 0.5, 1].forEach(f => {
+    const v = max * f, y = yOf(v);
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"
+        stroke="var(--border)" stroke-width="0.6" opacity="0.55"/>`;
+    grid += `<text x="${padL - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="8">${fmtMoney(v).replace('.00','')}</text>`;
+  });
+
+  // Average line (dashed)
+  const avgY = yOf(avg);
+  const avgLine = `<line x1="${padL}" y1="${avgY.toFixed(1)}" x2="${W - padR}" y2="${avgY.toFixed(1)}"
+      stroke="var(--warning)" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"><title>Daily average: ${fmtMoney(avg)}</title></line>
+    <text x="${W - padR}" y="${(avgY - 3).toFixed(1)}" text-anchor="end" fill="var(--warning)" font-size="8">avg ${fmtMoney(avg).replace('.00','')}</text>`;
+
+  // Bars (daily spend) + cumulative trend line
+  let bars = '', pts = [];
+  const every = Math.ceil(n / 8);
   timeline.forEach((t, i) => {
-    const h = max ? (t.total / max) * (H - padB - 14) : 0;
+    const h = (t.total / max) * plotH;
     const x = padL + i * slot + (slot - barW) / 2;
-    const y = H - padB - h;
-    const label = t.date.slice(5).replace('-', '/');
+    const y = padT + plotH - h;
+    const rc = t.count || 0;
     bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(h, 2).toFixed(1)}"
-        rx="2.5" fill="url(#barGrad)"><title>${t.date}: ${fmtMoney(t.total)}</title></rect>`;
-    const every = Math.ceil(n / 8);
+        rx="2.5" fill="url(#barGrad)"><title>${t.date}\n${fmtMoney(t.total)} · ${rc} receipt${rc === 1 ? '' : 's'}\nrunning total ${fmtMoney(t.cumulative || 0)}</title></rect>`;
+    pts.push([padL + i * slot + slot / 2, padT + plotH - ((t.cumulative || 0) / cumMax) * plotH]);
     if (i % every === 0 || i === n - 1) {
-      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle" fill="var(--muted)" font-size="8.5">${label}</text>`;
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 9}" text-anchor="middle" fill="var(--muted)" font-size="8.5">${t.date.slice(5).replace('-', '/')}</text>`;
     }
   });
+  const cumPath = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+  const cumLine = n > 1
+    ? `<path d="${cumPath}" fill="none" stroke="var(--success)" stroke-width="1.6" opacity="0.9"/>` +
+      pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="1.7" fill="var(--success)"/>`).join('')
+    : '';
+
+  const peak = stats.timeline_peak;
+  const range = n > 1 ? `${timeline[0].date.slice(5).replace('-','/')}–${timeline[n-1].date.slice(5).replace('-','/')}` : timeline[0].date.slice(5).replace('-','/');
+  const caption = `<div class="tl-caption">
+      <span><strong>${fmtMoney(total)}</strong> over ${n} day${n === 1 ? '' : 's'} (${range})</span>
+      ${peak ? `<span>Peak <strong>${fmtMoney(peak.total)}</strong> on ${peak.date.slice(5).replace('-','/')}</span>` : ''}
+      <span class="tl-key"><i class="tl-bar"></i>daily &nbsp;<i class="tl-cum"></i>cumulative &nbsp;<i class="tl-avg"></i>avg</span>
+    </div>`;
+
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">
     <defs><linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--accent-2)"/>
-    </linearGradient></defs>${bars}</svg>`;
+    </linearGradient></defs>
+    ${grid}${avgLine}${bars}${cumLine}
+  </svg>${caption}`;
 }
 
 function renderVendors(vendors) {
@@ -3568,19 +3709,60 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Confetti celebration ──────────────────────────────────────────────────────
+let _audioCtx = null;
+
+// A short, cheerful major arpeggio (C–E–G–C) with a sparkle on top.
+function playCelebrationTone() {
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99, 1046.50];   // C5 E5 G5 C6
+    notes.forEach((freq, i) => {
+      const t = now + i * 0.105;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.36);
+    });
+    const t2 = now + notes.length * 0.105;            // bright sparkle to finish
+    const osc2 = ctx.createOscillator();
+    const g2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(1567.98, t2);       // G6
+    g2.gain.setValueAtTime(0.0001, t2);
+    g2.gain.exponentialRampToValueAtTime(0.18, t2 + 0.02);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t2 + 0.5);
+    osc2.connect(g2); g2.connect(ctx.destination);
+    osc2.start(t2); osc2.stop(t2 + 0.52);
+  } catch (_) { /* audio unsupported or blocked — confetti still flies */ }
+}
+
 function celebrate() {
+  playCelebrationTone();
   const colors = ['#4f8ef7', '#8b5cf6', '#2dd482', '#f5a623', '#f4566a'];
-  for (let i = 0; i < 70; i++) {
+  // 10× the confetti — batched into a fragment so 700 bits don't thrash layout.
+  const frag = document.createDocumentFragment();
+  const bits = [];
+  for (let i = 0; i < 700; i++) {
     const bit = document.createElement('div');
     bit.className = 'confetti-bit';
     bit.style.left = Math.random() * 100 + 'vw';
     bit.style.background = colors[i % colors.length];
-    bit.style.animationDuration = (1.6 + Math.random() * 1.6) + 's';
-    bit.style.animationDelay = Math.random() * 0.4 + 's';
+    bit.style.animationDuration = (1.6 + Math.random() * 1.8) + 's';
+    bit.style.animationDelay = Math.random() * 0.8 + 's';
     bit.style.transform = `rotate(${Math.random() * 360}deg)`;
-    document.body.appendChild(bit);
-    setTimeout(() => bit.remove(), 4000);
+    frag.appendChild(bit);
+    bits.push(bit);
   }
+  document.body.appendChild(frag);
+  setTimeout(() => bits.forEach(b => b.remove()), 5000);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

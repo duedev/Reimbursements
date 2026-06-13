@@ -69,3 +69,30 @@ def test_theme_extras(tmp_path):
     assert len(list(ws.conditional_formatting)) == 3
     assert ws.page_setup.orientation == "landscape"
     assert ws.print_title_rows in ("1:4", "$1:$4")
+
+
+def test_meta_value_sits_in_column_c(tmp_path):
+    # The employee/expense-period values moved from D to C (next to the B label),
+    # and the old D:E merge that left a stray line in E is gone.
+    path = generate_spreadsheet(_results(), tmp_path, employee_name="Jane Smith")
+    ws = load_workbook(path)["Summary"]
+    assert ws["B2"].value == "Employee:"
+    assert ws["C2"].value == "Jane Smith"
+    assert ws["D2"].value is None and ws["E2"].value is None
+    # No merged ranges across the meta rows anymore
+    merged = [str(r) for r in ws.merged_cells.ranges]
+    assert not any(m.startswith(("D2", "D3", "E2", "E3")) for m in merged)
+
+
+def test_workbook_has_insights_sheet_with_charts(tmp_path):
+    path = generate_spreadsheet(_results(), tmp_path, employee_name="Jane Smith")
+    wb = load_workbook(path)
+    assert wb.sheetnames[1] == "Insights"  # second tab, right after Summary
+    ins = wb["Insights"]
+    # Category, vendor, and spend-over-time charts are all present
+    assert len(ins._charts) == 3
+    text = " ".join(str(c.value) for row in ins.iter_rows()
+                     for c in row if c.value is not None)
+    assert "Total Spend" in text
+    assert "By Category" in text and "Spend Over Time" in text
+    assert "Home Depot" in text  # top-vendor table populated

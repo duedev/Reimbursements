@@ -108,3 +108,39 @@ def test_archived_pdf_referenced_through_its_pages(env):
 
     d = client.get("/maintenance/orphans").json()
     assert d["count"] == 0
+
+
+def test_orphan_report_includes_full_path(env):
+    client, intake, images, processing = env
+    (images / "leftover.jpg").write_bytes(b"x" * 5)
+    d = client.get("/maintenance/orphans").json()
+    o = next(o for o in d["orphans"] if o["name"] == "leftover.jpg")
+    assert o["path"] == str((images / "leftover.jpg").resolve())
+
+
+def test_cleanup_removes_empty_dirs_keeps_populated(env):
+    client, intake, images, processing = env
+    # Empty job folder + nested empties under receipts — should be removed
+    (images / "JB-1-old").mkdir()
+    (images / "nested" / "deep").mkdir(parents=True)
+    # Empty temp dirs in intake — removed
+    (intake / "_pdf_done").mkdir()
+    (intake / "_upload_stale").mkdir()
+    # Populated folder — preserved
+    keep = images / "JB-2-active"
+    keep.mkdir()
+    (keep / "receipt.jpg").write_bytes(b"x")
+    # Pending input dir that isn't a temp folder — left alone
+    (intake / "RealJobFolder").mkdir()
+
+    d = client.post("/maintenance/cleanup-empty-dirs").json()
+    assert d["ok"] is True
+    removed_paths = {r["path"] for r in d["removed"]}
+
+    assert str((images / "JB-1-old").resolve()) in removed_paths
+    assert str((images / "nested").resolve()) in removed_paths
+    assert str((intake / "_pdf_done").resolve()) in removed_paths
+    assert str((intake / "_upload_stale").resolve()) in removed_paths
+
+    assert keep.exists() and (keep / "receipt.jpg").exists()
+    assert (intake / "RealJobFolder").exists()   # non-temp intake dir untouched
