@@ -62,6 +62,7 @@ INTAKE_FOLDER      = Path(RECEIPTS_FOLDER)
 OUT_FOLDER         = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER      = OUT_FOLDER / "receipts"    # completed receipt images land here
 PROCESSING_FOLDER  = OUT_FOLDER / "processing"  # in-flight and failed images live here
+REJECTED_FOLDER    = OUT_FOLDER / "unsupported" # files dropped in intake we can't read
 # CONFIG_FILE is the single authoritative app-config path, defined once in
 # process_receipts and imported here so the server, watcher, and scheduler all
 # read/write the same file (see process_receipts.CONFIG_FILE).
@@ -87,6 +88,12 @@ _last_context: dict = {"employee": "Employee", "job_name": "", "job_number": ""}
 
 _seen_intake: set[str] = set()
 _seen_lock   = threading.Lock()
+
+# Why each quarantined file in REJECTED_FOLDER was moved there, keyed by its
+# on-disk name. The folder is the source of truth for *which* files exist; this
+# just remembers the human-readable reason to show alongside each one.
+_rejected_reasons: dict[str, str] = {}
+_rejected_lock    = threading.Lock()
 
 _worker_cancel = threading.Event()
 
@@ -339,6 +346,16 @@ def _run_worker() -> None:
             time.sleep(1)
 
 
+def _receipts_output_dir() -> Path:
+    """Completed receipts are grouped into a short, dated subfolder under the
+    completed-receipts folder — e.g. ``receipts/Processed_2026-06-13`` — so each
+    day's processed receipts stay tidily together instead of piling into one flat
+    directory. The subfolder is created on demand and reused for the day."""
+    d = IMAGES_FOLDER / f"Processed_{date.today().isoformat()}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _drain_once() -> bool:
     """Process one batch from the queue. Returns False when the queue was empty."""
     with _work_lock:
@@ -485,12 +502,12 @@ def _drain_once() -> bool:
             # Finalize step list in data (supersedes the snapshot set by _finish)
             data["_steps"] = list(steps)
 
-            # item["path"] points at the full-resolution file extraction read;
-            # it is renamed into IMAGES_FOLDER here and compressed later, when the
-            # spreadsheet is generated.
-            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+            # item["path"] points at the full-resolution file extraction read; it
+            # is renamed into a dated subfolder of IMAGES_FOLDER here and compressed
+            # later, when the spreadsheet is generated.
+            dest_dir = _receipts_output_dir()
             path = Path(item["path"])
-            final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
+            final_path = rename_receipt_image(path, data, category, dest_dir)
             data["_new_filename"] = final_path.name
             data["_file"]         = fname
             data["_image_path"]   = str(final_path)
@@ -527,6 +544,83 @@ def _drain_once() -> bool:
     return True
 
 
+# ── Unsupported / invalid intake files ─────────────────────────────────────────
+
+def _reject_intake_file(p: Path, reason: str) -> dict | None:
+    """Move an unreadable intake file out of the way into REJECTED_FOLDER and
+    announce it so the user can review or delete it.
+
+    Returns the quarantined item's metadata (or ``None`` if the move failed). The
+    file is given a collision-safe name; its reason is remembered and a ``rejected``
+    event is broadcast so the UI can surface a notification with a delete button.
+    """
+    try:
+        REJECTED_FOLDER.mkdir(parents=True, exist_ok=True)
+        dest = REJECTED_FOLDER / p.name
+        if dest.exists():
+            ts   = f"{int(time.time() * 1000) % 1_000_000:06d}"
+            dest = REJECTED_FOLDER / f"{p.stem}_{ts}{p.suffix}"
+        shutil.move(str(p), str(dest))
+    except Exception as exc:
+        _broadcast({"type": "log", "message": f"[intake] could not quarantine {p.name}: {exc}"})
+        return None
+
+    with _rejected_lock:
+        _rejected_reasons[dest.name] = reason
+
+    try:
+        st = dest.stat()
+        size, modified = st.st_size, datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        size, modified = 0, ""
+
+    item = {
+        "name":          dest.name,
+        "original_name": p.name,
+        "reason":        reason,
+        "ext":           p.suffix.lower() or "(none)",
+        "size":          size,
+        "modified":      modified,
+        "path":          str(dest.resolve()),
+    }
+    _broadcast({"type": "rejected", "item": item})
+    _broadcast({"type": "log",
+                "message": f"[intake] {p.name} moved to '{REJECTED_FOLDER.name}' — {reason}"})
+    return item
+
+
+def _rejected_items() -> list[dict]:
+    """Current contents of REJECTED_FOLDER as display records (newest first)."""
+    items: list[dict] = []
+    if not REJECTED_FOLDER.exists():
+        return items
+    for p in REJECTED_FOLDER.iterdir():
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        try:
+            st = p.stat()
+            size, modified, mtime = (
+                st.st_size,
+                datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+                st.st_mtime,
+            )
+        except OSError:
+            size, modified, mtime = 0, "", 0
+        with _rejected_lock:
+            reason = _rejected_reasons.get(p.name, "Unsupported file format")
+        items.append({
+            "name":     p.name,
+            "reason":   reason,
+            "ext":      p.suffix.lower() or "(none)",
+            "size":     size,
+            "modified": modified,
+            "path":     str(p.resolve()),
+            "_mtime":   mtime,
+        })
+    items.sort(key=lambda i: i.pop("_mtime"), reverse=True)
+    return items
+
+
 # ── Background watcher ─────────────────────────────────────────────────────────
 
 def _run_watcher() -> None:
@@ -535,16 +629,22 @@ def _run_watcher() -> None:
         try:
             if INTAKE_FOLDER.exists():
                 for p in sorted(INTAKE_FOLDER.iterdir()):
-                    if not p.is_file():
+                    if not p.is_file() or p.name.startswith("."):
                         continue
                     suffix = p.suffix.lower()
-                    if suffix not in SUPPORTED_EXTENSIONS:
-                        continue
 
                     with _seen_lock:
                         if p.name in _seen_intake:
                             continue
                         _seen_intake.add(p.name)
+
+                    # Anything that isn't an image or PDF can't be processed —
+                    # quarantine it and notify so the user can check or delete it.
+                    if suffix not in SUPPORTED_EXTENSIONS:
+                        reason = (f"Unsupported file type '{suffix or '(none)'}' — "
+                                  "only images and PDFs can be processed.")
+                        _reject_intake_file(p, reason)
+                        continue
 
                     if suffix in IMAGE_EXTENSIONS:
                         item = {
@@ -728,6 +828,15 @@ def _on_schedule_result(report: dict) -> None:
 async def lifespan(app: FastAPI):
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / PaddleOCR settings
+    # Session-start housekeeping: sweep away empty, non-active orphaned folders
+    # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
+    # behind by a previous run before the new session starts handing out work.
+    try:
+        removed = _run_empty_dir_cleanup()
+        if removed:
+            print(f"[startup] cleaned {len(removed)} empty orphaned folder(s)")
+    except Exception as exc:
+        print(f"[startup] empty-folder cleanup skipped: {exc}")
     threading.Thread(target=initialize_models,  daemon=True).start()
     _ensure_worker_alive()       # start the self-healing worker thread
     threading.Thread(target=_run_watcher,       daemon=True).start()
@@ -866,14 +975,28 @@ async def queue_add_intake(
     """Enqueue all unprocessed files currently in the intake folder."""
     queued: list[str] = []
     skipped: list[str] = []
+    rejected: list[dict] = []
 
     try:
-        files_in_intake = sorted(
+        all_files = sorted(
             p for p in INTAKE_FOLDER.iterdir()
-            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+            if p.is_file() and not p.name.startswith(".")
         )
     except Exception:
-        files_in_intake = []
+        all_files = []
+
+    # Anything that isn't an image or PDF can't be processed — quarantine it and
+    # notify so the user can check or delete it (same handling as the watcher).
+    files_in_intake = []
+    for p in all_files:
+        if p.suffix.lower() in SUPPORTED_EXTENSIONS:
+            files_in_intake.append(p)
+        else:
+            reason = (f"Unsupported file type '{p.suffix.lower() or '(none)'}' — "
+                      "only images and PDFs can be processed.")
+            item = _reject_intake_file(p, reason)
+            if item:
+                rejected.append(item)
 
     for p in files_in_intake:
         with _seen_lock:
@@ -952,7 +1075,8 @@ async def queue_add_intake(
     with _work_lock:
         n_pending = len(_work_queue)
 
-    return JSONResponse({"queued": queued, "skipped": skipped, "pending": n_pending})
+    return JSONResponse({"queued": queued, "skipped": skipped,
+                         "rejected": rejected, "pending": n_pending})
 
 
 @app.post("/queue/cancel")
@@ -1072,6 +1196,76 @@ async def list_intake_files():
         return JSONResponse({"files": files, "count": len(files)})
     except Exception as exc:
         return JSONResponse({"files": [], "count": 0, "error": str(exc)})
+
+
+@app.get("/intake/rejected")
+async def list_rejected_files():
+    """List intake files that were quarantined because they aren't a supported
+    image/PDF — with the reason, size, and full on-disk location for each."""
+    items = _rejected_items()
+    return JSONResponse({
+        "ok":     True,
+        "count":  len(items),
+        "folder": str(REJECTED_FOLDER.resolve()),
+        "items":  items,
+    })
+
+
+class RejectedDeleteRequest(BaseModel):
+    name: str = ""
+
+
+@app.post("/intake/rejected/delete")
+async def delete_rejected_file(body: RejectedDeleteRequest):
+    """Delete one quarantined file by name. Guards against path traversal and
+    only ever unlinks a file that resolves inside REJECTED_FOLDER."""
+    name = (body.name or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return JSONResponse({"ok": False, "error": "invalid name"}, status_code=400)
+
+    target = (REJECTED_FOLDER / name).resolve()
+    try:
+        target.relative_to(REJECTED_FOLDER.resolve())
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "outside quarantine folder"}, status_code=400)
+
+    if not target.is_file():
+        with _rejected_lock:
+            _rejected_reasons.pop(name, None)
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+    try:
+        target.unlink()
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    with _rejected_lock:
+        _rejected_reasons.pop(name, None)
+    _broadcast({"type": "log", "message": f"[intake] deleted quarantined file {name}"})
+    return JSONResponse({"ok": True, "deleted": name})
+
+
+@app.post("/intake/rejected/delete-all")
+async def delete_all_rejected_files():
+    """Delete every quarantined file at once."""
+    deleted: list[str] = []
+    errors: list[dict] = []
+    for item in _rejected_items():
+        p = (REJECTED_FOLDER / item["name"]).resolve()
+        try:
+            p.relative_to(REJECTED_FOLDER.resolve())
+        except ValueError:
+            continue
+        try:
+            if p.is_file():
+                p.unlink()
+                deleted.append(item["name"])
+        except OSError as exc:
+            errors.append({"name": item["name"], "error": str(exc)})
+    with _rejected_lock:
+        for name in deleted:
+            _rejected_reasons.pop(name, None)
+    return JSONResponse({"ok": True, "count": len(deleted), "deleted": deleted, "errors": errors})
 
 
 # ── Spreadsheet generation ─────────────────────────────────────────────────────
@@ -2600,11 +2794,14 @@ def _prune_empty_dirs(root: Path) -> list[Path]:
     return removed
 
 
-@app.post("/maintenance/cleanup-empty-dirs")
-async def cleanup_empty_dirs():
-    """Delete emptied, orphaned job folders — temp staging (_upload_*, _pdf_*) or
-    real per-job subfolders — left behind in the working directories. Only ever
-    removes directories that contain no files. Report includes each location.
+def _run_empty_dir_cleanup() -> list[dict]:
+    """Remove emptied, orphaned job folders — temp staging (_upload_*, _pdf_*) or
+    real per-job / dated subfolders — left behind in the working directories. Only
+    ever removes directories that contain no files; never the intake root or
+    pending input files. Returns one record per removed directory.
+
+    Shared by the maintenance endpoint and the session-start sweep so both judge
+    "removable" by exactly the same rules.
     """
     removed: list[dict] = []
 
@@ -2628,6 +2825,16 @@ async def cleanup_empty_dirs():
     except OSError:
         pass
 
+    return removed
+
+
+@app.post("/maintenance/cleanup-empty-dirs")
+async def cleanup_empty_dirs():
+    """Delete emptied, orphaned job folders — temp staging (_upload_*, _pdf_*) or
+    real per-job subfolders — left behind in the working directories. Only ever
+    removes directories that contain no files. Report includes each location.
+    """
+    removed = _run_empty_dir_cleanup()
     return JSONResponse({"ok": True, "count": len(removed), "removed": removed})
 
 

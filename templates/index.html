@@ -738,6 +738,50 @@
       margin-bottom: 16px; background: rgba(0,0,0,0.3); display: block; cursor: zoom-in; }
     .mr-preview-wrap { text-align: center; margin-bottom: 16px; }
 
+    /* Unsupported intake files notification */
+    .rejected-panel {
+      margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+      border: 1px solid rgba(245,158,11,0.4); border-left: 3px solid var(--warning);
+      background: rgba(245,158,11,0.08);
+    }
+    .rejected-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .rejected-title { font-size: 13px; font-weight: 700; color: var(--warning); }
+    .rejected-sub { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 6px 0 10px; }
+    .rejected-sub code { font-family: ui-monospace, monospace; font-size: 10px;
+      background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; }
+    .rejected-item {
+      display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 6px;
+    }
+    .rejected-item:last-child { margin-bottom: 0; }
+    .rejected-item .rj-info { min-width: 0; flex: 1 1 auto; }
+    .rejected-item .rj-name { font-family: ui-monospace, monospace; font-size: 12px;
+      color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rejected-item .rj-meta { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+    .rejected-item .rj-del { flex-shrink: 0; }
+
+    /* Combined Review + zoom modal: a large zoomed receipt sits beside the
+       edit/approve form so one click on Review shows both the zoomed view and
+       the approval controls — no extra click to enlarge the image. */
+    .modal-box.modal-review { width: 920px; display: flex; gap: 22px; align-items: stretch; }
+    .modal-review .mr-image-pane {
+      flex: 1 1 47%; min-width: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center;
+      background: rgba(0,0,0,0.28); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px;
+    }
+    .modal-review .mr-image-pane .mr-preview {
+      width: 100%; max-height: 64vh; margin: 0; flex: 1 1 auto; background: transparent;
+    }
+    .modal-review .mr-zoom-hint { font-size: 11px; color: var(--muted); margin-top: 10px; }
+    .modal-review .mr-form-pane { flex: 1 1 53%; min-width: 0; display: flex; flex-direction: column; }
+    .modal-review .mr-form-pane .btn-row { margin-top: auto; }
+    @media (max-width: 760px) {
+      .modal-box.modal-review { flex-direction: column; width: 540px; }
+      .modal-review .mr-image-pane .mr-preview { max-height: 38vh; }
+    }
+
     /* Image lightbox */
     #img-lightbox {
       position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 2000;
@@ -1243,6 +1287,18 @@
         Send Report Now
       </button>
     </div>
+    <!-- Unsupported intake files: anything copied into the intake folder that
+         isn't an image or PDF is quarantined and surfaced here for review/delete. -->
+    <div id="rejected-panel" class="rejected-panel hidden">
+      <div class="rejected-head">
+        <span class="rejected-title">&#9888; <span id="rejected-count">0</span> unsupported file(s) skipped</span>
+        <button class="btn btn-cancel btn-sm" id="rejected-clear-all" title="Delete every skipped file">Delete all</button>
+      </div>
+      <p class="rejected-sub">These were copied into the intake folder but aren't images or PDFs,
+        so they can't be processed. They were moved to an <code>unsupported</code> folder. Review them,
+        then delete what you don't need.</p>
+      <div id="rejected-list"></div>
+    </div>
     <div id="file-list"></div>
   </div>
 
@@ -1655,37 +1711,40 @@
 
 <!-- ── Manual Review Modal ─────────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="manual-review-modal" role="dialog" aria-modal="true" aria-labelledby="mr-modal-title">
-  <div class="modal-box">
-    <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
-    <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
-    <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
-      &#10003; This receipt is approved
-    </div>
-    <div class="mr-preview-wrap" id="mr-preview-wrap" style="display:none">
+  <div class="modal-box modal-review">
+    <div class="mr-image-pane" id="mr-preview-wrap" style="display:none">
       <img id="mr-preview-img" class="mr-preview" src="" alt="Receipt image">
+      <span class="mr-zoom-hint">Click the image to view it full screen</span>
     </div>
-    <div class="modal-fields">
-      <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
-      <label>Date <input type="date" id="mr-date"></label>
-      <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
-      <label>Category
-        <select id="mr-category">
-          <option value="fuel">Fuel</option>
-          <option value="mats">Materials</option>
-          <option value="misc" selected>Miscellaneous</option>
-        </select>
-      </label>
-      <label>Job Name <input type="text" id="mr-job-name"></label>
-      <label>Job Number <input type="text" id="mr-job-number"></label>
-    </div>
-    <div class="modal-full-row">
-      Summary
-      <input type="text" id="mr-summary" placeholder="Brief description of purchase">
-    </div>
-    <div class="btn-row" style="flex-wrap:wrap;gap:8px">
-      <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
-      <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
-      <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
+    <div class="mr-form-pane">
+      <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
+      <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
+      <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
+        &#10003; This receipt is approved
+      </div>
+      <div class="modal-fields">
+        <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
+        <label>Date <input type="date" id="mr-date"></label>
+        <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
+        <label>Category
+          <select id="mr-category">
+            <option value="fuel">Fuel</option>
+            <option value="mats">Materials</option>
+            <option value="misc" selected>Miscellaneous</option>
+          </select>
+        </label>
+        <label>Job Name <input type="text" id="mr-job-name"></label>
+        <label>Job Number <input type="text" id="mr-job-number"></label>
+      </div>
+      <div class="modal-full-row">
+        Summary
+        <input type="text" id="mr-summary" placeholder="Brief description of purchase">
+      </div>
+      <div class="btn-row" style="flex-wrap:wrap;gap:8px">
+        <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
+        <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
+        <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2118,6 +2177,11 @@ function connectSSE() {
     } else if (msg.type === 'stall_recovered') {
       showToast(`Stalled item re-queued: ${msg.filename}`, true);
 
+    } else if (msg.type === 'rejected') {
+      const it = msg.item || {};
+      showToast(`Skipped unsupported file: ${it.original_name || it.name || 'file'}`, false);
+      loadRejected();
+
     } else if (msg.type === 'kanban_cleared') {
       completedCount = 0;
       _updateGenerateCard();
@@ -2267,6 +2331,80 @@ async function loadIntakeCount() {
   } catch (_) {}
 }
 
+// ── Unsupported intake files ──────────────────────────────────────────────────
+function _fmtBytes(n) {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function _renderRejected(items) {
+  const panel = document.getElementById('rejected-panel');
+  const list  = document.getElementById('rejected-list');
+  const count = document.getElementById('rejected-count');
+  if (!items || items.length === 0) {
+    panel.classList.add('hidden');
+    list.innerHTML = '';
+    return;
+  }
+  count.textContent = items.length;
+  list.innerHTML = '';
+  items.forEach(it => {
+    const row = document.createElement('div');
+    row.className = 'rejected-item';
+    const meta = [it.reason, _fmtBytes(it.size), it.modified].filter(Boolean).join(' · ');
+    row.innerHTML = `
+      <div class="rj-info">
+        <div class="rj-name" title="${esc(it.path || it.name)}">${esc(it.name)}</div>
+        <div class="rj-meta">${esc(meta)}</div>
+      </div>
+      <button class="btn btn-cancel btn-sm rj-del" title="Delete this file">Delete</button>`;
+    row.querySelector('.rj-del').addEventListener('click', () => _deleteRejected(it.name));
+    list.appendChild(row);
+  });
+  panel.classList.remove('hidden');
+}
+
+async function loadRejected() {
+  try {
+    const res = await fetch('/intake/rejected');
+    if (!res.ok) return;
+    const d = await res.json();
+    _renderRejected(d.items || []);
+  } catch (_) {}
+}
+
+async function _deleteRejected(name) {
+  try {
+    const res = await fetch('/intake/rejected/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const d = await res.json();
+    if (d.ok) showToast(`Deleted ${name}`, true);
+    else showToast(`Error: ${d.error || 'could not delete'}`, false);
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    loadRejected();
+  }
+}
+
+document.getElementById('rejected-clear-all').addEventListener('click', async () => {
+  if (!confirm('Delete all skipped unsupported files? This cannot be undone.')) return;
+  try {
+    const res = await fetch('/intake/rejected/delete-all', { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) showToast(`Deleted ${d.count} file(s)`, true);
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  } finally {
+    loadRejected();
+  }
+});
+
 // ── Queue intake files (manual enqueue of everything in the intake folder) ────
 document.getElementById('queue-intake-btn').addEventListener('click', async () => {
   const btn = document.getElementById('queue-intake-btn');
@@ -2281,7 +2419,8 @@ document.getElementById('queue-intake-btn').addEventListener('click', async () =
     if (!res.ok) throw new Error(d.error || `Server error: ${res.status}`);
     _saveFields();
     const skippedMsg = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
-    showToast(`${(d.queued || []).length} intake file(s) added to queue${skippedMsg}`, true);
+    const rejectedMsg = d.rejected && d.rejected.length ? `, ${d.rejected.length} unsupported skipped` : '';
+    showToast(`${(d.queued || []).length} intake file(s) added to queue${skippedMsg}${rejectedMsg}`, true);
     progressCard.classList.remove('hidden');
     kanbanCard.classList.remove('hidden');
   } catch (err) {
@@ -2289,6 +2428,7 @@ document.getElementById('queue-intake-btn').addEventListener('click', async () =
   } finally {
     btn.disabled = false;
     loadIntakeCount();
+    loadRejected();
   }
 });
 
@@ -3875,6 +4015,7 @@ function celebrate() {
 connectSSE();
 loadWatchStatus();
 loadIntakeCount();
+loadRejected();
 loadLMStudioModels();
 loadModels();
 loadSettings();
@@ -3883,6 +4024,7 @@ loadStats();
 loadReports();
 // Keep the intake count and the LM Studio health chip honest while the page idles
 setInterval(loadIntakeCount, 15000);
+setInterval(loadRejected, 20000);
 setInterval(loadLMStudioModels, 30000);
 </script>
 </body>

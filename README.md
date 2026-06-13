@@ -30,7 +30,9 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Insights dashboard** — Live spend analytics: total/average/flagged tiles, a category donut, an annotated spend-over-time chart (daily bars, cumulative line, average marker, peak callout), and top-vendor rankings (dependency-free SVG charts)
 - **CSV export** — One click exports all completed receipts as a spreadsheet-ready CSV
 - **Report history** — Browse and re-download every previously generated workbook
-- **Maintenance tools** — Scan the working folders for orphaned (unreferenced) files — each reported with its full on-disk location — and one-click delete emptied job/temp folders
+- **Maintenance tools** — Scan the working folders for orphaned (unreferenced) files — each reported with its full on-disk location — and one-click delete emptied job/temp folders. Empty orphaned folders are also swept automatically at the start of every session
+- **Unsupported-file handling** — Anything copied into the intake folder that isn't an image or PDF is moved into an `unsupported` quarantine folder and surfaced as a notification (with the reason, size, and location) and a one-click delete button — nothing is processed or silently dropped
+- **Dated receipt folders** — Completed receipt images are grouped into short, dated subfolders (`output/receipts/Processed_<YYYY-MM-DD>/`) so each day's processed receipts stay together
 - **Board search** — Filter receipt cards by vendor, filename, or category (press `/` to focus)
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
@@ -118,7 +120,7 @@ Every card has a **×** dismiss button. **Clear Board** (appears once any cards 
 
 Once receipts reach the Completed column, a **Generate Spreadsheet** card appears. Click it to build and download the Excel workbook. The file is named `Reimbursements_EmployeeName_YYYY-MM-DD.xlsx`.
 
-The card also has a **Require review & approval** checkbox. While it's on, generation is blocked (button disabled, and the server rejects the request) until every completed receipt has been approved via the **✎ Review & Approve** button on its card — the status line shows how many receipts still need review and updates live as you approve them.
+The card also has a **Require review & approval** checkbox. While it's on, generation is blocked (button disabled, and the server rejects the request) until every completed receipt has been approved via the **✎ Review & Approve** button on its card — the status line shows how many receipts still need review and updates live as you approve them. The Review & Approve dialog opens with a **large, zoomed view of the receipt right beside the editable fields and Approve button**, so you can verify and approve in one step (click the image to go full-screen).
 
 ---
 
@@ -305,7 +307,7 @@ Receipt image / PDF
          ▼
   ┌─────────────┐
   │  Rename &   │  fuel_12-30-24_shell.jpg  (category_MM-DD-YY_vendor.ext)
-  │  Move       │  Saved to output/receipts/
+  │  Move       │  Saved to output/receipts/Processed_<YYYY-MM-DD>/
   └──────┬──────┘
          │
          ▼
@@ -424,7 +426,10 @@ Numbers**.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/maintenance/orphans` | Report unreferenced files in the working folders — each with `folder`, `name`, full `path`, `size`, `modified` — plus a list of empty temp dirs. Report-only |
-| `POST` | `/maintenance/cleanup-empty-dirs` | Delete emptied job/temp folders (`_upload_*`, `_pdf_*`, and any empty subfolder) from the working directories. Returns the removed locations |
+| `POST` | `/maintenance/cleanup-empty-dirs` | Delete emptied job/temp folders (`_upload_*`, `_pdf_*`, and any empty subfolder) from the working directories. Returns the removed locations. Also runs automatically at session start |
+| `GET` | `/intake/rejected` | List unsupported files quarantined from the intake folder — each with `name`, `reason`, `ext`, `size`, `modified`, full `path` |
+| `POST` | `/intake/rejected/delete` | Delete one quarantined file by `name` (path-traversal guarded) |
+| `POST` | `/intake/rejected/delete-all` | Delete every quarantined file |
 | `POST` | `/admin/restart` | Restart the server process (Docker relaunches it) |
 
 ### Watch Mode
