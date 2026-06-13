@@ -1864,7 +1864,7 @@ function escJs(str) {
 }
 function showToast(msg, ok) {
   const t = document.getElementById('toast');
-  t.innerHTML = msg;
+  t.textContent = msg;
   t.className = `toast ${ok ? 'toast-ok' : 'toast-err'} show`;
   setTimeout(() => t.classList.remove('show'), 3500);
 }
@@ -2082,7 +2082,6 @@ function moveCard(filename, newStatus, data, model, errorMsg, steps) {
   if (boardSearchInput.value.trim()) applyBoardSearch();
   const hasCards = Object.keys(receiptCards).length > 0;
   document.getElementById('clear-board-btn').classList.toggle('hidden', !hasCards);
-  _updateApprovalWarning();
 }
 
 // ── Kanban folder shortcuts ────────────────────────────────────────────────────
@@ -2098,12 +2097,15 @@ window.openKanbanFolder = async function(key) {
 
 // ── Global SSE connection ─────────────────────────────────────────────────────
 let _sse = null;
+let _sseReconnectTimer = null;
 
 function connectSSE() {
+  if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
   if (_sse) { try { _sse.close(); } catch(_) {} }
   _sse = new EventSource('/events');
 
   _sse.onmessage = e => {
+   try {
     const msg = JSON.parse(e.data);
 
     if (msg.type === 'full_state') {
@@ -2202,11 +2204,20 @@ function connectSSE() {
       loadStats();
       showToast('Board cleared', true);
     }
+   } catch (err) {
+     console.warn('bad SSE frame', e.data);
+     return;
+   }
   };
 
   _sse.onerror = () => {
-    // Reconnect automatically after 3 seconds
-    setTimeout(connectSSE, 3000);
+    // Reconnect automatically after 3 seconds. Guard against piling up timers:
+    // only one reconnect may be pending at a time.
+    if (_sseReconnectTimer) return;
+    _sseReconnectTimer = setTimeout(() => {
+      _sseReconnectTimer = null;
+      connectSSE();
+    }, 3000);
   };
 }
 
@@ -2268,18 +2279,6 @@ function _updateApprovalGate(doneCards) {
       toApproveBadge.style.display = 'none';
     }
   }
-  _updateApprovalWarning();
-}
-
-function _updateApprovalWarning() {
-  const chk = document.getElementById('require-approval');
-  const warn = document.getElementById('approval-warning');
-  const cntEl = document.getElementById('unapproved-count');
-  if (!chk || !warn || !cntEl) return;
-  if (!chk.checked) { warn.style.display = 'none'; return; }
-  const unapproved = Object.values(receiptCards).filter(c => c.status === 'done' && !c.data?._approved).length;
-  cntEl.textContent = unapproved;
-  warn.style.display = unapproved > 0 ? '' : 'none';
 }
 
 // ── Add to Queue (file upload) ────────────────────────────────────────────────
@@ -3211,7 +3210,6 @@ async function loadReviewSettings() {
     const d = await (await fetch('/settings/review')).json();
     // Default to true if not explicitly set to false
     document.getElementById('require-approval').checked = d.require_approval !== false;
-    _updateApprovalWarning();
   } catch (_) {}
   _updateApprovalGate();
 }
@@ -3497,12 +3495,6 @@ document.getElementById('save-settings-btn').addEventListener('click', async () 
 });
 
 // ── Orphaned-file check ───────────────────────────────────────────────────────
-function _fmtBytes(n) {
-  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
-  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
-  return `${n} B`;
-}
-
 function renderOrphanResults(d) {
   const box = document.getElementById('orphan-results');
   if (!d.count && !(d.empty_dirs || []).length) {
@@ -3879,10 +3871,6 @@ function renderVendors(vendors) {
 }
 
 // ── Report history ────────────────────────────────────────────────────────────
-function _fmtBytes(n) {
-  return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
-}
-
 async function loadReports() {
   try {
     const res = await fetch('/reports');

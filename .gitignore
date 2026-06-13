@@ -5,5 +5,12 @@ __pycache__/
 .pytest_cache/
 output/
 intake/
-receipts/
+export/
+processing/
+failed/
+watch_inbox/
+watch_state/
+config/
+.app_secrets.json
 .DS_Store
+*.xlsx

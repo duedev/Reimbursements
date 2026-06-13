@@ -51,6 +51,11 @@ GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       "")
 # that may have reused a stale image). Override at build time with BUILD_TAG.
 APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
+# Per-request timeout (seconds) for the LM Studio / OpenAI client. Without it a
+# hung model request blocks a worker thread forever; bounded retries cover
+# transient drops. Override via LLM_TIMEOUT.
+LLM_TIMEOUT          = float(os.getenv("LLM_TIMEOUT", "120"))
+LLM_MAX_RETRIES      = int(os.getenv("LLM_MAX_RETRIES", "2"))
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
 
@@ -67,6 +72,10 @@ IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff
 PDF_EXTENSIONS       = {".pdf"}
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
 IMAGE_MAX_PX         = 1568
+# Hard cap on pages rendered from a single PDF — a huge or maliciously-crafted
+# PDF could otherwise exhaust disk by expanding to thousands of JPEGs. Override
+# via PDF_MAX_PAGES.
+PDF_MAX_PAGES        = int(os.getenv("PDF_MAX_PAGES", "50"))
 
 # Runtime state — both selectable from the UI
 # _active_ocr_model:    empty string = skip dedicated OCR step, use distill model directly
@@ -456,10 +465,20 @@ def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
     out: list[Path] = []
     try:
         doc = fitz.open(str(pdf_path))
+        # Safety cap: never expand a single PDF to more than PDF_MAX_PAGES JPEGs,
+        # so a huge or crafted PDF can't exhaust disk.
+        page_count = len(doc)
+        n_pages = min(page_count, PDF_MAX_PAGES)
+        multi = n_pages > 1
         for i, page in enumerate(doc):
+            if i >= PDF_MAX_PAGES:
+                print(f"[pdf] {pdf_path.name}: {page_count} pages exceeds cap "
+                      f"PDF_MAX_PAGES={PDF_MAX_PAGES} — skipping the remaining "
+                      f"{page_count - PDF_MAX_PAGES} page(s)")
+                break
             mat = fitz.Matrix(2.0, 2.0)
             pix = page.get_pixmap(matrix=mat)
-            suffix = f"_p{i + 1}" if len(doc) > 1 else ""
+            suffix = f"_p{i + 1}" if multi else ""
             img_path = dest_dir / f"{pdf_path.stem}{suffix}.jpg"
             pix.save(str(img_path))
             out.append(img_path)
@@ -1187,6 +1206,13 @@ def reconcile_amount(data: Optional[dict], raw_text: str) -> Optional[str]:
         if any(abs(amount - c) < 0.005 for c in candidates):
             return None        # amount is printed on the receipt — keep it
 
+        # Last guard before overwriting: only replace an amount that looks like a
+        # hallucination. If the model's value appears anywhere among the money
+        # values in the raw OCR text, it is a faithful copy — leave it alone.
+        # (The subtotal-mismatch case above is the one sanctioned exception.)
+        if any(abs(amount - v) < 0.005 for v in _money_values(raw_text)):
+            return None
+
     if not best or abs(best - amount) < 0.005:
         return None
 
@@ -1246,9 +1272,12 @@ def classify_category(data: dict) -> str:
     # raw OCR text but not in extracted vendor adds a secondary signal (+2); fuel
     # keywords anywhere in the combined text add +1 each.  All matches are
     # word-bounded (see _kw_pattern) so generic receipt text can't fake a signal.
+    # Purely-numeric brands ("76") are too generic in raw OCR — a space-delimited
+    # "76" (PUMP 76, 76 MAIN ST, LANE 76) reads as fuel — so they are honoured ONLY
+    # when they match the extracted VENDOR field, never the raw OCR text.
     fuel_score = sum(3 for rx in _FUEL_VENDOR_PATTERNS.values() if rx.search(vendor))
-    fuel_score += sum(2 for rx in _FUEL_VENDOR_PATTERNS.values()
-                      if rx.search(raw_ocr) and not rx.search(vendor))
+    fuel_score += sum(2 for kw, rx in _FUEL_VENDOR_PATTERNS.items()
+                      if not kw.isdigit() and rx.search(raw_ocr) and not rx.search(vendor))
     fuel_score += sum(1 for rx in _FUEL_KEYWORD_PATTERNS.values() if rx.search(combined))
 
     if fuel_score >= 3:
@@ -1548,7 +1577,10 @@ def process_receipts_batch(
     log(f"Found {total} receipt image(s).")
     log(f"  OCR model:    {_active_ocr_model or '(none — direct vision)'}")
     log(f"  Distill model: {_active_distill_model}")
-    client = openai_client if openai_client is not None else OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
+    client = openai_client if openai_client is not None else OpenAI(
+        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
+    )
 
     results: list[dict] = []
     skipped: list[str]  = []
