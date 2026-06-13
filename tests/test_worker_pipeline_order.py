@@ -60,11 +60,13 @@ def test_extraction_reads_original_file_then_compresses_at_export(worker_env, mo
     # Extraction ran against the ORIGINAL .png — compression no longer happens first
     assert seen_paths and seen_paths[0].suffix == ".png"
 
-    # A processed (still uncompressed) file landed in IMAGES_FOLDER
+    # A processed (still uncompressed) file landed in a dated subfolder of
+    # IMAGES_FOLDER (receipts/Processed_YYYY-MM-DD/…)
     assert len(server._results) == 1
     result = server._results[0]
     stored = Path(result["_image_path"])
-    assert stored.exists() and stored.parent == images
+    assert stored.exists() and stored.parent.parent == images
+    assert stored.parent.name.startswith("Processed_")
     assert stored.suffix == ".png"          # not yet compressed
     assert not result.get("_compressed")
 

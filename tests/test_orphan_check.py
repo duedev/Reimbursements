@@ -154,6 +154,43 @@ def test_delete_orphans_noop_when_clean(env):
     assert d["ok"] is True and d["count"] == 0 and d["freed"] == 0
 
 
+def test_session_start_sweeps_empty_orphaned_dirs(tmp_path, monkeypatch):
+    """On startup the lifespan sweep removes empty orphaned folders but leaves
+    populated ones (and pending intake) alone."""
+    intake     = tmp_path / "intake"
+    out        = tmp_path / "out"
+    images     = out / "receipts"
+    processing = out / "processing"
+    for d in (intake, images, processing):
+        d.mkdir(parents=True)
+
+    # Empty leftovers that should be swept the moment the session starts
+    (images / "Processed_2026-05-01").mkdir()
+    (intake / "_pdf_old").mkdir()
+    # Populated folder that must survive
+    keep = images / "Processed_2026-06-13"
+    keep.mkdir()
+    (keep / "fuel_shell.jpg").write_bytes(b"x")
+
+    monkeypatch.setattr(server, "INTAKE_FOLDER", intake)
+    monkeypatch.setattr(server, "OUT_FOLDER", out)
+    monkeypatch.setattr(server, "IMAGES_FOLDER", images)
+    monkeypatch.setattr(server, "PROCESSING_FOLDER", processing)
+    monkeypatch.setattr(server, "STATE_FILE", out / ".app_state.json")
+    monkeypatch.setattr(server, "initialize_models", lambda: None)
+    monkeypatch.setattr(server, "_run_watcher", lambda: None)
+    monkeypatch.setattr(server, "_run_stall_checker", lambda: None)
+    monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
+
+    # Starting the client runs the lifespan startup, which performs the sweep.
+    with TestClient(server.app):
+        pass
+
+    assert not (images / "Processed_2026-05-01").exists()
+    assert not (intake / "_pdf_old").exists()
+    assert keep.exists() and (keep / "fuel_shell.jpg").exists()
+
+
 def test_cleanup_removes_empty_dirs_keeps_populated(env):
     client, intake, images, processing = env
     # Empty job folder + nested empties under receipts — should be removed
