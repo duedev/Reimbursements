@@ -48,9 +48,11 @@ from process_receipts import (
     list_available_models,
     _try_load_model,
     pdf_to_images,
+    extract_archive,
     APP_VERSION,
     IMAGE_EXTENSIONS,
     PDF_EXTENSIONS,
+    ARCHIVE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     OUTPUT_FOLDER,
     RECEIPTS_FOLDER,
@@ -158,6 +160,7 @@ def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
         "autocrop":     _pr.AUTOCROP_ENABLED,
+        "grayscale":    _pr.GRAYSCALE_ENABLED,
         "compress":     _pr.COMPRESS_ENABLED,
         "paddleocr":    _pr.PADDLEOCR_ENABLED,
         "jpeg_quality": _pr.JPEG_QUALITY,
@@ -172,6 +175,8 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     proc = cfg.get("processing") or {}
     if "autocrop" in proc:
         _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
+    if "grayscale" in proc:
+        _pr.GRAYSCALE_ENABLED = bool(proc["grayscale"])
     if "compress" in proc:
         _pr.COMPRESS_ENABLED = bool(proc["compress"])
     if "paddleocr" in proc:
@@ -644,6 +649,45 @@ def _run_watcher() -> None:
                             continue
                         _seen_intake.add(p.name)
 
+                    # Zip archives: expand into member images/PDFs, queue each, and
+                    # move the archive out of intake (extract → import → clean up).
+                    if suffix in ARCHIVE_EXTENSIONS:
+                        try:
+                            members = extract_archive(p, INTAKE_FOLDER / f"_zip_{p.stem}")
+                            for m in members:
+                                with _seen_lock:
+                                    _seen_intake.add(m.name)
+                                item = {
+                                    "filename":   m.name,
+                                    "path":       str(m),
+                                    "employee":   _last_context.get("employee", "Employee"),
+                                    "job_name":   _last_context.get("job_name", ""),
+                                    "job_number": _last_context.get("job_number", ""),
+                                }
+                                _cache_item(item)
+                                with _work_lock:
+                                    _work_queue.append(item)
+                                _update_kanban(m.name, "queued", None)
+                                _broadcast({
+                                    "type":     "kanban_update",
+                                    "filename": m.name,
+                                    "status":   "queued",
+                                    "data":     {},
+                                    "model":    "",
+                                })
+                            IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(p), str(IMAGES_FOLDER / p.name))
+                            _broadcast({
+                                "type":    "log",
+                                "message": f"[watcher] zip {p.name} → {len(members)} file(s) queued",
+                            })
+                        except Exception as exc:
+                            _broadcast({
+                                "type":    "log",
+                                "message": f"[watcher] zip error {p.name}: {exc}",
+                            })
+                        continue
+
                     # Anything that isn't an image or PDF can't be processed —
                     # quarantine it and notify so the user can check or delete it.
                     if suffix not in SUPPORTED_EXTENSIONS:
@@ -897,7 +941,17 @@ async def _auth_guard(request: Request, call_next):
         resp = await call_next(request)
         supplied = request.query_params.get("token", "")
         if supplied and _secrets.compare_digest(supplied, token):
-            resp.set_cookie("auth_token", token, httponly=True, samesite="strict")
+            # Persist the token so the SPA's cookie-only requests (receipt images,
+            # the SSE stream) keep authenticating across reloads, browser restarts,
+            # and PWA relaunches — the old session cookie was dropped on restart,
+            # which over a tunnel left the shell loading but every image/API call
+            # 401-ing. SameSite=Lax (not Strict) so following a link/bookmark to the
+            # app still sends it; Secure only when actually served over HTTPS so a
+            # plain-HTTP LAN install can still set the cookie.
+            https = (request.url.scheme == "https"
+                     or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
+            resp.set_cookie("auth_token", token, max_age=31_536_000, path="/",
+                            httponly=True, samesite="lax", secure=https)
         return resp
 
     supplied = (
@@ -944,12 +998,27 @@ async def queue_add(
     queued: list[str] = []
     skipped: list[str] = []
 
+    # Stage every uploaded file to disk, expanding any .zip into its member
+    # images/PDFs and discarding the archive itself (extract → import → clean up).
+    staged: list[Path] = []
     for f in files:
-        fname = f.filename or "receipt"
-        dest  = tmp_dir / fname
+        dest = tmp_dir / Path(f.filename or "receipt").name   # basename only → no path traversal
         with open(dest, "wb") as fh:
             fh.write(await f.read())
+        if dest.suffix.lower() in ARCHIVE_EXTENSIONS:
+            members = extract_archive(dest, tmp_dir)
+            dest.unlink(missing_ok=True)
+            if members:
+                staged.extend(members)
+            else:
+                _broadcast({"type": "log",
+                            "message": f"[upload] {dest.name}: no images or PDFs found in archive"})
+        else:
+            staged.append(dest)
 
+    # Dispatch each staged image/PDF into the work queue.
+    for dest in staged:
+        fname  = dest.name
         suffix = dest.suffix.lower()
 
         if suffix in PDF_EXTENSIONS:
@@ -1042,15 +1111,28 @@ async def queue_add_intake(
     except Exception:
         all_files = []
 
-    # Anything that isn't an image or PDF can't be processed — quarantine it and
-    # notify so the user can check or delete it (same handling as the watcher).
+    # Anything that isn't an image, PDF, or archive can't be processed — quarantine
+    # it and notify so the user can check or delete it (same handling as the
+    # watcher). Zips are expanded here into their member images/PDFs, the members
+    # join the processing list, and the archive is moved out of intake.
     files_in_intake = []
     for p in all_files:
-        if p.suffix.lower() in SUPPORTED_EXTENSIONS:
+        suffix = p.suffix.lower()
+        if suffix in ARCHIVE_EXTENSIONS:
+            members = extract_archive(p, INTAKE_FOLDER / f"_zip_{p.stem}")
+            files_in_intake.extend(members)
+            try:
+                IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(p), str(IMAGES_FOLDER / p.name))
+            except Exception:
+                p.unlink(missing_ok=True)
+            _broadcast({"type": "log",
+                        "message": f"[intake] {p.name} → {len(members)} file(s) extracted"})
+        elif suffix in SUPPORTED_EXTENSIONS:
             files_in_intake.append(p)
         else:
-            reason = (f"Unsupported file type '{p.suffix.lower() or '(none)'}' — "
-                      "only images and PDFs can be processed.")
+            reason = (f"Unsupported file type '{suffix or '(none)'}' — "
+                      "only images, PDFs, and .zip archives can be processed.")
             item = _reject_intake_file(p, reason)
             if item:
                 rejected.append(item)
@@ -2328,6 +2410,7 @@ async def get_version():
 
 class ProcessingSettingsRequest(BaseModel):
     autocrop:     bool | None = None
+    grayscale:    bool | None = None
     compress:     bool | None = None
     paddleocr:    bool | None = None
     jpeg_quality: int | None = None
@@ -2344,6 +2427,7 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         cfg = _load_config()
         proc = cfg.get("processing") or {}
         if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
+        if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)
         if body.paddleocr is not None: proc["paddleocr"] = bool(body.paddleocr)
         if body.jpeg_quality is not None:
@@ -2576,13 +2660,42 @@ async def remove_saved_field(body: RemoveFieldRequest):
 async def paddle_status():
     """Check whether PaddleOCR is installed and loadable."""
     def _check():
+        # Apply the langchain compat shim first so a paddlex-side langchain>=1.0
+        # break doesn't masquerade as "PaddleOCR not installed".
+        try:
+            _pr._shim_langchain_for_paddle()
+        except Exception:
+            pass
         try:
             from paddleocr import PaddleOCR  # noqa: F401
         except ImportError as exc:
+            missing = getattr(exc, "name", "") or ""
+            # paddleocr itself missing → genuinely not installed.
+            if missing == "paddleocr" or missing.startswith("paddleocr."):
+                return {
+                    "available": False,
+                    "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
+                    "fix": ("Install the pinned set: pip install 'paddlepaddle==3.0.*' "
+                            "'paddleocr==3.0.*' 'paddlex==3.0.*'"),
+                }
+            # paddleocr IS installed but a transitive import failed. The classic
+            # culprit is langchain>=1.0 removing langchain.docstore (used by
+            # paddlex). Don't mislabel that as "not installed".
+            if missing.startswith("langchain"):
+                return {
+                    "available": False,
+                    "reason": (f"PaddleOCR is installed, but a dependency import failed: {exc}. "
+                               "paddlex imports 'langchain.docstore', which langchain>=1.0 removed."),
+                    "fix": ("The app now shims this automatically — if it still fails, either pin a "
+                            "compatible langchain (pip install 'langchain<1.0') or install the split "
+                            "packages it moved to (pip install langchain-core langchain-text-splitters)."),
+                }
             return {
                 "available": False,
-                "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
-                "fix": "Install it with: pip install paddleocr paddlepaddle",
+                "reason": f"PaddleOCR is installed, but a dependency import failed: {exc}",
+                "fix": (f"A package PaddleOCR needs ('{missing or 'unknown'}') is missing or "
+                        "incompatible. Reinstall the pinned set: pip install 'paddlepaddle==3.0.*' "
+                        "'paddleocr==3.0.*' 'paddlex==3.0.*'"),
             }
         # Retry a previously failed init so a fixed environment is picked up
         # without restarting the server.
@@ -2722,9 +2835,10 @@ def _collect_orphans() -> tuple[list[dict], list[str], int]:
             return
         for p in sorted(folder.rglob("*")):
             if p.is_dir():
-                # Stale temp dirs (_pdf_* page folders, _upload_* staging) with
-                # nothing left inside are clutter worth reporting too.
-                if p.name.startswith(("_pdf_", "_upload_")) and not any(p.iterdir()):
+                # Stale temp dirs (_pdf_* page folders, _upload_* staging,
+                # _zip_* archive extractions) with nothing left inside are clutter
+                # worth reporting too.
+                if p.name.startswith(("_pdf_", "_upload_", "_zip_")) and not any(p.iterdir()):
                     empty_dirs.append(f"{label}/{p.relative_to(folder)}")
                 continue
             if not p.is_file() or p.name.startswith("."):
@@ -2754,7 +2868,7 @@ def _collect_orphans() -> tuple[list[dict], list[str], int]:
     _scan(PROCESSING_FOLDER, "processing")
     try:
         for d in sorted(INTAKE_FOLDER.iterdir()):
-            if d.is_dir() and d.name.startswith("_pdf_"):
+            if d.is_dir() and d.name.startswith(("_pdf_", "_zip_")):
                 _scan(d, f"intake/{d.name}")
                 if not any(d.iterdir()):
                     empty_dirs.append(f"intake/{d.name}")
@@ -2874,11 +2988,11 @@ def _run_empty_dir_cleanup() -> list[dict]:
         for d in _prune_empty_dirs(root):
             removed.append({"folder": label, "name": str(d.name), "path": str(d.resolve())})
 
-    # Intake temp dirs (PDF page folders / upload staging) — never the intake root
-    # or pending input files.
+    # Intake temp dirs (PDF page folders / upload staging / zip extractions) —
+    # never the intake root or pending input files.
     try:
         for d in sorted(INTAKE_FOLDER.iterdir()):
-            if d.is_dir() and d.name.startswith(("_pdf_", "_upload_")):
+            if d.is_dir() and d.name.startswith(("_pdf_", "_upload_", "_zip_")):
                 _prune_empty_dirs(d)
                 try:
                     if not any(d.iterdir()):

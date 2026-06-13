@@ -13,3 +13,7 @@ PyMuPDF>=1.24.0
 paddlepaddle==3.0.*
 paddleocr==3.0.*
 paddlex==3.0.*
+# paddlex eagerly imports langchain.docstore for a retriever the receipts fallback
+# never uses; langchain>=1.0 removed that module, which would make `import paddleocr`
+# fail with "No module named 'langchain.docstore'". process_receipts shims those
+# imports at engine-init time, so no langchain pin is required here.

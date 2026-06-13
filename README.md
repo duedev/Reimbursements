@@ -18,6 +18,8 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Web UI with live Kanban board** — Real-time receipt status tracking (Queued → OCR → Distilling → Done/Failed) via Server-Sent Events
 - **Batch & continuous modes** — Process a folder all at once, or let the watcher auto-queue new files as they appear
 - **PDF support** — PDFs are automatically expanded to per-page images before processing
+- **Zip support** — Drop (or drop into intake) a `.zip` of receipts and the app extracts the images/PDFs inside, queues them, and deletes the archive — handy for bulk uploads from a phone. Zip-slip / zip-bomb safe (caps on member count and decompressed size)
+- **Black & white for OCR** — Optional pre-pass converts each receipt to high-contrast grayscale *before* OCR/AI for crisper text recognition; toggle in **Settings → Image processing**
 - **Smart categorization** — Receipts classified as Fuel, Materials, or Miscellaneous based on vendor and content
 - **Professional Excel output** — Themed, print-ready workbook with embedded receipt images, per-category subtotals, a grand total, and accounting-format amounts. Verified compatible with both **Microsoft Excel** and **macOS Numbers** (native charts, conditional formatting, internal hyperlinks, frozen headers)
 - **Insights *in the workbook*** — A dedicated **Insights** sheet mirrors the web dashboard: KPI figures, a spend-by-category pie, top-vendor bars, and a detailed spend-over-time chart (daily columns + a cumulative trend line), all as native charts that open in Excel and Numbers
@@ -31,7 +33,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **CSV export** — One click exports all completed receipts as a spreadsheet-ready CSV
 - **Report history** — Browse and re-download every previously generated workbook
 - **Maintenance tools** — Scan the working folders for orphaned (unreferenced) files — each reported with its full on-disk location — and one-click delete emptied job/temp folders. Empty orphaned folders are also swept automatically at the start of every session
-- **Unsupported-file handling** — Anything copied into the intake folder that isn't an image or PDF is moved into an `unsupported` quarantine folder and surfaced as a notification (with the reason, size, and location) and a one-click delete button — nothing is processed or silently dropped
+- **Unsupported-file handling** — Anything copied into the intake folder that isn't an image, PDF, or `.zip` is moved into an `unsupported` quarantine folder and surfaced as a notification (with the reason, size, and location) and a one-click delete button — nothing is processed or silently dropped
 - **Dated receipt folders** — Completed receipt images are grouped into short, dated subfolders (`output/receipts/Processed_<YYYY-MM-DD>/`) so each day's processed receipts stay together
 - **Board search** — Filter receipt cards by vendor, filename, or category (press `/` to focus)
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
@@ -98,9 +100,9 @@ Open `http://localhost:8000`.
 
 | Method | How |
 |---|---|
-| **Drag & drop** | Drag image files or PDFs onto the upload zone |
+| **Drag & drop** | Drag image files, PDFs, or a `.zip` onto the upload zone |
 | **Browse** | Click the upload zone and select files |
-| **Intake folder** | Drop files into the configured intake folder; they appear in the queue automatically within 5 seconds |
+| **Intake folder** | Drop files (images, PDFs, or `.zip` archives) into the configured intake folder; they appear in the queue automatically within 5 seconds |
 | **Queue Intake Files** | Click the button to manually enqueue everything currently in the intake folder |
 
 Click **Add to Queue** to start processing. You can keep adding files at any time — the queue drains continuously.
@@ -196,6 +198,7 @@ All variables have sensible defaults for local development.
 | `RECEIPTS_FOLDER` | `receipts` | Intake folder path |
 | `OUTPUT_FOLDER` | `output` | Output folder for Excel files and processed images |
 | `MAX_PARALLEL_REQUESTS` | `4` | Concurrent receipt processing threads |
+| `APP_AUTH_TOKEN` | *(unset)* | Shared-secret token required on every request when set. **Set this before exposing the app beyond `127.0.0.1`** (LAN, a phone, or a Cloudflare tunnel). Open the page once with `?token=<value>` — the token is then remembered and attached to image/stream/API requests, so the UI works across reloads and PWA relaunches on remote devices. |
 
 #### AI models
 
@@ -237,13 +240,14 @@ Leave `SMTP_HOST` empty (and the UI fields blank) to disable email entirely.
 
 #### Image processing
 
-Auto-crop, JPEG compression, and the PaddleOCR fallback are toggleable in
-**Settings → Image processing** (no restart needed). The defaults below apply
-until changed in the UI.
+Black-&-white conversion, JPEG compression, and the PaddleOCR fallback are
+toggleable in **Settings → Image processing** (no restart needed). The defaults
+below apply until changed in the UI.
 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTOCROP_ENABLED` | `1` | Trim uniform background borders around each receipt |
+| `GRAYSCALE_ENABLED` | `1` | Convert each receipt to high-contrast grayscale before OCR/AI (also applies to the stored image) |
 | `COMPRESS_ENABLED` | `1` | Re-encode stored receipts to optimized JPEG |
 | `JPEG_QUALITY` | `85` | Stored-image JPEG quality (40–95) |
 | `STORE_MAX_PX` | `2000` | Cap the longest side of stored receipt images |
@@ -269,15 +273,17 @@ Receipt image / PDF
         │
         ▼
   ┌─────────────┐
-  │  Ingest     │  PDF → per-page JPEGs (PyMuPDF, 2× zoom)
+  │  Ingest     │  PDF → per-page JPEGs (PyMuPDF, 2× zoom); .zip → member images/PDFs
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │  Autocrop   │  Pipeline order: autocrop → OCR/extraction → … → compress.
-  │             │  Trim uniform borders so the receipt fills the frame. The image
-  │             │  is kept at full resolution here; compression is deferred (see
-  │             │  the Spreadsheet step) so OCR always reads the sharpest image.
+  │  Greyscale  │  Pipeline order: greyscale → autocrop → OCR/extraction → … → compress.
+  │  + Autocrop │  Flatten to high-contrast grayscale (optional) so OCR/AI read
+  │             │  crisper text, then trim uniform borders so the receipt fills the
+  │             │  frame. The image is kept at full resolution here; compression is
+  │             │  deferred (see the Spreadsheet step) so OCR always reads the
+  │             │  sharpest image.
   └──────┬──────┘
          │
          ▼
@@ -413,7 +419,7 @@ Numbers**.
 | Method | Path | Notes |
 |---|---|---|
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
-| `GET/POST` | `/settings/processing` | `autocrop`, `compress`, `paddleocr`, `jpeg_quality` |
+| `GET/POST` | `/settings/processing` | `autocrop`, `grayscale`, `compress`, `paddleocr`, `jpeg_quality` |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |
