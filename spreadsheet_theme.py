@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.chart.series import DataPoint
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -300,7 +301,7 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
 
     # Merge only A:D so COL_JOB_NUMBER (E) stays writable
     ws.merge_cells(f"A{row}:D{row}")
-    note = ws.cell(row=row, column=1, value="**Please attach receipts.**")
+    note = ws.cell(row=row, column=1, value=None)
     note.alignment = _align(h="left", wrap=False)
 
     lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value="TOTAL")
@@ -666,20 +667,20 @@ def _compute_insights(sections: dict) -> dict:
 
 def _kpi_tile(ws, row: int, col: int, label: str, value, fmt: str = None,
               accent: str = COLOR_SECTION_BG):
-    """Two-cell vertical KPI tile: a big value over a muted label."""
-    val_cell = ws.cell(row=row, column=col, value=value)
+    """Two-cell vertical KPI tile: a muted label over a big value."""
+    lbl_cell = ws.cell(row=row, column=col, value=label)
+    lbl_cell.font = _font(size=9, color="64748B")
+    lbl_cell.fill = _fill("FFFFFF")
+    lbl_cell.alignment = _align(h="center")
+    lbl_cell.border = _border("E2E8F0")
+
+    val_cell = ws.cell(row=row + 1, column=col, value=value)
     val_cell.font = _font(bold=True, size=15, color=accent)
     val_cell.fill = _fill("FFFFFF")
     val_cell.alignment = _align(h="center")
     val_cell.border = _border("E2E8F0")
     if fmt:
         val_cell.number_format = fmt
-
-    lbl_cell = ws.cell(row=row + 1, column=col, value=label)
-    lbl_cell.font = _font(size=9, color="64748B")
-    lbl_cell.fill = _fill("FFFFFF")
-    lbl_cell.alignment = _align(h="center")
-    lbl_cell.border = _border("E2E8F0")
 
 
 def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
@@ -722,8 +723,8 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     _kpi_tile(ws, 5, 6, "Verified",     insights["verified"], None, "15803D")
     proc = insights.get("proc_avg_seconds") or 0
     _kpi_tile(ws, 5, 7, "Avg Processing", f"{proc:g}s" if proc else "—")
-    ws.row_dimensions[5].height = 24
-    ws.row_dimensions[6].height = 16
+    ws.row_dimensions[5].height = 16   # label row
+    ws.row_dimensions[6].height = 24   # value row
 
     # Charts sit to the right of their tables (anchored at column E). A chart of
     # H centimetres covers ~2·H grid rows; advance the cursor past whichever is
@@ -764,6 +765,13 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     pie.width = 11
     pie.add_data(Reference(ws, min_col=3, min_row=cat_hdr, max_row=cat_last), titles_from_data=True)
     pie.set_categories(Reference(ws, min_col=1, min_row=cat_first, max_row=cat_last))
+    # Color each slice to match the web dashboard's category palette (continuity).
+    # Slices are written in this fixed order above, so idx 0/1/2 line up 1:1.
+    if pie.series:
+        for idx, cat in enumerate(("Fuel", "Materials", "Miscellaneous")):
+            pt = DataPoint(idx=idx)
+            pt.graphicalProperties.solidFill = CAT_CHART_COLORS[cat]
+            pie.series[0].data_points.append(pt)
     ws.add_chart(pie, "E" + str(cat_hdr))
 
     row = max(cat_last, cat_hdr + _chart_rows(6.5)) + 2
@@ -845,24 +853,36 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     tl_last = row - 1
 
     if timeline:
+        # Two separate single-axis charts — a column chart for daily spend and a
+        # line chart for the running cumulative total — instead of one combo chart
+        # with a secondary value axis. The secondary-axis combo opened in Excel but
+        # crashed macOS Numbers; these native single-axis charts open cleanly in
+        # both apps.
         col_chart = BarChart()
         col_chart.type = "col"
-        col_chart.title = "Spend Over Time"
+        col_chart.title = "Daily Spend"
         col_chart.height = 8
         col_chart.width = 20
+        col_chart.legend = None
+        col_chart.gapWidth = 40          # narrower gaps → thicker bars for visibility
         col_chart.y_axis.title = "Daily $"
         col_chart.x_axis.title = "Date"
         col_chart.add_data(Reference(ws, min_col=2, min_row=tl_hdr, max_row=tl_last), titles_from_data=True)
         col_chart.set_categories(Reference(ws, min_col=1, min_row=tl_first, max_row=tl_last))
-
-        line = LineChart()
-        line.add_data(Reference(ws, min_col=3, min_row=tl_hdr, max_row=tl_last), titles_from_data=True)
-        line.y_axis.axId = 200
-        line.y_axis.title = "Cumulative $"
-        # Cross the secondary value axis on the right edge
-        line.y_axis.crosses = "max"
-        col_chart += line
+        for s in col_chart.series:
+            s.graphicalProperties.solidFill = COLOR_ACCENT
         ws.add_chart(col_chart, "A" + str(tl_last + 2))
+
+        line_chart = LineChart()
+        line_chart.title = "Cumulative Spend"
+        line_chart.height = 8
+        line_chart.width = 20
+        line_chart.legend = None
+        line_chart.y_axis.title = "Cumulative $"
+        line_chart.x_axis.title = "Date"
+        line_chart.add_data(Reference(ws, min_col=3, min_row=tl_hdr, max_row=tl_last), titles_from_data=True)
+        line_chart.set_categories(Reference(ws, min_col=1, min_row=tl_first, max_row=tl_last))
+        ws.add_chart(line_chart, "A" + str(tl_last + 2 + _chart_rows(8)))
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

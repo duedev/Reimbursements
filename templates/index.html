@@ -742,16 +742,45 @@
     #img-lightbox {
       position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 2000;
       display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+      gap: 18px; padding: 24px;
     }
     #img-lightbox img {
       max-width: 94vw; max-height: 94vh; object-fit: contain; border-radius: 6px;
       box-shadow: 0 8px 48px rgba(0,0,0,0.7);
     }
+    /* When the stats panel is shown, leave it room beside the zoomed image */
+    #img-lightbox.has-stats img { max-width: min(68vw, 94vw); }
     #img-lightbox .lb-close {
       position: absolute; top: 18px; right: 22px; font-size: 32px; color: #fff;
-      background: none; border: none; cursor: pointer; opacity: 0.7; line-height: 1;
+      background: none; border: none; cursor: pointer; opacity: 0.7; line-height: 1; z-index: 2;
     }
     #img-lightbox .lb-close:hover { opacity: 1; }
+
+    /* Stats panel beside the zoomed receipt — verify extracted data while zoomed */
+    .lb-stats {
+      width: 300px; max-width: 30vw; max-height: 88vh; overflow-y: auto; flex-shrink: 0;
+      background: var(--surface2); color: var(--text); cursor: default;
+      border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.6); font-size: 13px;
+    }
+    .lb-stats .lb-stat-file { font-family: ui-monospace, monospace; font-size: 11px;
+      color: var(--muted); word-break: break-all; margin-bottom: 10px; }
+    .lb-stats .lb-stat-vendor { font-size: 16px; font-weight: 700; line-height: 1.3;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .lb-stats .lb-stat-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .lb-stats .lb-stat-row { display: flex; justify-content: space-between; gap: 12px;
+      padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .lb-stats .lb-stat-k { color: var(--muted); }
+    .lb-stats .lb-stat-v { font-weight: 600; text-align: right; word-break: break-word; }
+    .lb-stats .lb-stat-summary { margin-top: 10px; color: var(--muted); font-style: italic;
+      line-height: 1.45; }
+    .lb-stats .lb-stat-flag { margin-top: 10px; color: var(--danger); font-weight: 600;
+      line-height: 1.4; }
+    @media (max-width: 760px) {
+      #img-lightbox { flex-direction: column; padding: 14px; gap: 10px; }
+      #img-lightbox.has-stats img { max-width: 94vw; max-height: 52vh; }
+      .lb-stats { width: 100%; max-width: 94vw; max-height: 38vh; }
+    }
 
     /* Duplicate card image — zoomable */
     .dup-card img { cursor: zoom-in; }
@@ -873,15 +902,16 @@
     .donut-legend .leg-row { display: flex; align-items: center; gap: 7px; }
     .donut-legend .leg-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
     .donut-legend .leg-amt { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
-    .vendor-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 7px; }
-    .vendor-row .v-name { width: 90px; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; flex-shrink: 0; }
-    .vendor-row .v-bar-wrap { flex: 1; background: rgba(255,255,255,0.06);
+    .vendor-row { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-bottom: 9px; }
+    .vendor-row .v-head { display: flex; align-items: baseline; gap: 8px; }
+    .vendor-row .v-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; font-weight: 600; }
+    .vendor-row .v-bar-wrap { width: 100%; background: rgba(255,255,255,0.06);
       border-radius: 99px; height: 8px; overflow: hidden; }
     .vendor-row .v-bar { height: 100%; border-radius: 99px;
       background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
-    .vendor-row .v-amt { width: 64px; text-align: right; color: var(--muted);
-      font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .vendor-row .v-amt { color: var(--muted); text-align: right;
+      font-variant-numeric: tabular-nums; flex-shrink: 0; white-space: nowrap; }
     .empty-note { color: var(--muted); font-size: 12px; text-align: center; padding: 30px 0; }
 
     /* Spend-over-time caption + legend */
@@ -1678,6 +1708,7 @@
 <div id="img-lightbox" style="display:none" onclick="closeLightbox()" role="dialog" aria-modal="true" aria-label="Receipt image preview">
   <button class="lb-close" onclick="closeLightbox()" title="Close" aria-label="Close image preview">&#10005;</button>
   <img id="lb-img" src="" alt="Receipt">
+  <aside class="lb-stats" id="lb-stats" onclick="event.stopPropagation()" hidden></aside>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -1933,7 +1964,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   // Image view button — prefer renamed output file, fall back to compressed or original
   const imgFile = (data && (data._new_filename || data._compressed_file || data._file)) || filename;
   const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
-  inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}')" title="View receipt image">&#128247; View</button>`;
+  inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')" title="View receipt image with extracted stats">&#128247; View</button>`;
 
   if (status === 'failed') {
     const errText = errorMsg || (data && data._error) || '';
@@ -2100,6 +2131,10 @@ function connectSSE() {
       _updateQueueBadge(0);
       stopBtn.style.display = 'none';
       document.getElementById('clear-board-btn').classList.add('hidden');
+      // Hide the board and processing cards too — clearing empties their columns
+      // but they'd otherwise linger (empty) until a manual page refresh.
+      kanbanCard.classList.add('hidden');
+      progressCard.classList.add('hidden');
       loadStats();
       showToast('Board cleared', true);
     }
@@ -2302,6 +2337,8 @@ async function _doGenerate(excludeFilenames = []) {
       body: JSON.stringify({
         exclude_filenames: excludeFilenames,
         employee: document.getElementById('employee').value.trim(),
+        job_name: document.getElementById('job-name').value.trim(),
+        job_number: document.getElementById('job-number').value.trim(),
       }),
     });
     if (!res.ok) {
@@ -2554,7 +2591,7 @@ window.openManualReview = function(filename) {
   previewImg.src = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
   previewImg.onload  = () => { previewWrap.style.display = ''; };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
-  previewImg.onclick = () => openLightbox(previewImg.src);
+  previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
 };
@@ -3346,6 +3383,10 @@ function renderOrphanResults(d) {
     </div>`).join('');
   const dirs = (d.empty_dirs || []).map(x =>
     `<div class="status-note">Empty temp folder: <code class="inline-code">${esc(x)}</code></div>`).join('');
+  const deleteOrphansBtn = d.count
+    ? `<button class="btn btn-outline-danger btn-sm" id="delete-orphans-btn"
+         title="Permanently delete every orphaned file listed above">&#128465; Delete all ${d.count} orphaned file(s)</button>`
+    : '';
   box.innerHTML =
     (d.count
       ? `<div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:6px">` +
@@ -3353,11 +3394,34 @@ function renderOrphanResults(d) {
       : `<div class="status-note">${d.scanned} file(s) checked — no orphaned files, only empty folders below.</div>`) +
     dirs +
     `<div class="action-row" style="margin-top:10px">
-       <span class="status-note" style="flex:1;min-width:200px">Full locations shown above. Empty job/temp folders (referenced or not) can be cleared automatically.</span>
+       <span class="status-note" style="flex:1;min-width:200px">Full locations shown above. Deleting orphaned files is permanent. Empty job/temp folders can be cleared separately.</span>
+       ${deleteOrphansBtn}
        <button class="btn btn-outline-amber btn-sm" id="cleanup-dirs-btn">&#128465; Delete empty folders</button>
      </div>`;
   const cb = document.getElementById('cleanup-dirs-btn');
   if (cb) cb.addEventListener('click', cleanupEmptyDirs);
+  const ob = document.getElementById('delete-orphans-btn');
+  if (ob) ob.addEventListener('click', deleteAllOrphans);
+}
+
+async function deleteAllOrphans() {
+  const btn = document.getElementById('delete-orphans-btn');
+  if (!confirm('Permanently delete all orphaned files listed above? This cannot be undone.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⌛ Deleting…'; }
+  try {
+    const res = await fetch('/maintenance/delete-orphans', { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
+    const failed = (d.errors || []).length;
+    let msg = d.count ? `Deleted ${d.count} orphaned file(s)` : 'No orphaned files to delete';
+    if (failed) msg += ` — ${failed} could not be removed`;
+    showToast(msg, !failed);
+    const r2 = await fetch('/maintenance/orphans');   // re-scan to refresh the report
+    renderOrphanResults(await r2.json());
+  } catch (err) {
+    showToast(`Delete failed: ${err.message}`, false);
+    if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete all orphaned files'; }
+  }
 }
 
 async function cleanupEmptyDirs() {
@@ -3414,9 +3478,49 @@ document.getElementById('restart-btn').addEventListener('click', async () => {
 });
 
 // ── Image lightbox ────────────────────────────────────────────────────────────
-function openLightbox(src) {
+// Build the stats panel shown beside the zoomed receipt, so extracted figures
+// can be verified against the image without leaving the zoom view.
+function _lbStatsHtml(data, filename) {
+  if (!data) return '';
+  const cat = (data._category || data.category || 'misc').toLowerCase();
+  const parts = [`<div class="lb-stat-file">${esc(filename || '')}</div>`,
+                 `<div class="lb-stat-vendor">${esc(data.vendor || '—')} ${catBadge(cat)}</div>`];
+  const badges = [];
+  if (data._confidence != null) badges.push(confBadge(data._confidence));
+  if (data._amount_verified === true)
+    badges.push('<span class="k-verified" title="Amount cross-checked against OCR text">&#10003; verified</span>');
+  if (data._approved)
+    badges.push('<span class="k-review-badge k-approved-badge">&#10003; Approved</span>');
+  if (badges.length) parts.push(`<div class="lb-stat-badges">${badges.join(' ')}</div>`);
+  const row = (label, val) => (val != null && val !== '')
+    ? `<div class="lb-stat-row"><span class="lb-stat-k">${label}</span><span class="lb-stat-v">${esc(String(val))}</span></div>`
+    : '';
+  parts.push(row('Amount', data.amount != null ? '$' + parseFloat(data.amount).toFixed(2) : ''));
+  parts.push(row('Date', data.date));
+  parts.push(row('Category', { fuel: 'Fuel', mats: 'Materials', misc: 'Misc' }[cat] || cat));
+  parts.push(row('Job Name', data.job_name));
+  parts.push(row('Job #', data.job_number));
+  if (data._proc_seconds) parts.push(row('Processing', `${data._proc_seconds}s${data._ocr_engine ? ' · ' + data._ocr_engine : ''}`));
+  const summary = data.summary || data.ai_summary;
+  if (summary) parts.push(`<div class="lb-stat-summary">"${esc(summary)}"</div>`);
+  if (data._flag) parts.push(`<div class="lb-stat-flag">&#9888; ${esc(data._flag)}</div>`);
+  return parts.join('');
+}
+
+function openLightbox(src, filename) {
   const lb = document.getElementById('img-lightbox');
   document.getElementById('lb-img').src = src;
+  const panel = document.getElementById('lb-stats');
+  const data = filename && receiptCards[filename] ? receiptCards[filename].data : null;
+  if (data && data.vendor) {
+    panel.innerHTML = _lbStatsHtml(data, filename);
+    panel.hidden = false;
+    lb.classList.add('has-stats');
+  } else {
+    panel.innerHTML = '';
+    panel.hidden = true;
+    lb.classList.remove('has-stats');
+  }
   lb.style.display = 'flex';
   document.body.style.overflow = 'hidden';
 }
@@ -3565,7 +3669,7 @@ function renderTimeline(stats) {
               : timeline.reduce((a, t) => a + t.total, 0);
   const avg = total / n;
   const slot = plotW / n;
-  const barW = Math.max(4, Math.min(34, slot * 0.62));
+  const barW = Math.max(6, Math.min(48, slot * 0.8));
   const yOf = v => padT + plotH - (v / max) * plotH;
 
   // Horizontal gridlines + $ axis labels (0, mid, max)
@@ -3626,9 +3730,11 @@ function renderVendors(vendors) {
   const max = vendors[0].total || 1;
   box.innerHTML = vendors.map(v =>
     `<div class="vendor-row">
-      <span class="v-name" title="${esc(v.vendor)}">${esc(v.vendor)}</span>
+      <div class="v-head">
+        <span class="v-name" title="${esc(v.vendor)}">${esc(v.vendor)}</span>
+        <span class="v-amt">${fmtMoney(v.total)}</span>
+      </div>
       <div class="v-bar-wrap"><div class="v-bar" style="width:${Math.max(3, (v.total / max) * 100)}%"></div></div>
-      <span class="v-amt">${fmtMoney(v.total)}</span>
     </div>`).join('');
 }
 

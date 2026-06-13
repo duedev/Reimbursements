@@ -1079,6 +1079,8 @@ async def list_intake_files():
 class GenerateRequest(BaseModel):
     exclude_filenames: list[str] = []
     employee: str = ""
+    job_name: str = ""
+    job_number: str = ""
 
 
 @app.get("/results/check-duplicates")
@@ -1251,6 +1253,24 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             or _load_config().get("default_employee")
             or "Employee"
         )
+
+    # Job name / number are captured live at generation time too. Any receipt
+    # still missing one is filled with the value currently entered on the board,
+    # so a field added (or corrected) after an earlier generation shows up on
+    # regen. Values already set per-receipt are kept — only blanks are filled.
+    job_name = (body.job_name or "").strip()
+    job_number = (body.job_number or "").strip()
+    if job_name or job_number:
+        with _results_lock:
+            if job_name:
+                _last_context["job_name"] = job_name
+            if job_number:
+                _last_context["job_number"] = job_number
+        for r in results_copy:
+            if job_name and not str(r.get("job_name") or "").strip():
+                r["job_name"] = job_name
+            if job_number and not str(r.get("job_number") or "").strip():
+                r["job_number"] = job_number
 
     def _build():
         return generate_spreadsheet(
@@ -2423,15 +2443,14 @@ def _referenced_filenames() -> set[str]:
     return names
 
 
-@app.get("/maintenance/orphans")
-async def find_orphaned_files():
-    """Report files in the working folders that no result, board card, or queue
-    item references — leftovers from clears, crashes, or interrupted renames.
+def _collect_orphans() -> tuple[list[dict], list[str], int]:
+    """Walk the working folders and return ``(orphans, empty_dirs, scanned)``.
 
-    Scans the completed-receipts and processing folders (including their
-    subfolders) plus stale _pdf_* page folders in the intake folder.  Files in
-    the intake folder root are pending input, not orphans.  Report-only —
-    nothing is deleted.
+    Pure scan — nothing is deleted. Shared by the report endpoint and the
+    bulk-delete endpoint so both judge "orphaned" by exactly the same rules:
+    a file no result, board card, or queue item references, found in the
+    completed-receipts or processing folders (recursively) or in a stale
+    _pdf_* page folder. Intake-root files are pending input, never orphans.
     """
     referenced = _referenced_filenames()
     orphans: list[dict] = []
@@ -2483,6 +2502,20 @@ async def find_orphaned_files():
     except OSError:
         pass
 
+    return orphans, empty_dirs, scanned
+
+
+@app.get("/maintenance/orphans")
+async def find_orphaned_files():
+    """Report files in the working folders that no result, board card, or queue
+    item references — leftovers from clears, crashes, or interrupted renames.
+
+    Scans the completed-receipts and processing folders (including their
+    subfolders) plus stale _pdf_* page folders in the intake folder.  Files in
+    the intake folder root are pending input, not orphans.  Report-only —
+    nothing is deleted.
+    """
+    orphans, empty_dirs, scanned = _collect_orphans()
     return JSONResponse({
         "ok":         True,
         "scanned":    scanned,
@@ -2490,6 +2523,59 @@ async def find_orphaned_files():
         "total_size": sum(o["size"] for o in orphans),
         "orphans":    orphans,
         "empty_dirs": empty_dirs,
+    })
+
+
+@app.post("/maintenance/delete-orphans")
+async def delete_orphaned_files():
+    """Delete every orphaned file the scan currently reports.
+
+    Re-runs the same scan as ``/maintenance/orphans`` so the referenced set is
+    fresh, then unlinks each reported file — guarding that every target still
+    resolves inside one of the working folders before removing it. Empty folders
+    are left to the separate cleanup endpoint.
+    """
+    orphans, _empty_dirs, _scanned = _collect_orphans()
+    roots = [p.resolve() for p in (IMAGES_FOLDER, PROCESSING_FOLDER, INTAKE_FOLDER)
+             if p.exists()]
+
+    def _within_roots(path: Path) -> bool:
+        for root in roots:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    deleted: list[dict] = []
+    errors: list[dict] = []
+    freed = 0
+    for o in orphans:
+        try:
+            rp = Path(o["path"]).resolve()
+        except OSError:
+            continue
+        # Belt-and-braces: never unlink anything outside the working folders.
+        if not _within_roots(rp) or not rp.is_file():
+            continue
+        try:
+            size = rp.stat().st_size
+        except OSError:
+            size = o.get("size") or 0
+        try:
+            rp.unlink()
+            deleted.append({"folder": o["folder"], "name": o["name"], "path": str(rp)})
+            freed += size
+        except OSError as exc:
+            errors.append({"path": str(rp), "error": str(exc)})
+
+    return JSONResponse({
+        "ok":      True,
+        "count":   len(deleted),
+        "freed":   freed,
+        "deleted": deleted,
+        "errors":  errors,
     })
 
 
