@@ -118,6 +118,42 @@ def test_orphan_report_includes_full_path(env):
     assert o["path"] == str((images / "leftover.jpg").resolve())
 
 
+def test_delete_orphans_removes_only_orphaned_files(env):
+    client, intake, images, processing = env
+    keep = images / "fuel_shell_2026-05-01.jpg"
+    keep.write_bytes(b"x" * 10)
+    orphan1 = images / "leftover.jpg"
+    orphan1.write_bytes(b"x" * 20)
+    orphan2 = processing / "stuck.png"
+    orphan2.write_bytes(b"x" * 30)
+    server._results.append({
+        "vendor": "Shell", "amount": 45.20, "_file": "r.jpg",
+        "_new_filename": "fuel_shell_2026-05-01.jpg",
+        "_image_path": str(keep),
+    })
+
+    d = client.post("/maintenance/delete-orphans").json()
+    assert d["ok"] is True
+    assert d["count"] == 2
+    assert d["freed"] == 50
+    assert d["errors"] == []
+    assert not orphan1.exists() and not orphan2.exists()
+    assert keep.exists()   # referenced file is never deleted
+
+    # A follow-up scan now finds nothing
+    assert client.get("/maintenance/orphans").json()["count"] == 0
+
+
+def test_delete_orphans_noop_when_clean(env):
+    client, intake, images, processing = env
+    (images / "fuel_shell_2026-05-01.jpg").write_bytes(b"x")
+    server._results.append({
+        "_new_filename": "fuel_shell_2026-05-01.jpg", "_file": "r.jpg",
+    })
+    d = client.post("/maintenance/delete-orphans").json()
+    assert d["ok"] is True and d["count"] == 0 and d["freed"] == 0
+
+
 def test_cleanup_removes_empty_dirs_keeps_populated(env):
     client, intake, images, processing = env
     # Empty job folder + nested empties under receipts — should be removed

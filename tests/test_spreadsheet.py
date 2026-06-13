@@ -89,8 +89,10 @@ def test_workbook_has_insights_sheet_with_charts(tmp_path):
     wb = load_workbook(path)
     assert wb.sheetnames[1] == "Insights"  # second tab, right after Summary
     ins = wb["Insights"]
-    # Category, vendor, and spend-over-time charts are all present
-    assert len(ins._charts) == 3
+    # Category pie, vendor bars, and the spend-over-time pair (daily-spend columns
+    # + cumulative line, kept as two single-axis charts so macOS Numbers doesn't
+    # crash on a secondary-axis combo) are all present.
+    assert len(ins._charts) == 4
     text = " ".join(str(c.value) for row in ins.iter_rows()
                      for c in row if c.value is not None)
     assert "Total Spend" in text
