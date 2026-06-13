@@ -1,6 +1,26 @@
 .git
+.github
 __pycache__
 *.pyc
+*.pyo
+.pytest_cache/
 tmp/
 *.xlsx
+
+# Never bake secrets or local state into the image
+.env
+*.env
+.app_config.json
+.app_secrets.json
+config/
+
+# Local data dirs (provided at runtime via volumes)
+intake/
+output/
+export/
+processing/
+failed/
 receipts/
+watch_inbox/
+watch_state/
+.DS_Store

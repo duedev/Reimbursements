@@ -248,8 +248,16 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     amount = data.get("amount")
     cell_f = ws.cell(row=row, column=COL_AMOUNT)
     if amount is not None:
-        cell_f.value = float(amount)
-        cell_f.number_format = ACCT_FORMAT
+        try:
+            # Use the SAME cents-rounded value that _compute_insights sums, so
+            # Excel's SUM and the Insights "Total Spend" KPI never disagree.
+            cell_f.value = round(float(amount), 2)
+            cell_f.number_format = ACCT_FORMAT
+        except (TypeError, ValueError):
+            # Non-numeric amount ("$12.00", "12,00", "n/a", …): fall back to the
+            # raw value as a string so the export still succeeds. No currency
+            # format, since the value isn't a number.
+            cell_f.value = amount
     cell_f.alignment = _align(h="right")
 
     # G — AI Summary

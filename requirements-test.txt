@@ -1,0 +1,16 @@
+# Lightweight test/CI dependencies.
+#
+# The heavy paddle* OCR stack in requirements.txt is lazy-imported and is NOT
+# exercised by the test suite, and its transitive GPUtil dependency fails to
+# build a wheel on modern Python/setuptools — so CI installs only what the tests
+# actually import. The full runtime stack still ships in the Docker image.
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+openai>=1.57.0
+openpyxl>=3.1.5
+Pillow>=11.0.0
+PyMuPDF>=1.24.0
+httpx>=0.27.0
+numpy>=1.26.0
+pytest>=8.0.0

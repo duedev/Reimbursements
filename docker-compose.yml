@@ -6,15 +6,25 @@ services:
     # stops the container for good and it never comes back online.
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Bound to localhost: the app has no login by default, so don't expose it
+      # to the whole LAN. Set APP_AUTH_TOKEN and change this to "0.0.0.0:8000:8000"
+      # (or remove the 127.0.0.1 prefix) only if you need remote access.
+      - "127.0.0.1:8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${INTAKE_PATH:-./intake}:/data/intake
       - ${OUTPUT_PATH:-./output}:/data/output
       - ${EXPORT_PATH:-./export}:/data/export
+      # Secrets (SMTP password, Dropbox token) live here — a LOCAL volume, never
+      # a cloud-synced folder like OUTPUT_PATH.
+      - ./config:/data/config
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      # Optional shared-secret auth. When set, every request must present it
+      # (header X-Auth-Token, cookie, or open the page once with ?token=…).
+      - APP_AUTH_TOKEN=${APP_AUTH_TOKEN:-}
+      - SECRETS_PATH=/data/config/secrets.json
       - RECEIPTS_FOLDER=/data/intake
       - OUTPUT_FOLDER=/data/output
       - EXPORT_FOLDER=/data/export
@@ -53,8 +63,10 @@ services:
       - ./failed:/data/failed
       - ${OUTPUT_PATH:-./output}:/data/output
       - ./watch_state:/data/watch_state
+      - ./config:/data/config   # shared secrets store (local, non-synced)
     environment:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - SECRETS_PATH=/data/config/secrets.json
       - WATCH_INBOX=/data/watch_inbox
       - WATCH_STAGED=/data/processing
       - WATCH_STATE=/data/watch_state

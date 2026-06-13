@@ -27,9 +27,12 @@ from pathlib import Path
 
 from openai import OpenAI
 
+import app_secrets
 from process_receipts import (
     CONFIG_FILE,
     IMAGE_EXTENSIONS,
+    LLM_TIMEOUT,
+    LLM_MAX_RETRIES,
     LMSTUDIO_BASE_URL,
     MAX_PARALLEL_REQUESTS,
     OUTPUT_FOLDER,
@@ -87,7 +90,9 @@ def load_email_config() -> dict:
         "host":    pick("smtp_host", "SMTP_HOST"),
         "port":    port,
         "user":    pick("smtp_user", "SMTP_USER"),
-        "pass":    pick("smtp_pass", "SMTP_PASS"),
+        # Password lives in the secrets store (out of the synced config), with a
+        # fallback to a legacy in-config value or the SMTP_PASS env var.
+        "pass":    app_secrets.get_secret("smtp_pass", "email", "smtp_pass", "SMTP_PASS"),
         "from":    pick("smtp_from", "SMTP_FROM"),
         "to":      pick("email_to",  "EMAIL_TO"),
         "subject": pick("email_subject", "EMAIL_SUBJECT", "Weekly Reimbursement Report"),
@@ -280,7 +285,8 @@ def main():
     print(f"[watch] State:  {STATE_FILE}")
 
     initialize_models()
-    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")
+    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
     state  = load_state()
 
     while True:

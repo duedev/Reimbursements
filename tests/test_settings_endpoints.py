@@ -52,18 +52,24 @@ def test_processing_clamps_quality(client):
 
 
 def test_email_password_hidden_and_preserved(client):
+    import app_secrets
     client.post("/settings/email", json={
         "smtp_host": "smtp.x", "smtp_user": "u", "smtp_pass": "secret", "email_to": "t@x.com"})
     g = client.get("/settings/email").json()
     assert "smtp_pass" not in g                 # secret never leaves the server
     assert g["password_set"] and g["configured"]
 
+    # The secret is stored OUT of the (often cloud-synced) config file
+    assert "smtp_pass" not in json.loads(server.CONFIG_FILE.read_text()).get("email", {})
+    assert app_secrets.load_secrets()["smtp_pass"] == "secret"
+
     # Blank password keeps the saved one while other fields update
     client.post("/settings/email", json={
         "smtp_host": "smtp.y", "smtp_user": "u", "smtp_pass": "", "email_to": "t@x.com"})
     saved = json.loads(server.CONFIG_FILE.read_text())["email"]
-    assert saved["smtp_pass"] == "secret"
+    assert "smtp_pass" not in saved
     assert saved["smtp_host"] == "smtp.y"
+    assert app_secrets.load_secrets()["smtp_pass"] == "secret"   # still preserved
 
 
 def test_version_endpoint(client):

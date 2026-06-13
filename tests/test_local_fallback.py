@@ -2,6 +2,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import process_receipts as pr
 
 
@@ -116,6 +118,7 @@ def test_distilled_amount_reconciled_against_ocr_text(monkeypatch, tmp_path):
 
 # ── Config consolidation ──────────────────────────────────────────────────────
 
+@pytest.mark.no_path_isolation   # asserts the real import-time default, not a tmp redirect
 def test_single_config_source_of_truth():
     """server and watch_mode must reference the one CONFIG_FILE from process_receipts."""
     import server

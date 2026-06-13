@@ -21,14 +21,17 @@ from pathlib import Path
 from queue import Empty, Queue
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
+import app_secrets
 import process_receipts as _pr
 import scheduler
 from process_receipts import (
+    LLM_TIMEOUT,
+    LLM_MAX_RETRIES,
     initialize_models,
     _extract_receipt_with_status,
     _is_low_confidence,
@@ -126,7 +129,9 @@ def _load_config() -> dict:
 
 
 def _save_config(data: dict) -> None:
-    OUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    # Create the config file's own parent (it usually lives in OUT_FOLDER, but
+    # may be relocated): writing to a dir that doesn't exist would raise.
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
 
@@ -367,7 +372,8 @@ def _drain_once() -> bool:
         return False
 
     _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
-    client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+    client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
+                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
 
     futures_map: dict = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS or None) as ex:
@@ -793,12 +799,23 @@ def _run_stall_checker() -> None:
 
 # ── Scheduled export ───────────────────────────────────────────────────────────
 
-_schedule_wakeup: asyncio.Event = asyncio.Event()
+# Created inside lifespan, not at import: an asyncio.Event binds to the running
+# loop on first use, so a module-level one breaks when the app is (re)started on
+# a different loop (e.g. successive TestClient instances → "bound to a different
+# event loop").
+_schedule_wakeup: asyncio.Event | None = None
 
 
 def _get_schedule_config() -> scheduler.ScheduleConfig:
     try:
-        return scheduler.parse_schedule(_load_config().get("schedule") or {})
+        sched = dict(_load_config().get("schedule") or {})
+        # The Dropbox token is a secret kept out of the synced config file —
+        # overlay it (falling back to a legacy config value or the env var).
+        token = app_secrets.get_secret(
+            "dropbox_token", "schedule", "dropbox_token", "SCHEDULE_DROPBOX_TOKEN")
+        if token:
+            sched["dropbox_token"] = token
+        return scheduler.parse_schedule(sched)
     except scheduler.ScheduleError:
         return scheduler.ScheduleConfig(enabled=False)
 
@@ -826,6 +843,8 @@ def _on_schedule_result(report: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _schedule_wakeup
+    _schedule_wakeup = asyncio.Event()   # bind to this app's running loop
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / PaddleOCR settings
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
@@ -851,6 +870,44 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Receipt Processor", lifespan=lifespan)
+
+
+# ── Optional shared-secret auth ─────────────────────────────────────────────────
+# The app is a local-network tool with no login. When APP_AUTH_TOKEN is set,
+# every request must present it (via the X-Auth-Token header, an auth_token
+# cookie, or a ?token= query param — opening the page once with ?token= drops the
+# cookie so the SPA's fetch/SSE calls authenticate automatically). When the env
+# var is unset the gate is a no-op, preserving the open localhost behaviour.
+# The token is read per-request so it can be configured without a code change.
+_AUTH_EXEMPT_PATHS = {"/", "/manifest.json", "/icon.svg"}
+
+
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    token = os.getenv("APP_AUTH_TOKEN", "")
+    if not token:
+        return await call_next(request)
+
+    import secrets as _secrets
+    path = request.url.path
+
+    # Always let the shell page + its icons load so the token can be supplied
+    # via ?token= on the URL; the page's API/SSE calls are still protected.
+    if path in _AUTH_EXEMPT_PATHS:
+        resp = await call_next(request)
+        supplied = request.query_params.get("token", "")
+        if supplied and _secrets.compare_digest(supplied, token):
+            resp.set_cookie("auth_token", token, httponly=True, samesite="strict")
+        return resp
+
+    supplied = (
+        request.headers.get("X-Auth-Token", "")
+        or request.cookies.get("auth_token", "")
+        or request.query_params.get("token", "")
+    )
+    if not (supplied and _secrets.compare_digest(supplied, token)):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 # ── Static / template routes ───────────────────────────────────────────────────
@@ -2123,7 +2180,8 @@ async def set_thinking(body: ThinkingRequest):
 @app.get("/models/lmstudio")
 async def get_lmstudio_models():
     def _fetch():
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
+                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
         response = client.models.list()
         return [m.id for m in response.data]
 
@@ -2364,8 +2422,9 @@ async def save_email_settings(body: EmailSettingsRequest):
         email["smtp_from"]     = body.smtp_from.strip()
         email["email_to"]      = body.email_to.strip()
         email["email_subject"] = body.email_subject.strip() or "Weekly Reimbursement Report"
-        if body.smtp_pass:   # blank keeps the previously saved password
-            email["smtp_pass"] = body.smtp_pass
+        email.pop("smtp_pass", None)   # migrate any legacy secret out of the synced config
+        if body.smtp_pass:             # blank keeps the previously saved password
+            app_secrets.save_secret("smtp_pass", body.smtp_pass)
         cfg["email"] = email
         _save_config(cfg)
         return JSONResponse({"ok": True})
@@ -2431,12 +2490,18 @@ async def set_schedule(body: ScheduleRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     cfg = _load_config()
     saved = cfg.get("schedule") or {}
-    if not new["dropbox_token"]:  # blank input keeps any previously saved token
-        new["dropbox_token"] = saved.get("dropbox_token", "")
+    # The Dropbox token is a secret: persist it outside the (often cloud-synced)
+    # config file, and never write it back into .app_config.json. A blank input
+    # keeps whatever was previously saved.
+    if new["dropbox_token"]:
+        app_secrets.save_secret("dropbox_token", new["dropbox_token"])
+    new["dropbox_token"] = ""
+    saved.pop("dropbox_token", None)   # migrate any legacy token out of the config
     new["last_run"] = saved.get("last_run")
     cfg["schedule"] = new
     _save_config(cfg)
-    _schedule_wakeup.set()
+    if _schedule_wakeup is not None:
+        _schedule_wakeup.set()
     return JSONResponse({"ok": True, **_schedule_status()})
 
 
@@ -2863,7 +2928,8 @@ async def watch_send_email():
     try:
         from watch_mode import load_state, send_report
         state  = load_state()
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio")
+        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
+                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
         result = send_report(state, client=client)
         status = 200 if result.get("ok") else 503
         return JSONResponse(result, status_code=status)

@@ -18,12 +18,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: requirements-test.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # Lightweight test deps only — the heavy paddle* OCR stack is lazy-imported,
+        # unused by the tests, and its transitive GPUtil wheel fails to build.
+        run: pip install -r requirements-test.txt
 
       - name: Syntax check
-        run: python -m compileall -q server.py process_receipts.py spreadsheet_theme.py watch_mode.py
+        run: python -m compileall -q server.py process_receipts.py spreadsheet_theme.py watch_mode.py scheduler.py app_secrets.py docker-entrypoint.py
 
       - name: Run tests
         run: python -m pytest tests/ -v
