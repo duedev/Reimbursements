@@ -19,18 +19,22 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Batch & continuous modes** — Process a folder all at once, or let the watcher auto-queue new files as they appear
 - **PDF support** — PDFs are automatically expanded to per-page images before processing
 - **Smart categorization** — Receipts classified as Fuel, Materials, or Miscellaneous based on vendor and content
-- **Professional Excel output** — Themed workbook with embedded receipt images, subtotals per category, grand total, and accounting-format amounts
+- **Professional Excel output** — Themed, print-ready workbook with embedded receipt images, per-category subtotals, a grand total, and accounting-format amounts. Verified compatible with both **Microsoft Excel** and **macOS Numbers** (native charts, conditional formatting, internal hyperlinks, frozen headers)
+- **Insights *in the workbook*** — A dedicated **Insights** sheet mirrors the web dashboard: KPI figures, a spend-by-category pie, top-vendor bars, and a detailed spend-over-time chart (daily columns + a cumulative trend line), all as native charts that open in Excel and Numbers
+- **Review & approval gate** — Optional setting that blocks spreadsheet generation until every completed receipt has been reviewed and approved on the board (enforced client- and server-side)
+- **Deferred image compression** — Receipts are stored at full resolution through OCR; JPEG compression/downscaling runs once, at spreadsheet-generation time, so the OCR stage always reads the sharpest image and the output folder + embedded images are optimized together
 - **Persistent autocomplete** — Employee name, job name, and job number fields remember your last 20 entries
 - **Category-prefixed filenames** — Processed images renamed to `fuel_12-30-24_shell.jpg` for instant sorting
-- **Duplicate detection** — Same vendor/date/amount flagged automatically
+- **Duplicate detection** — Same vendor/date/amount flagged automatically, with an exclude-from-report dialog
 - **Amount verification** — In two-stage OCR mode, extracted amounts are cross-checked against money values printed on total-like lines of the raw OCR text; verified receipts get a ✓ badge, mismatches are flagged for review (pure regex, catches LLM hallucinations)
-- **Insights dashboard** — Live spend analytics: total/average/flagged tiles, category donut, spend-over-time bars, and top-vendor rankings (dependency-free SVG charts)
+- **Insights dashboard** — Live spend analytics: total/average/flagged tiles, a category donut, an annotated spend-over-time chart (daily bars, cumulative line, average marker, peak callout), and top-vendor rankings (dependency-free SVG charts)
 - **CSV export** — One click exports all completed receipts as a spreadsheet-ready CSV
 - **Report history** — Browse and re-download every previously generated workbook
+- **Maintenance tools** — Scan the working folders for orphaned (unreferenced) files — each reported with its full on-disk location — and one-click delete emptied job/temp folders
 - **Board search** — Filter receipt cards by vendor, filename, or category (press `/` to focus)
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
-- **Optional email delivery** — Watch-mode daemon can email the weekly report over SMTP
+- **Optional email delivery & scheduling** — Watch-mode daemon and a built-in weekly scheduler can email the report over SMTP or drop it into a synced cloud folder
 - **Desktop GUI** — Standalone `customtkinter` app for users who prefer not to run a server
 - **Installable PWA** — Add to home screen on mobile for a native-like experience
 
@@ -268,9 +272,10 @@ Receipt image / PDF
          │
          ▼
   ┌─────────────┐
-  │  Autocrop   │  Pipeline order: autocrop → compress → OCR/extraction.
-  │  → Compress │  Trim borders, then resize/normalize to an optimized JPEG so
-  │             │  every OCR path (LM Studio AND PaddleOCR) reads the same image.
+  │  Autocrop   │  Pipeline order: autocrop → OCR/extraction → … → compress.
+  │             │  Trim uniform borders so the receipt fills the frame. The image
+  │             │  is kept at full resolution here; compression is deferred (see
+  │             │  the Spreadsheet step) so OCR always reads the sharpest image.
   └──────┬──────┘
          │
          ▼
@@ -310,7 +315,9 @@ Receipt image / PDF
          │
          ▼
   ┌─────────────┐
-  │  Spreadsheet│  Themed Excel workbook with embedded images, subtotals, total
+  │  Compress   │  Now (at export) each stored image is re-encoded/downscaled to
+  │  → Spreadsheet  an optimized JPEG, then the themed Excel workbook is built:
+  │             │  Summary form + Insights charts + per-category image sheets.
   └─────────────┘
 ```
 
@@ -334,11 +341,15 @@ Receipts dated more than 6 months ago are also flagged. Flagged receipts still a
 
 ### Spreadsheet layout
 
-Each generated workbook contains four sheets:
+Each generated workbook contains five sheets. Every feature used — native charts,
+conditional formatting, internal hyperlinks, frozen panes, accounting number
+formats, and embedded images — renders in both **Microsoft Excel** and **macOS
+Numbers**.
 
 | Sheet | Contents |
 |---|---|
-| **Summary** | Formatted reimbursement form — employee name, expense period, all receipts grouped by category with subtotals and a grand total |
+| **Summary** | Formatted reimbursement form — employee name and expense period (label + value sit side-by-side), all receipts grouped by category with subtotals and a grand total. Columns are auto-fit to content width and rows grow to fit wrapped text. The `#` cell of each receipt links straight to its image on the category sheet |
+| **Insights** | Mirrors the web dashboard: KPI figures (total, count, avg, flagged, verified, avg processing), a spend-by-category pie, top-vendor bars, and a detailed spend-over-time chart (daily columns + cumulative trend line) with a backing data table |
 | **Fuel** | Embedded receipt images for fuel receipts |
 | **Materials** | Embedded receipt images for materials receipts |
 | **Miscellaneous** | Embedded receipt images for miscellaneous receipts |
@@ -347,7 +358,7 @@ Each generated workbook contains four sheets:
 
 | Col | Header | Notes |
 |---|---|---|
-| A | Receipt No. | Sequential within category |
+| A | Receipt No. | Sequential within category; hyperlinks to the receipt image |
 | B | Date | `m/d/yy` format |
 | C | Store | Vendor name |
 | D | Job Name | Centered |
@@ -381,7 +392,7 @@ Each generated workbook contains four sheets:
 | `POST` | `/kanban/remove` | `{"filename": "..."}` — dismiss a card |
 | `POST` | `/generate-spreadsheet` | Streams `.xlsx` binary |
 | `POST` | `/results/clear` | Clears completed results, hides generate card |
-| `GET` | `/stats` | Spend analytics: totals, by-category, top vendors, timeline |
+| `GET` | `/stats` | Spend analytics: totals, by-category, top vendors, and a timeline where each day carries its `total`, receipt `count`, and a running `cumulative` |
 | `GET` | `/export/csv` | Streams all completed results as CSV |
 | `GET` | `/reports` | Lists previously generated workbooks (name, size, date) |
 | `GET` | `/reports/download?filename=` | Download a past report |
@@ -407,6 +418,14 @@ Each generated workbook contains four sheets:
 | `GET/POST` | `/saved-fields` | `employees`, `job_names`, `job_numbers` lists |
 | `GET` | `/intake/files` | Files waiting in the intake folder |
 | `GET` | `/version` | Running build tag |
+
+### Maintenance
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/maintenance/orphans` | Report unreferenced files in the working folders — each with `folder`, `name`, full `path`, `size`, `modified` — plus a list of empty temp dirs. Report-only |
+| `POST` | `/maintenance/cleanup-empty-dirs` | Delete emptied job/temp folders (`_upload_*`, `_pdf_*`, and any empty subfolder) from the working directories. Returns the removed locations |
+| `POST` | `/admin/restart` | Restart the server process (Docker relaunches it) |
 
 ### Watch Mode
 
@@ -460,10 +479,15 @@ At runtime, the following folders are created automatically:
 output/
 ├── receipts/               # Renamed receipt images (category_date_vendor.ext)
 │   └── _upload_XXXXX/      # Temp staging for web uploads (cleaned up after rename)
+├── processing/             # In-flight and failed images live here
 ├── .app_state.json         # Crash-safe snapshot of completed/failed receipts
+├── .app_config.json        # UI-saved settings (paths, schedule, processing, review)
 └── Reimbursements_Name_YYYY-MM-DD.xlsx
 intake/                     # Drop receipts here for auto-processing
 ```
+
+> Emptied temp/job folders left behind by clears or interrupted runs can be swept
+> up from **Settings → Maintenance → Check Orphaned Files → Delete empty folders**.
 
 ---
 

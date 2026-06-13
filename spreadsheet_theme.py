@@ -5,13 +5,16 @@ All sections are written in a single pass — no row-insertion hacks needed.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 # ── Color palette ──────────────────────────────────────────────────────────────
 COLOR_TITLE_BG    = "2C3E50"
@@ -36,10 +39,13 @@ COLOR_ACCENT      = "4F8EF7"
 # Sheet tab colors — same palette as the web UI category colors (CAT_COLORS)
 TAB_COLORS = {
     "Summary":       "1E40AF",
+    "Insights":      "0EA5A4",
     "Fuel":          "F5A623",
     "Materials":     "2DD482",
     "Miscellaneous": "8B5CF6",
 }
+# Category accent colors for the Insights charts/legend (match the web UI palette)
+CAT_CHART_COLORS = {"Fuel": "F5A623", "Materials": "2DD482", "Miscellaneous": "8B5CF6"}
 # Light background color used for per-receipt header rows in image sheets
 RECEIPT_HEADER_COLORS = {
     "Fuel":          "FFF3CC",   # light amber
@@ -131,23 +137,30 @@ def _write_title(ws, row: int):
 
 
 def _write_meta_field(ws, row: int, label: str, value: str,
-                      label_col: int = 2, value_col: int = 4):
+                      label_col: int = 2, value_col: int = 3):
+    """Write a 'Label:  value' meta row.
+
+    The value sits in column C, immediately to the right of the label in B, and
+    the whole row carries an explicit empty border so no stray cell lines (the
+    old artifact in E2/E3, left over from a D:E merge) survive in Excel or
+    Numbers. No merged cells — a long value simply overflows across the
+    same-coloured, empty cells to its right, which both apps render cleanly.
+    """
     meta_fill = _fill(COLOR_META_BG)
-    _flood(ws, row, meta_fill)
+    no_border = Border()  # all sides None — clears any default/stray gridline
+    _flood(ws, row, meta_fill, border=no_border)
 
     lbl = ws.cell(row=row, column=label_col, value=label)
     lbl.font = _font(bold=True, size=11)
     lbl.fill = meta_fill
-    lbl.alignment = _align(h="right")
+    lbl.alignment = _align(h="right", wrap=False)
+    lbl.border = no_border
 
-    end_col = value_col + 1
-    ws.merge_cells(
-        f"{get_column_letter(value_col)}{row}:{get_column_letter(end_col)}{row}"
-    )
     val = ws.cell(row=row, column=value_col, value=value)
     val.font = _font(size=11)
     val.fill = meta_fill
-    val.alignment = _align(h="left")
+    val.alignment = _align(h="left", wrap=False)
+    val.border = no_border
     ws.row_dimensions[row].height = 18
 
 
@@ -319,6 +332,67 @@ def _autosize_columns(ws, min_width: float = 4.0, max_width: float = 55.0) -> No
     for col, width in col_widths.items():
         letter = get_column_letter(col)
         ws.column_dimensions[letter].width = min(max(width, min_width), max_width)
+
+
+# Columns whose text is allowed to wrap; they are capped at their design width so
+# long content flows down (taller rows) rather than stretching the sheet sideways.
+_WRAP_COLS = {COL_STORE, COL_JOB_NAME, COL_SUMMARY, COL_NOTES}
+
+
+def _fit_summary_dimensions(ws, data_rows) -> None:
+    """Fit every column to its content width and every data row to its content
+    height, so nothing is clipped in Excel or Numbers.
+
+    Narrow columns (#, Date, Job #, Amount) shrink snug to their short values;
+    the wrap columns are capped at their design width and the matching rows grow
+    tall enough to show all wrapped lines.
+    """
+    # ── Column widths ──────────────────────────────────────────────────────────
+    content: dict[int, int] = {}
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is None or not getattr(cell, "column", None):
+                continue
+            longest = max((len(line) for line in str(cell.value).split("\n")), default=0)
+            content[cell.column] = max(content.get(cell.column, 0), longest)
+    for col in range(1, LAST_COL + 1):
+        letter = get_column_letter(col)
+        design = COLUMN_WIDTHS.get(letter, 12.0)
+        fit = content.get(col, 0) * 1.1 + 2.0
+        if col in _WRAP_COLS:
+            width = min(max(fit, 10.0), design)   # wrap within the design width
+        else:
+            width = min(max(fit, 6.0), 24.0)      # snug to short content
+        ws.column_dimensions[letter].width = round(width, 1)
+
+    # ── Row heights ────────────────────────────────────────────────────────────
+    for r in data_rows:
+        lines = 1
+        for col in _WRAP_COLS:
+            cell = ws.cell(row=r, column=col)
+            if cell.value is None:
+                continue
+            width = ws.column_dimensions[get_column_letter(col)].width or 12.0
+            chars = max(int(width / 1.05) - 1, 8)
+            for seg in str(cell.value).split("\n"):
+                lines = max(lines, max(1, math.ceil(len(seg) / chars)))
+        ws.row_dimensions[r].height = min(max(30.0, lines * 15.0 + 4), 170.0)
+
+
+def _coerce_date(raw) -> Optional[date]:
+    """Best-effort conversion of a receipt's date field to a date object."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    return None
 
 
 # ── Summary row pre-calculator ────────────────────────────────────────────────
@@ -514,6 +588,283 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
     return anchors
 
 
+# ── Insights sheet ───────────────────────────────────────────────────────────
+
+_CAT_LABELS = {"fuel": "Fuel", "mats": "Materials", "misc": "Miscellaneous"}
+
+
+def _compute_insights(sections: dict) -> dict:
+    """Aggregate the same spend analytics the web dashboard shows, computed from
+    the receipt sections so the workbook can mirror them."""
+    total = 0.0
+    count = flagged = verified = 0
+    by_category: dict[str, dict] = {}
+    by_vendor: dict[str, dict] = {}
+    by_day: dict[date, float] = {}
+    count_by_day: dict[date, int] = {}
+    proc_times: list[float] = []
+
+    for cat in ("fuel", "mats", "misc"):
+        label = _CAT_LABELS[cat]
+        for d in sections.get(cat, []):
+            try:
+                amt = round(float(d.get("amount") or 0), 2)
+            except (TypeError, ValueError):
+                amt = 0.0
+            total += amt
+            count += 1
+            c = by_category.setdefault(label, {"count": 0, "total": 0.0})
+            c["count"] += 1
+            c["total"] = round(c["total"] + amt, 2)
+
+            vendor = (d.get("vendor") or "Unknown").strip() or "Unknown"
+            v = by_vendor.setdefault(vendor, {"count": 0, "total": 0.0})
+            v["count"] += 1
+            v["total"] = round(v["total"] + amt, 2)
+
+            day = _coerce_date(d.get("date"))
+            if day is not None:
+                by_day[day] = round(by_day.get(day, 0.0) + amt, 2)
+                count_by_day[day] = count_by_day.get(day, 0) + 1
+
+            if d.get("_flag"):
+                flagged += 1
+            if d.get("_amount_verified"):
+                verified += 1
+            try:
+                secs = float(d.get("_proc_seconds") or 0)
+                if secs > 0:
+                    proc_times.append(secs)
+            except (TypeError, ValueError):
+                pass
+
+    top_vendors = sorted(
+        ({"vendor": k, **val} for k, val in by_vendor.items()),
+        key=lambda x: -x["total"],
+    )[:8]
+
+    timeline: list[dict] = []
+    running = 0.0
+    for day in sorted(by_day):
+        running = round(running + by_day[day], 2)
+        timeline.append({"date": day, "total": by_day[day], "cumulative": running})
+
+    return {
+        "count":    count,
+        "total":    round(total, 2),
+        "average":  round(total / count, 2) if count else 0.0,
+        "flagged":  flagged,
+        "verified": verified,
+        "by_category": by_category,
+        "top_vendors":  top_vendors,
+        "timeline":     timeline,
+        "count_by_day": count_by_day,
+        "proc_avg_seconds": round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
+        "peak_day": max(timeline, key=lambda t: t["total"]) if timeline else None,
+    }
+
+
+def _kpi_tile(ws, row: int, col: int, label: str, value, fmt: str = None,
+              accent: str = COLOR_SECTION_BG):
+    """Two-cell vertical KPI tile: a big value over a muted label."""
+    val_cell = ws.cell(row=row, column=col, value=value)
+    val_cell.font = _font(bold=True, size=15, color=accent)
+    val_cell.fill = _fill("FFFFFF")
+    val_cell.alignment = _align(h="center")
+    val_cell.border = _border("E2E8F0")
+    if fmt:
+        val_cell.number_format = fmt
+
+    lbl_cell = ws.cell(row=row + 1, column=col, value=label)
+    lbl_cell.font = _font(size=9, color="64748B")
+    lbl_cell.fill = _fill("FFFFFF")
+    lbl_cell.alignment = _align(h="center")
+    lbl_cell.border = _border("E2E8F0")
+
+
+def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
+                          expense_period: str) -> None:
+    """Add an 'Insights' sheet mirroring the web dashboard: KPI tiles, a category
+    breakdown, top vendors, and a detailed spend-over-time table — each backed by
+    a native Excel chart that also renders in macOS Numbers."""
+    ws = wb.create_sheet(title="Insights", index=1)
+    ws.sheet_properties.tabColor = TAB_COLORS["Insights"]
+    ws.sheet_view.showGridLines = False
+    for letter, width in (("A", 22), ("B", 12), ("C", 14), ("D", 4),
+                          ("E", 16), ("F", 16), ("G", 16), ("H", 16)):
+        ws.column_dimensions[letter].width = width
+
+    # ── Title ──────────────────────────────────────────────────────────────────
+    _flood(ws, 1, _fill(COLOR_TITLE_BG), cols=range(1, LAST_COL + 1))
+    ws.merge_cells("A1:H1")
+    t = ws.cell(row=1, column=1, value="Insights")
+    t.font = _font(bold=True, color=COLOR_TITLE_FG, size=16)
+    t.fill = _fill(COLOR_TITLE_BG)
+    t.alignment = _align(h="center")
+    ws.row_dimensions[1].height = 30
+
+    sub = f"{employee_name}"
+    if expense_period:
+        sub += f"  ·  {expense_period}"
+    _flood(ws, 2, _fill(COLOR_META_BG), border=Border(), cols=range(1, LAST_COL + 1))
+    ws.merge_cells("A2:H2")
+    s = ws.cell(row=2, column=1, value=sub)
+    s.font = _font(size=11, color="334155")
+    s.fill = _fill(COLOR_META_BG)
+    s.alignment = _align(h="center")
+
+    # ── KPI tiles ──────────────────────────────────────────────────────────────
+    _write_section_banner(ws, 4, "Key Figures")
+    _kpi_tile(ws, 5, 1, "Total Spend",  insights["total"], ACCT_FORMAT, COLOR_SECTION_BG)
+    _kpi_tile(ws, 5, 2, "Receipts",     insights["count"])
+    _kpi_tile(ws, 5, 3, "Avg / Receipt", insights["average"], ACCT_FORMAT)
+    _kpi_tile(ws, 5, 5, "Flagged",      insights["flagged"], None, "B91C1C")
+    _kpi_tile(ws, 5, 6, "Verified",     insights["verified"], None, "15803D")
+    proc = insights.get("proc_avg_seconds") or 0
+    _kpi_tile(ws, 5, 7, "Avg Processing", f"{proc:g}s" if proc else "—")
+    ws.row_dimensions[5].height = 24
+    ws.row_dimensions[6].height = 16
+
+    # Charts sit to the right of their tables (anchored at column E). A chart of
+    # H centimetres covers ~2·H grid rows; advance the cursor past whichever is
+    # taller — table or chart — so sections never overlap.
+    def _chart_rows(height_cm: float) -> int:
+        return int(round(height_cm * 2)) + 1
+
+    row = 8
+
+    # ── By Category (table + pie chart) ────────────────────────────────────────
+    _write_section_banner(ws, row, "By Category")
+    row += 1
+    cat_hdr = row
+    for i, text in enumerate(("Category", "Count", "Total"), start=1):
+        cell = ws.cell(row=row, column=i, value=text)
+        cell.font = _font(bold=True, color=COLOR_HEADER_FG, size=10)
+        cell.fill = _fill(COLOR_HEADER_BG)
+        cell.alignment = _align(h="center")
+        cell.border = _border("2E75B6")
+    row += 1
+    cat_first = row
+    cats = insights["by_category"]
+    for label in ("Fuel", "Materials", "Miscellaneous"):
+        data = cats.get(label, {"count": 0, "total": 0.0})
+        ws.cell(row=row, column=1, value=label).alignment = _align(h="left", wrap=False)
+        ws.cell(row=row, column=2, value=data["count"]).alignment = _align(h="center")
+        amt = ws.cell(row=row, column=3, value=data["total"])
+        amt.number_format = ACCT_FORMAT
+        amt.alignment = _align(h="right")
+        for col in (1, 2, 3):
+            ws.cell(row=row, column=col).border = _border("E2E8F0")
+        row += 1
+    cat_last = row - 1
+
+    pie = PieChart()
+    pie.title = "Spend by Category"
+    pie.height = 6.5
+    pie.width = 11
+    pie.add_data(Reference(ws, min_col=3, min_row=cat_hdr, max_row=cat_last), titles_from_data=True)
+    pie.set_categories(Reference(ws, min_col=1, min_row=cat_first, max_row=cat_last))
+    ws.add_chart(pie, "E" + str(cat_hdr))
+
+    row = max(cat_last, cat_hdr + _chart_rows(6.5)) + 2
+
+    # ── Top Vendors (table + bar chart) ────────────────────────────────────────
+    _write_section_banner(ws, row, "Top Vendors")
+    row += 1
+    ven_hdr = row
+    for i, text in enumerate(("Vendor", "Count", "Total"), start=1):
+        cell = ws.cell(row=row, column=i, value=text)
+        cell.font = _font(bold=True, color=COLOR_HEADER_FG, size=10)
+        cell.fill = _fill(COLOR_HEADER_BG)
+        cell.alignment = _align(h="center")
+        cell.border = _border("2E75B6")
+    row += 1
+    ven_first = row
+    vendors = insights["top_vendors"]
+    for v in vendors:
+        ws.cell(row=row, column=1, value=v["vendor"]).alignment = _align(h="left", wrap=False)
+        ws.cell(row=row, column=2, value=v["count"]).alignment = _align(h="center")
+        amt = ws.cell(row=row, column=3, value=v["total"])
+        amt.number_format = ACCT_FORMAT
+        amt.alignment = _align(h="right")
+        for col in (1, 2, 3):
+            ws.cell(row=row, column=col).border = _border("E2E8F0")
+        row += 1
+    ven_last = row - 1
+    ven_chart_h = 6.5
+    if vendors:
+        bar = BarChart()
+        bar.type = "bar"
+        bar.title = "Top Vendors by Spend"
+        ven_chart_h = max(6.0, 1.5 + 0.55 * len(vendors))
+        bar.height = ven_chart_h
+        bar.width = 11
+        bar.legend = None
+        bar.y_axis.title = "Total $"
+        bar.add_data(Reference(ws, min_col=3, min_row=ven_hdr, max_row=ven_last), titles_from_data=True)
+        bar.set_categories(Reference(ws, min_col=1, min_row=ven_first, max_row=ven_last))
+        ws.add_chart(bar, "E" + str(ven_hdr))
+
+    row = max(ven_last, ven_hdr + _chart_rows(ven_chart_h)) + 2
+
+    # ── Spend Over Time (detailed table + combined column/line chart) ──────────
+    _write_section_banner(ws, row, "Spend Over Time")
+    row += 1
+    tl_note = ws.cell(row=row, column=1,
+                      value="Daily spend with running cumulative total")
+    tl_note.font = _font(size=9, color="64748B")
+    tl_note.alignment = _align(h="left", wrap=False)
+    row += 1
+    tl_hdr = row
+    for i, text in enumerate(("Date", "Daily Spend", "Cumulative", "Receipts"), start=1):
+        cell = ws.cell(row=row, column=i, value=text)
+        cell.font = _font(bold=True, color=COLOR_HEADER_FG, size=10)
+        cell.fill = _fill(COLOR_HEADER_BG)
+        cell.alignment = _align(h="center")
+        cell.border = _border("2E75B6")
+    row += 1
+    tl_first = row
+    timeline = insights["timeline"]
+    counts_by_day = insights.get("count_by_day", {})
+    for t in timeline:
+        d_cell = ws.cell(row=row, column=1, value=t["date"])
+        if isinstance(t["date"], date):
+            d_cell.number_format = DATE_FORMAT
+        d_cell.alignment = _align(h="center")
+        daily = ws.cell(row=row, column=2, value=t["total"])
+        daily.number_format = ACCT_FORMAT
+        daily.alignment = _align(h="right")
+        cum = ws.cell(row=row, column=3, value=t["cumulative"])
+        cum.number_format = ACCT_FORMAT
+        cum.alignment = _align(h="right")
+        cnt = ws.cell(row=row, column=4, value=counts_by_day.get(t["date"], None))
+        cnt.alignment = _align(h="center")
+        for col in (1, 2, 3, 4):
+            ws.cell(row=row, column=col).border = _border("E2E8F0")
+        row += 1
+    tl_last = row - 1
+
+    if timeline:
+        col_chart = BarChart()
+        col_chart.type = "col"
+        col_chart.title = "Spend Over Time"
+        col_chart.height = 8
+        col_chart.width = 20
+        col_chart.y_axis.title = "Daily $"
+        col_chart.x_axis.title = "Date"
+        col_chart.add_data(Reference(ws, min_col=2, min_row=tl_hdr, max_row=tl_last), titles_from_data=True)
+        col_chart.set_categories(Reference(ws, min_col=1, min_row=tl_first, max_row=tl_last))
+
+        line = LineChart()
+        line.add_data(Reference(ws, min_col=3, min_row=tl_hdr, max_row=tl_last), titles_from_data=True)
+        line.y_axis.axId = 200
+        line.y_axis.title = "Cumulative $"
+        # Cross the secondary value axis on the right edge
+        line.y_axis.crosses = "max"
+        col_chart += line
+        ws.add_chart(col_chart, "A" + str(tl_last + 2))
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def build_themed_workbook(
@@ -604,7 +955,11 @@ def build_themed_workbook(
     gh_cell.font = _font(size=9, color=COLOR_ACCENT)
     gh_cell.alignment = _align(h="left", wrap=False)
 
-    _autosize_columns(ws)
+    # Fit every column to its content width and grow each receipt row to fit its
+    # wrapped content height, so nothing is clipped in Excel or Numbers.
+    data_rows = [r for (first, last) in data_row_ranges.values()
+                 if last >= first for r in range(first, last + 1)]
+    _fit_summary_dimensions(ws, data_rows)
 
     # Highlight amounts over the category flag thresholds, even when the model
     # didn't flag them itself
@@ -633,6 +988,10 @@ def build_themed_workbook(
     # NOTE: no AutoFilter on purpose — the sheet stacks three banner/subtotal
     # sections, so a single filter range would scramble them.
 
+    # ── Insights sheet (tab 2) — mirrors the web dashboard with native charts ──
+    insights = _compute_insights(sections)
+    _build_insights_sheet(wb, insights, employee_name, expense_period)
+
     # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
     IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]
     for cat, sheet_name in IMAGE_SHEET_DEFS:
@@ -645,8 +1004,15 @@ def build_themed_workbook(
         for i, anchor in enumerate(anchors):
             cell_a = summary_link_cells.get((cat, i))
             if cell_a and anchor:
-                # Internal hyperlink — no leading #, just 'SheetName'!CellRef
-                cell_a.hyperlink = f"'{safe_name}'!{anchor}"
+                # Internal hyperlink via the `location` attribute (target=None) —
+                # this is the in-workbook link form both Excel and macOS Numbers
+                # follow, unlike a bare "'Sheet'!A3" string (which Excel treats as
+                # a broken external target).
+                cell_a.hyperlink = Hyperlink(
+                    ref=cell_a.coordinate,
+                    location=f"'{safe_name}'!{anchor}",
+                    display=str(cell_a.value),
+                )
                 cell_a.font = _font(bold=True, size=11, color=COLOR_ACCENT)
 
     return wb

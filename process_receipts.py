@@ -309,21 +309,23 @@ def initialize_models() -> str:
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
 #
-# CANONICAL PER-RECEIPT PIPELINE ORDER:  autocrop → compress → OCR/text extraction
+# CANONICAL PIPELINE ORDER:  autocrop → OCR/text extraction → … → compress
 #
 #   1. autocrop  — trim uniform background borders (autocrop_image_file / the
 #                  in-memory autocrop_receipt inside encode_image).
-#   2. compress  — re-encode/downscale the stored file to an optimized JPEG
-#                  (compress_image_file). This may REWRITE the file with a new
-#                  suffix (e.g. .png/.jpeg → .jpg), so callers MUST use the path it
-#                  RETURNS for every later step — feeding the stale pre-compress
-#                  path to OCR is what caused "[Errno 2] No such file or directory".
-#   3. OCR/text  — only now run extraction (LM Studio vision/OCR or the PaddleOCR
-#                  fallback) so every OCR path reads the same cleaned-up image.
+#   2. OCR/text  — run extraction (LM Studio vision/OCR or the PaddleOCR fallback)
+#                  against the autocropped, full-resolution image.
+#   3. compress  — DEFERRED to spreadsheet-generation time (compress_result_images
+#                  / generate_spreadsheet). Re-encoding/downscaling the stored
+#                  file once, at export, keeps OCR reading the sharpest image and
+#                  shrinks the output folder and the embedded workbook images in a
+#                  single pass. Compression may REWRITE the file with a new suffix
+#                  (.png/.jpeg → .jpg); compress_result_images updates the stored
+#                  _image_path / _new_filename so later lookups still resolve.
 #
-# Cropping/compressing BEFORE extraction is what makes autocrop actually reach the
-# OCR engines (the PaddleOCR fallback reads the file from disk, not via
-# encode_image), and keeps the file path handed between steps consistent.
+# Keeping compression OUT of the per-receipt path means nothing downstream can be
+# handed a stale pre-compress path (the old "[Errno 2] No such file or directory"
+# bug); the file the worker stores is exactly the file OCR read.
 
 AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
 AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
@@ -1379,6 +1381,58 @@ def compute_expense_period(results: list[dict]) -> str:
 
 # ── Spreadsheet generation ─────────────────────────────────────────────────────
 
+def compress_result_images(results: list[dict], log: Optional[Callable] = None) -> int:
+    """Compress each processed receipt image in place.
+
+    This is the deferred *compress* step: instead of re-encoding every receipt
+    the moment it is processed, the optimisation now runs once, at spreadsheet
+    generation time, so the on-disk output folder and the images embedded in the
+    workbook are both shrunk together.
+
+    Idempotent — records are marked with ``_compressed`` so repeat calls (e.g. a
+    second export of the same batch) are no-ops.  When compression changes the
+    file suffix (``.png`` → ``.jpg``) the ``_image_path`` / ``_new_filename`` /
+    ``_compressed_file`` fields are updated so later lookups still resolve.
+
+    Returns the total number of bytes saved.
+    """
+    if not COMPRESS_ENABLED:
+        return 0   # respect the runtime toggle; leave records unmarked so a later
+                   # export (with compression re-enabled) still optimises them
+    saved = 0
+    for r in results:
+        if r.get("_compressed"):
+            continue
+        p_str = r.get("_image_path")
+        if not p_str:
+            continue
+        path = Path(p_str)
+        if not path.exists():
+            r["_compressed"] = True   # nothing on disk to shrink — don't retry forever
+            continue
+        try:
+            before = path.stat().st_size
+        except OSError:
+            before = 0
+        new_path = compress_image_file(path)
+        try:
+            after = new_path.stat().st_size
+        except OSError:
+            after = before
+        if new_path != path:
+            r["_image_path"] = str(new_path)
+            if r.get("_new_filename"):
+                r["_new_filename"] = new_path.name
+            r["_compressed_file"] = new_path.name
+        r["_compressed"] = True
+        if before and after and after < before:
+            saved += before - after
+            if log:
+                pct = round((1 - after / before) * 100)
+                log(f"[image] {new_path.name}: {before // 1024} KB → {after // 1024} KB (−{pct}%)")
+    return saved
+
+
 def generate_spreadsheet(
     results: list[dict],
     output_dir: Path,
@@ -1390,6 +1444,11 @@ def generate_spreadsheet(
     # Use _image_path as-is — images live in the temp/staged folder where they
     # were written during processing. Host path remapping belongs in UI only.
     resolved = list(results)
+
+    # Deferred compression: shrink every stored receipt image now, right before
+    # the workbook is built, so the output folder and the embedded images are
+    # optimised in a single pass. Idempotent — already-compressed records skip.
+    compress_result_images(resolved)
 
     by_category: dict[str, list] = defaultdict(list)
     for r in resolved:
@@ -1567,8 +1626,9 @@ def process_receipts_batch(
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 
+        # Autocrop now; compression is deferred to generate_spreadsheet so the
+        # stored image keeps full resolution until the report is built.
         autocrop_image_file(img_path)
-        img_path = compress_image_file(img_path)
         if use_folder_structure:
             dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)

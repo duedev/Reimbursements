@@ -1,5 +1,9 @@
-"""Regression tests for the worker's autocrop → compress → extraction order and
-the resized-file path handoff (the '[Errno 2] No such file or directory' bug)."""
+"""Regression tests for the worker pipeline order.
+
+Compression is DEFERRED to spreadsheet-generation time, so the worker hands the
+full-resolution stored file (original suffix) to extraction — never a rewritten
+path — and the optimisation happens later, in compress_result_images.
+"""
 from pathlib import Path
 
 import pytest
@@ -28,9 +32,9 @@ def worker_env(tmp_path, monkeypatch):
     server._kanban.clear()
 
 
-def test_png_upload_compresses_before_extraction_no_filenotfound(worker_env, monkeypatch):
-    """A .png upload is compressed to .jpg before extraction; the worker must hand
-    the resized .jpg path to extraction, not the unlinked original .png."""
+def test_extraction_reads_original_file_then_compresses_at_export(worker_env, monkeypatch):
+    """A .png upload is handed to extraction unchanged (it must exist), stored at
+    full resolution, and only re-encoded to .jpg when the report is generated."""
     images = worker_env
     tmp_dir = images / "_upload_deadbeef"
     tmp_dir.mkdir()
@@ -40,7 +44,7 @@ def test_png_upload_compresses_before_extraction_no_filenotfound(worker_env, mon
     seen_paths: list[Path] = []
 
     def fake_extract(client, path, cb, step_log=None):
-        # Whatever path the worker hands us MUST exist on disk.
+        # Whatever path the worker hands us MUST exist on disk and keep its suffix.
         seen_paths.append(Path(path))
         assert Path(path).exists(), f"extraction got a missing file: {path}"
         return {"vendor": "Shell", "amount": 45.20, "date": "2026-05-01", "flags": []}
@@ -53,9 +57,27 @@ def test_png_upload_compresses_before_extraction_no_filenotfound(worker_env, mon
 
     assert server._drain_once() is True
 
-    # Extraction ran against the compressed .jpg, not the original .png
-    assert seen_paths and seen_paths[0].suffix == ".jpg"
-    # A processed file landed in IMAGES_FOLDER and the result was recorded
+    # Extraction ran against the ORIGINAL .png — compression no longer happens first
+    assert seen_paths and seen_paths[0].suffix == ".png"
+
+    # A processed (still uncompressed) file landed in IMAGES_FOLDER
     assert len(server._results) == 1
-    final = Path(server._results[0]["_image_path"])
-    assert final.exists() and final.parent == images
+    result = server._results[0]
+    stored = Path(result["_image_path"])
+    assert stored.exists() and stored.parent == images
+    assert stored.suffix == ".png"          # not yet compressed
+    assert not result.get("_compressed")
+
+    # Now run the deferred compression (what generate_spreadsheet does at export)
+    pr.compress_result_images(server._results)
+
+    compressed = Path(result["_image_path"])
+    assert compressed.suffix == ".jpg"      # rewritten to optimized JPEG
+    assert compressed.exists() and not stored.exists()
+    assert result["_new_filename"] == compressed.name
+    assert result["_compressed"] is True
+
+    # Idempotent — a second export does not re-encode
+    size_after = compressed.stat().st_size
+    pr.compress_result_images(server._results)
+    assert compressed.stat().st_size == size_after

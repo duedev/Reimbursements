@@ -39,7 +39,7 @@ from process_receipts import (
     classify_category,
     sort_key_for_receipt,
     rename_receipt_image,
-    compress_image_file,
+    compress_result_images,
     _detect_duplicates,
     generate_spreadsheet,
     list_available_models,
@@ -328,50 +328,6 @@ def _ensure_worker_alive() -> bool:
         return True
 
 
-def _optimize_stored_image(path: Path, fname: str,
-                           step_log: list | None = None) -> Path:
-    """Compress a processed receipt image, logging the size reduction.
-
-    Returns the resulting path (compression may convert PNGs etc. to ``.jpg``).
-    Appends a compress step to step_log when provided.
-    """
-    try:
-        before = path.stat().st_size
-    except OSError:
-        before = 0
-    before_suffix = path.suffix
-
-    new_path = compress_image_file(path)
-    try:
-        after = new_path.stat().st_size
-    except OSError:
-        after = before
-
-    if before and after and after < before:
-        pct = round((1 - after / before) * 100)
-        _broadcast({
-            "type": "log",
-            "message": f"[image] {fname}: {before // 1024} KB → {after // 1024} KB (−{pct}%)",
-        })
-
-    if step_log is not None:
-        if not _pr.COMPRESS_ENABLED:
-            _pr._append_step(step_log, "compress", "Compress", "disabled")
-        else:
-            parts: list[str] = []
-            if before and after:
-                parts.append(f"{before // 1024} KB → {after // 1024} KB")
-                if after < before:
-                    pct = round((1 - after / before) * 100)
-                    parts.append(f"−{pct}%")
-            if new_path.suffix.lower() != before_suffix.lower():
-                parts.append(f"{before_suffix} → .jpg")
-            _pr._append_step(step_log, "compress", "Compress",
-                             "  ".join(parts) if parts else "no change")
-
-    return new_path
-
-
 def _run_worker() -> None:
     """Drain the work queue forever, surviving per-batch errors."""
     while not _worker_cancel.is_set():
@@ -429,15 +385,11 @@ def _drain_once() -> bool:
                                 "message": f"[worker] could not move {fname} to processing: {_mv_err}"})
             _cache_item(item)
 
-            # Compress the stored file BEFORE extraction so every OCR path
-            # (LM Studio vision AND PaddleOCR, which reads from disk) sees the same
-            # optimised image. compress_image_file may rewrite with a new suffix
-            # (e.g. .png → .jpg); capture the returned path and feed THAT to
-            # extraction so we never hand a stale path to the worker.
+            # Compression is DEFERRED to spreadsheet generation (see
+            # process_receipts.compress_result_images), so extraction reads the
+            # full-resolution stored file exactly as the worker saved it — no
+            # suffix rewrite, no stale-path hand-off.
             IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
-            path = _optimize_stored_image(path, fname, step_log)
-            item["path"] = str(path)
-            _cache_item(item)  # update cache with post-compression path
 
             def make_cb(fn: str, steps: list):
                 def cb(status: str, data=None, model: str = "") -> None:
@@ -533,8 +485,9 @@ def _drain_once() -> bool:
             # Finalize step list in data (supersedes the snapshot set by _finish)
             data["_steps"] = list(steps)
 
-            # File was already autocropped + compressed before extraction (see the
-            # submit loop above); item["path"] points at that resized file.
+            # item["path"] points at the full-resolution file extraction read;
+            # it is renamed into IMAGES_FOLDER here and compressed later, when the
+            # spreadsheet is generated.
             IMAGES_FOLDER.mkdir(parents=True, exist_ok=True)
             path = Path(item["path"])
             final_path = rename_receipt_image(path, data, category, IMAGES_FOLDER)
@@ -1265,6 +1218,19 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
                 status_code=409,
             )
 
+    # Deferred compression — shrink the images for the receipts that will land in
+    # this report now, at export time. results_copy still holds the live _results
+    # dicts here, so this updates the stored paths in place (the output folder and
+    # re-generation both stay consistent); already-compressed records skip. Run it
+    # off the event loop since it does PIL disk I/O.
+    def _compress_live():
+        with _results_lock:
+            compress_result_images(
+                results_copy,
+                log=lambda m: _broadcast({"type": "log", "message": m}),
+            )
+    await asyncio.get_event_loop().run_in_executor(None, _compress_live)
+
     # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
     # so excluded items don't leave stale duplicate flags on the remaining receipts
     results_copy = copy.deepcopy(results_copy)
@@ -1336,6 +1302,7 @@ def _compute_stats(results: list[dict]) -> dict:
     by_category: dict[str, dict] = {}
     by_vendor: dict[str, dict] = {}
     by_day: dict[str, float] = {}
+    by_day_count: dict[str, int] = {}
     flagged = 0
     verified = 0
     proc_times: list[float] = []
@@ -1357,6 +1324,7 @@ def _compute_stats(results: list[dict]) -> dict:
         if d != date.max:
             key = d.isoformat()
             by_day[key] = round(by_day.get(key, 0.0) + amt, 2)
+            by_day_count[key] = by_day_count.get(key, 0) + 1
 
         if r.get("_flag"):
             flagged += 1
@@ -1373,7 +1341,20 @@ def _compute_stats(results: list[dict]) -> dict:
         ({"vendor": k, **v} for k, v in by_vendor.items()),
         key=lambda x: -x["total"],
     )[:8]
-    timeline = [{"date": k, "total": v} for k, v in sorted(by_day.items())]
+    # Timeline carries per-day count and a running cumulative so the dashboard's
+    # spend-over-time chart can show more than bare daily bars.
+    timeline: list[dict] = []
+    running = 0.0
+    for k in sorted(by_day):
+        running = round(running + by_day[k], 2)
+        timeline.append({
+            "date":       k,
+            "total":      by_day[k],
+            "count":      by_day_count.get(k, 0),
+            "cumulative": running,
+        })
+    dated_total = round(sum(by_day.values()), 2)
+    peak = max(timeline, key=lambda t: t["total"]) if timeline else None
 
     return {
         "count":        len(results),
@@ -1384,6 +1365,9 @@ def _compute_stats(results: list[dict]) -> dict:
         "by_category":  by_category,
         "top_vendors":  top_vendors,
         "timeline":     timeline,
+        "timeline_total":  dated_total,
+        "timeline_peak":   peak,
+        "timeline_days":   len(timeline),
         "proc_total_seconds": round(sum(proc_times), 1),
         "proc_avg_seconds":   round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
     }
@@ -2483,6 +2467,7 @@ async def find_orphaned_files():
             orphans.append({
                 "folder":   label,
                 "name":     str(p.relative_to(folder)),
+                "path":     str(p.resolve()),          # full on-disk location
                 "size":     st.st_size,
                 "modified": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
             })
@@ -2506,6 +2491,58 @@ async def find_orphaned_files():
         "orphans":    orphans,
         "empty_dirs": empty_dirs,
     })
+
+
+def _prune_empty_dirs(root: Path) -> list[Path]:
+    """Remove empty directories anywhere under ``root`` (but not ``root`` itself).
+
+    Walks bottom-up so a folder that holds only empty subfolders collapses in a
+    single pass. Returns the directories that were removed.
+    """
+    removed: list[Path] = []
+    if not root.exists() or not root.is_dir():
+        return removed
+    # Deepest paths first so nested empties are cleared before their parents
+    for p in sorted((d for d in root.rglob("*") if d.is_dir()),
+                    key=lambda x: len(x.parts), reverse=True):
+        try:
+            if not any(p.iterdir()):
+                p.rmdir()
+                removed.append(p)
+        except OSError:
+            pass
+    return removed
+
+
+@app.post("/maintenance/cleanup-empty-dirs")
+async def cleanup_empty_dirs():
+    """Delete emptied, orphaned job folders — temp staging (_upload_*, _pdf_*) or
+    real per-job subfolders — left behind in the working directories. Only ever
+    removes directories that contain no files. Report includes each location.
+    """
+    removed: list[dict] = []
+
+    for root, label in ((IMAGES_FOLDER, "receipts"), (PROCESSING_FOLDER, "processing")):
+        for d in _prune_empty_dirs(root):
+            removed.append({"folder": label, "name": str(d.name), "path": str(d.resolve())})
+
+    # Intake temp dirs (PDF page folders / upload staging) — never the intake root
+    # or pending input files.
+    try:
+        for d in sorted(INTAKE_FOLDER.iterdir()):
+            if d.is_dir() and d.name.startswith(("_pdf_", "_upload_")):
+                _prune_empty_dirs(d)
+                try:
+                    if not any(d.iterdir()):
+                        loc = str(d.resolve())
+                        d.rmdir()
+                        removed.append({"folder": "intake", "name": d.name, "path": loc})
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    return JSONResponse({"ok": True, "count": len(removed), "removed": removed})
 
 
 # ── Watch-mode / email ─────────────────────────────────────────────────────────
