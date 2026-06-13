@@ -35,7 +35,7 @@ except ImportError:
     HAS_PYMUPDF = False
 
 from openai import OpenAI
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageOps
 
 from spreadsheet_theme import build_themed_workbook
 
@@ -70,6 +70,10 @@ CONFIG_FILE         = Path(OUTPUT_FOLDER) / APP_CONFIG_FILENAME
 
 IMAGE_EXTENSIONS     = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 PDF_EXTENSIONS       = {".pdf"}
+ARCHIVE_EXTENSIONS   = {".zip"}
+# Archives are expanded into their member images/PDFs at intake; the members
+# (not the archive) are what gets queued, so SUPPORTED_EXTENSIONS — the set the
+# pipeline treats as directly processable — deliberately stays images + PDFs.
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
 IMAGE_MAX_PX         = 1568
 # Hard cap on pages rendered from a single PDF — a huge or maliciously-crafted
@@ -318,8 +322,12 @@ def initialize_models() -> str:
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
 #
-# CANONICAL PIPELINE ORDER:  autocrop → OCR/text extraction → … → compress
+# CANONICAL PIPELINE ORDER:  greyscale → autocrop → OCR/text extraction → … → compress
 #
+#   0. greyscale — flatten the stored image to high-contrast grayscale BEFORE any
+#                  OCR/LLM (grayscale_image_file), in place, so both the OCR engine
+#                  and the vision model read the same cleaned-up file. No-op when
+#                  GRAYSCALE_ENABLED is off.
 #   1. autocrop  — trim uniform background borders (autocrop_image_file / the
 #                  in-memory autocrop_receipt inside encode_image).
 #   2. OCR/text  — run extraction (LM Studio vision/OCR or the PaddleOCR fallback)
@@ -348,6 +356,14 @@ _AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as co
 COMPRESS_ENABLED = os.getenv("COMPRESS_ENABLED", "1").lower() not in ("0", "false", "no")
 JPEG_QUALITY     = int(os.getenv("JPEG_QUALITY", "85"))    # 40 (smaller) … 95 (sharper)
 STORE_MAX_PX     = int(os.getenv("STORE_MAX_PX", "2000"))  # cap the longest side of stored images
+
+# Greyscale (black-&-white) pre-pass — convert receipts to high-contrast grayscale
+# BEFORE OCR/LLM. Phone photos of receipts carry colour tints, shadows and uneven
+# lighting that hurt OCR; flattening to autocontrasted grayscale gives both the OCR
+# engine and the vision model a cleaner image to read. Applied in place so every
+# later step (OCR, distillation, rename, compression, the embedded workbook image,
+# the web preview) finds the same converted file — no extra path to track.
+GRAYSCALE_ENABLED = os.getenv("GRAYSCALE_ENABLED", "1").lower() not in ("0", "false", "no")
 
 
 def autocrop_receipt(img: Image.Image) -> Image.Image:
@@ -407,6 +423,39 @@ def autocrop_image_file(path: Path) -> bool:
                 cropped.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
             else:
                 cropped.save(path)
+        return True
+    except Exception:
+        return False
+
+
+def grayscale_image_file(path: Path) -> bool:
+    """Convert a stored receipt image to high-contrast grayscale, in place.
+
+    A pre-OCR pass: phone receipts are often tinted, shadowed, or low-contrast,
+    which trips up both the OCR engine and the vision model.  Converting to an
+    autocontrasted single channel sharpens the text without the harsh artefacts of
+    a hard 1-bit threshold (which would also hurt the embedded receipt image).
+
+    The file keeps its original path and suffix, so every later step — OCR,
+    distillation, autocrop, rename, deferred compression, the workbook image, and
+    the web preview — still finds it exactly where it was.  Returns True when the
+    file was rewritten, False when disabled or on any error (best-effort: a failed
+    conversion must never block extraction).
+    """
+    if not GRAYSCALE_ENABLED:
+        return False
+    try:
+        with Image.open(path) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            fmt  = (raw.format or "").upper()
+            gray = ImageOps.autocontrast(raw.convert("L"), cutoff=1)
+        if path.suffix.lower() in (".jpg", ".jpeg"):
+            gray.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        elif fmt:
+            gray.save(path, format=fmt)
+        else:
+            gray.save(path)
         return True
     except Exception:
         return False
@@ -486,6 +535,87 @@ def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
     except Exception as exc:
         print(f"[pdf] Failed to convert {pdf_path.name}: {exc}")
     return out
+
+
+# Zip-bomb / abuse guards for archive extraction.
+ARCHIVE_MAX_FILES = int(os.getenv("ARCHIVE_MAX_FILES", "1000"))             # member cap
+ARCHIVE_MAX_BYTES = int(os.getenv("ARCHIVE_MAX_BYTES", str(1024 ** 3)))     # 1 GiB uncompressed cap
+
+
+class _ArchiveTooLarge(Exception):
+    """Internal sentinel — decompressed output exceeded ARCHIVE_MAX_BYTES."""
+
+
+def extract_archive(archive_path: Path, dest_dir: Path) -> list[Path]:
+    """Extract the supported image/PDF members of a .zip into dest_dir (flattened).
+
+    Returns the list of extracted file paths (images and PDFs), ready to flow
+    through the same queueing path as a directly-uploaded file.  Designed to be
+    safe against hostile archives:
+
+      * Zip-slip — every member is written under its *basename* only, so entries
+        like ``../../etc/x`` or absolute paths can't escape dest_dir.
+      * Zip-bomb — extraction stops once ARCHIVE_MAX_FILES members or
+        ARCHIVE_MAX_BYTES of actual decompressed bytes have been written.
+      * Junk — non-image/PDF members, directories, and dotfiles are skipped, so a
+        zip's incidental README/.DS_Store never reaches the queue.
+
+    Best-effort: a corrupt archive or a single bad member is logged and skipped,
+    never raised, so one bad upload can't take down the request.
+    """
+    import zipfile
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    extracted: list[Path] = []
+    total_bytes = 0
+    try:
+        with zipfile.ZipFile(archive_path) as zf:
+            for info in zf.infolist():
+                if len(extracted) >= ARCHIVE_MAX_FILES:
+                    print(f"[zip] {archive_path.name}: stopped at {ARCHIVE_MAX_FILES}-file cap")
+                    break
+                if info.is_dir():
+                    continue
+                name = os.path.basename(info.filename)          # flatten → zip-slip safe
+                if not name or name.startswith("."):
+                    continue
+                if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+
+                # Collision-safe target name within dest_dir.
+                target = dest_dir / name
+                stem, ext = Path(name).stem, Path(name).suffix
+                i = 1
+                while target.exists():
+                    target = dest_dir / f"{stem}_{i}{ext}"
+                    i += 1
+
+                try:
+                    with zf.open(info) as src, open(target, "wb") as dst:
+                        while True:
+                            if total_bytes >= ARCHIVE_MAX_BYTES:
+                                raise _ArchiveTooLarge()
+                            chunk = src.read(64 * 1024)
+                            if not chunk:
+                                break
+                            total_bytes += len(chunk)
+                            if total_bytes > ARCHIVE_MAX_BYTES:
+                                raise _ArchiveTooLarge()
+                            dst.write(chunk)
+                except _ArchiveTooLarge:
+                    target.unlink(missing_ok=True)
+                    print(f"[zip] {archive_path.name}: stopped at {ARCHIVE_MAX_BYTES}-byte cap")
+                    break
+                except Exception as exc:
+                    target.unlink(missing_ok=True)
+                    print(f"[zip] {archive_path.name}: skipped member {name}: {exc}")
+                    continue
+                extracted.append(target)
+    except zipfile.BadZipFile:
+        print(f"[zip] {archive_path.name}: not a valid zip archive")
+    except Exception as exc:
+        print(f"[zip] Failed to extract {archive_path.name}: {exc}")
+    return extracted
 
 
 # ── AI extraction ──────────────────────────────────────────────────────────────
@@ -594,6 +724,70 @@ _paddle_init_error: str = ""   # last engine-init exception (exposed by /debug/p
 _paddle_lock = threading.Lock()
 
 
+def _shim_langchain_for_paddle() -> None:
+    """Let ``import paddleocr`` survive a missing or renamed ``langchain``.
+
+    paddlex (pulled in by paddleocr) eagerly runs, for its PP-ChatOCR retriever::
+
+        from langchain.docstore.document import Document
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+    langchain >= 1.0 deleted ``langchain.docstore`` / ``langchain.text_splitter``
+    (they live in ``langchain_core`` / ``langchain_text_splitters`` now), so the
+    import blows up with "No module named 'langchain.docstore'" — even though
+    paddleocr itself is installed and the receipts fallback never touches that
+    retriever.
+
+    Pre-register lightweight stand-ins for exactly those import targets when they
+    don't already resolve, re-exporting the real classes from the new packages when
+    present and falling back to inert placeholders otherwise.  A module that still
+    imports cleanly is never clobbered, so this is a no-op on a healthy install and
+    idempotent on repeat calls.
+    """
+    import importlib
+    import types
+
+    def _ensure(mod_name: str, attrs: dict, is_pkg: bool = False) -> None:
+        try:
+            importlib.import_module(mod_name)
+            return  # real module resolves — leave it untouched
+        except Exception:
+            pass
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            mod = types.ModuleType(mod_name)
+            if is_pkg:
+                mod.__path__ = []  # mark as a package so child lookups resolve
+            sys.modules[mod_name] = mod
+        for key, val in attrs.items():
+            setattr(mod, key, val)
+
+    try:
+        from langchain_core.documents import Document as _Doc  # type: ignore
+    except Exception:
+        class _Doc:  # minimal stand-in; the retriever path is never run here
+            def __init__(self, page_content: str = "", metadata=None, **_kw):
+                self.page_content = page_content
+                self.metadata = metadata or {}
+
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter as _Splitter  # type: ignore
+    except Exception:
+        try:
+            from langchain_text_splitters.character import RecursiveCharacterTextSplitter as _Splitter  # type: ignore
+        except Exception:
+            class _Splitter:  # inert stand-in
+                def __init__(self, *_a, **_kw): ...
+                def split_text(self, text):  # noqa: D401
+                    return [text]
+
+    # Parents before children so dotted-import resolution finds each level.
+    _ensure("langchain", {}, is_pkg=True)
+    _ensure("langchain.docstore", {}, is_pkg=True)
+    _ensure("langchain.docstore.document", {"Document": _Doc})
+    _ensure("langchain.text_splitter", {"RecursiveCharacterTextSplitter": _Splitter})
+
+
 def _patch_paddle_predictor_option() -> None:
     """Shim PaddlePredictorOption so a positional model_name still works.
 
@@ -674,8 +868,11 @@ def _get_paddle_engine():
         if _paddle_engine is not None:
             return _paddle_engine or None
         try:
-            # Apply compat shim before any PaddleOCR constructor runs — works
-            # around paddleocr/paddlex API drift (see _patch_paddle_predictor_option).
+            # Apply compat shims before importing paddleocr: one keeps the import
+            # alive across the langchain API removal (see _shim_langchain_for_paddle),
+            # the other works around paddleocr/paddlex constructor drift (see
+            # _patch_paddle_predictor_option).
+            _shim_langchain_for_paddle()
             _patch_paddle_predictor_option()
             from paddleocr import PaddleOCR
             try:  # PaddleOCR 3.x (with orientation detection)
@@ -966,6 +1163,12 @@ def _extract_receipt_with_status(
       Single stage: distillation model analyzes the image directly.
     Each branch is recorded in step_log (if provided) for the per-item process log.
     """
+    # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
+    # receipt to high-contrast grayscale in place so both the OCR engine (which
+    # reads the file directly) and the vision model (via encode_image) get the
+    # cleaner image. In-place, suffix preserved → no downstream path changes.
+    grayscale_image_file(image_path)
+
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
             status_cb(status, data, model)

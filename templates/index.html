@@ -57,24 +57,39 @@
     [data-theme="light"] .modal-box { background: #edf1f7; border: 1px solid var(--border); }
     [data-theme="light"] .saved-manage-panel { background: #e0e7f0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* Base colour on <html> so any sliver outside the wash is the theme bg, never
+       a white flash. */
+    html { background: var(--bg); }
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text);
+      min-height: 100vh;    /* fallback for browsers without dvh */
+      min-height: 100dvh;   /* dynamic viewport — true full height behind mobile chrome */
+    }
+    /* The gradient wash lives on a position:fixed full-screen layer rather than on
+       `background-attachment: fixed`, which mobile browsers silently drop — leaving
+       the wash (and the confetti, which shares the same coordinate space) covering
+       only the top ~2/3 of the screen. A fixed pseudo-element always spans the whole
+       viewport, including the band a retracting mobile address bar exposes. */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
       background:
         radial-gradient(1200px 500px at 80% -10%, rgba(79,142,247,0.10), transparent 60%),
         radial-gradient(900px 400px at 0% 0%, rgba(139,92,246,0.08), transparent 55%),
         var(--bg);
-      background-attachment: fixed;
-      color: var(--text); min-height: 100vh;
     }
     /* Light mode gets a soft, warm wash — gentle teal + amber over a warm
        neutral base. Deliberately avoids the purple/indigo "AI default" look. */
-    [data-theme="light"] body {
+    [data-theme="light"] body::before {
       background:
         radial-gradient(1100px 520px at 88% -10%, rgba(13,148,136,0.13), transparent 60%),
         radial-gradient(820px 460px at -6% 4%, rgba(245,166,35,0.11), transparent 58%),
         radial-gradient(700px 380px at 50% 108%, rgba(45,212,130,0.08), transparent 60%),
         linear-gradient(180deg, #eef4f1 0%, #e8eef0 55%, #ece8e1 100%);
-      background-attachment: fixed;
     }
 
     ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -1004,9 +1019,12 @@
     .report-row a:hover { text-decoration: underline; }
 
     /* Confetti */
+    /* Fall distance comes from --confetti-fall (set in JS from the real visible
+       window height) so bits sweep the whole screen on mobile, where `vh` units
+       under-measure behind the browser chrome. Falls back to 105vh. */
     @keyframes confetti-fall {
-      0%   { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
-      100% { transform: translateY(105vh) rotate(720deg); opacity: 0.6; }
+      0%   { transform: translateY(-40px) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(var(--confetti-fall, 105vh)) rotate(720deg); opacity: 0.6; }
     }
     .confetti-bit {
       position: fixed; top: 0; width: 9px; height: 14px; z-index: 9998;
@@ -1261,13 +1279,14 @@
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
       <div class="dz-text">
-        <p class="dz-desktop"><strong>Drop receipt images or PDFs here</strong></p>
-        <p class="dz-desktop">or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF…</p>
+        <p class="dz-desktop"><strong>Drop receipt images, PDFs, or a .zip here</strong></p>
+        <p class="dz-desktop">or <strong>click to browse</strong> — JPG, PNG, WEBP, PDF, ZIP…</p>
         <p class="dz-mobile"><strong>Tap to select receipts</strong></p>
-        <p class="dz-mobile" style="font-size:12px">JPG, PNG, WEBP, PDF supported</p>
+        <p class="dz-mobile" style="font-size:12px">JPG, PNG, WEBP, PDF, ZIP supported</p>
       </div>
-      <input type="file" id="file-input" class="sr-only" multiple accept="image/*,.pdf,application/pdf"
-             aria-label="Choose receipt images or PDFs">
+      <input type="file" id="file-input" class="sr-only" multiple
+             accept="image/*,.pdf,application/pdf,.zip,application/zip,application/x-zip-compressed"
+             aria-label="Choose receipt images, PDFs, or a zip archive">
     </label>
     <!-- Add to Queue always stays at the top of the file section -->
     <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
@@ -1607,6 +1626,10 @@
     </p>
     <div style="display:flex;flex-direction:column;gap:11px">
       <label class="check-label">
+        <input type="checkbox" id="proc-grayscale">
+        Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
+      </label>
+      <label class="check-label">
         <input type="checkbox" id="proc-compress">
         Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
       </label>
@@ -1773,6 +1796,32 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+// ── Auth token (remote / tunnel access) ───────────────────────────────────────
+// When APP_AUTH_TOKEN is set, the SPA reaches the server over a tunnel/LAN where
+// the auth cookie can be dropped (PWA relaunch, Strict-cookie browsers, opening
+// the bookmarked URL without ?token=). <img> and EventSource can't send headers,
+// so we remember the token from the first ?token= visit and re-supply it on every
+// request: as a query param on image/SSE URLs and as an X-Auth-Token header on
+// fetch. No token configured → all of this is a harmless no-op.
+const AUTH_TOKEN = (() => {
+  try {
+    const t = new URL(location.href).searchParams.get('token');
+    if (t) { localStorage.setItem('auth_token', t); return t; }
+    return localStorage.getItem('auth_token') || '';
+  } catch (_) { return ''; }
+})();
+function withToken(url) {
+  if (!AUTH_TOKEN) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(AUTH_TOKEN);
+}
+const _origFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  if (AUTH_TOKEN) {
+    init = { ...init, headers: { ...(init.headers || {}), 'X-Auth-Token': AUTH_TOKEN } };
+  }
+  return _origFetch(input, init);
+};
+
 // ── Theme toggle ──────────────────────────────────────────────────────────────
 function toggleTheme() {
   const html = document.documentElement;
@@ -2022,7 +2071,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
 
   // Image view button — prefer renamed output file, fall back to compressed or original
   const imgFile = (data && (data._new_filename || data._compressed_file || data._file)) || filename;
-  const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+  const imgUrl  = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
   inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')" title="View receipt image with extracted stats">&#128247; View</button>`;
 
   if (status === 'failed') {
@@ -2102,7 +2151,7 @@ let _sseReconnectTimer = null;
 function connectSSE() {
   if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
   if (_sse) { try { _sse.close(); } catch(_) {} }
-  _sse = new EventSource('/events');
+  _sse = new EventSource(withToken('/events'));
 
   _sse.onmessage = e => {
    try {
@@ -2727,7 +2776,7 @@ window.openManualReview = function(filename) {
   const imgFile = data._new_filename || data._compressed_file || data._file || filename;
   const previewWrap = document.getElementById('mr-preview-wrap');
   const previewImg  = document.getElementById('mr-preview-img');
-  previewImg.src = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+  previewImg.src = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
   previewImg.onload  = () => { previewWrap.style.display = ''; };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
   previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
@@ -2827,7 +2876,7 @@ function _showDupDialog(groups) {
     cards.className = 'dup-cards';
     group.forEach((item, idx) => {
       const imgFile = item.img_file || item.filename;
-      const imgUrl  = `/receipt-image?filename=${encodeURIComponent(imgFile)}`;
+      const imgUrl  = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
       const card = document.createElement('div');
       card.className = 'dup-card';
       card.dataset.gi   = gi;
@@ -3231,6 +3280,7 @@ document.getElementById('require-approval').addEventListener('change', async () 
 async function loadProcessingSettings() {
   try {
     const d = await (await fetch('/settings/processing')).json();
+    document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
     document.getElementById('proc-paddleocr').checked  = d.paddleocr !== false;
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
@@ -3241,6 +3291,7 @@ async function loadProcessingSettings() {
 let _procSaveTimer = null;
 async function saveProcessingSettings() {
   const body = {
+    grayscale:    document.getElementById('proc-grayscale').checked,
     compress:     document.getElementById('proc-compress').checked,
     paddleocr:    document.getElementById('proc-paddleocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
@@ -3261,7 +3312,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-compress', 'proc-paddleocr'].forEach(id => {
+['proc-grayscale', 'proc-compress', 'proc-paddleocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
 });
 
@@ -3890,7 +3941,7 @@ async function loadReports() {
         </svg></div>
         <span class="r-name" title="${esc(r.filename)}">${esc(r.filename)}</span>
         <span class="r-meta">${when} &bull; ${_fmtBytes(r.size)}</span>
-        <a href="/reports/download?filename=${encodeURIComponent(r.filename)}" download>Download</a>
+        <a href="${withToken(`/reports/download?filename=${encodeURIComponent(r.filename)}`)}" download>Download</a>
       </div>`;
     }).join('');
   } catch (_) {}
@@ -3981,6 +4032,10 @@ function playCelebrationTone() {
 function celebrate() {
   playCelebrationTone();
   const colors = ['#4f8ef7', '#8b5cf6', '#2dd482', '#f5a623', '#f4566a'];
+  // Fall just past the bottom of the *actual* visible viewport. window.innerHeight
+  // tracks mobile chrome, so the confetti reaches the bottom of the screen instead
+  // of stopping where `vh` mis-measures (the old "covers only 2/3" bug).
+  const fall = (window.innerHeight + 40) + 'px';
   // 10× the confetti — batched into a fragment so 700 bits don't thrash layout.
   const frag = document.createDocumentFragment();
   const bits = [];
@@ -3988,6 +4043,7 @@ function celebrate() {
     const bit = document.createElement('div');
     bit.className = 'confetti-bit';
     bit.style.left = Math.random() * 100 + 'vw';
+    bit.style.setProperty('--confetti-fall', fall);
     bit.style.background = colors[i % colors.length];
     bit.style.animationDuration = (1.6 + Math.random() * 1.8) + 's';
     bit.style.animationDelay = Math.random() * 0.8 + 's';
