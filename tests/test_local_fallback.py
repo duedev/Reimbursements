@@ -32,7 +32,7 @@ def test_find_date_none():
 def test_local_parse_extracts_core_fields():
     txt = "SHELL\n123 Main St\nUNLEADED\nTOTAL $45.20\n05/01/2026"
     out = pr._local_distill_from_ocr(txt)
-    assert out["vendor"] == "SHELL"
+    assert out["vendor"] == "Shell"   # canonicalised via the known-vendor database
     assert out["amount"] == 45.20
     assert out["category"] == "fuel"
     assert out["date"] == "2026-05-01"
