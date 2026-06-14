@@ -87,17 +87,34 @@ PDF_MAX_PAGES        = int(os.getenv("PDF_MAX_PAGES", "50"))
 _active_ocr_model:    str = ""           # no dedicated OCR model by default
 _active_distill_model: str = ""           # populated by initialize_models() at startup
 
-# Reasoning ("thinking") mode — a single global toggle for OCR + distillation.
-# Off by default: receipt extraction is structured JSON at temperature 0, which
-# rarely benefits from chain-of-thought and runs slower with it. Toggle from the UI.
-_thinking_enabled: bool = False
+# Reasoning ("thinking") mode is applied per stage, on purpose:
+#   • OCR / transcription  → reasoning is ALWAYS off. Transcribing visible text
+#     verbatim never benefits from chain-of-thought and only runs slower.
+#   • Distillation / vision extraction → reasoning follows the UI toggle below
+#     and is ON by default. Turning raw OCR text into clean structured fields,
+#     reconciling totals and catching anomalies is where reasoning helps.
+# The UI toggle drives _thinking_enabled (distillation only); OCR ignores it.
+_thinking_enabled: bool = True
 
 
-def _thinking_body(budget: int) -> dict:
-    """Return the LM Studio extra_body fragment for the current reasoning mode."""
-    if _thinking_enabled:
+def _thinking_body(budget: int, *, enabled: Optional[bool] = None) -> dict:
+    """LM Studio extra_body fragment for reasoning mode.
+
+    Pass ``enabled=False`` to force reasoning off for a stage (the OCR pass does
+    this); leave it ``None`` to follow the user's distillation toggle.
+    """
+    on = _thinking_enabled if enabled is None else enabled
+    if on:
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}
     return {"thinking": {"type": "disabled"}}
+
+
+# Placeholder job fields. When the user supplies no job name / number for a batch,
+# every receipt is stamped with these literal strings instead of being left blank
+# — so the value is visible in the generated spreadsheet and the user can Ctrl+F
+# find-and-replace it across the sheet in one pass.
+DEFAULT_JOB_NAME   = "Default Job Name"
+DEFAULT_JOB_NUMBER = "Default Job Number"
 
 # Brand / keyword sets and the known-vendor database live in vendor_db so the
 # offline parser can name a real vendor (not the store address) and so the lists
@@ -163,6 +180,9 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     '- "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n'
     '- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)\n\n'
     "Field rules:\n"
+    "- You may be given more than one OCR transcription of the SAME receipt "
+    "(labelled transcription A and B) from different engines — cross-reference "
+    "them, prefer values that agree, and use the clearer reading where they differ\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
     "- date must be YYYY-MM-DD\n"
     "- summary: one sentence, vendor and purpose only, do NOT include the dollar amount\n"
@@ -679,7 +699,7 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
     """
     try:
         b64, mime = encode_image(image_path)
-        thinking_body = _thinking_body(4096)
+        thinking_body = _thinking_body(4096, enabled=False)  # OCR never reasons
         response = client.chat.completions.create(
             model=model_id,
             messages=[{"role": "user", "content": [
@@ -804,6 +824,29 @@ def _extract_local_ocr(image_path: Path) -> Optional[str]:
     except Exception as exc:
         print(f"[ocr] local OCR failed for {image_path.name}: {exc}")
         return None
+
+
+def _combine_ocr_sources(
+    local_text: Optional[str], llm_text: Optional[str]
+) -> Optional[str]:
+    """Merge transcriptions from the built-in OCR engine and the LLM OCR model.
+
+    When both are present they are concatenated under neutral labels so the
+    distillation model can cross-reference the two readings of the same receipt
+    (and the amount audit sees the union of every printed money value). When only
+    one source produced text it is returned as-is, so single-source behaviour is
+    unchanged.
+    """
+    local_text = (local_text or "").strip()
+    llm_text   = (llm_text or "").strip()
+    if local_text and llm_text:
+        return (
+            "=== OCR transcription A (built-in engine) ===\n"
+            f"{local_text}\n\n"
+            "=== OCR transcription B (vision model) ===\n"
+            f"{llm_text}"
+        )
+    return local_text or llm_text or None
 
 
 # ── Per-item step log ──────────────────────────────────────────────────────────
@@ -1102,7 +1145,10 @@ def _extract_receipt_with_status(
     """
     OCR-first pipeline with Kanban status callbacks and per-item step logging:
 
-      1. PRIMARY  — local RapidOCR transcribes the receipt text (fast, offline).
+      1. PRIMARY  — built-in local RapidOCR transcribes the receipt (fast,
+                    offline). When a dedicated OCR model is also selected, the
+                    vision LLM transcribes it too and BOTH readings are
+                    cross-referenced by the distillation model in one call.
       2. DISTILL  — the LM Studio model structures that text into fields. If the
                     LLM is unreachable, an offline rule-based parser fills the
                     fields and flags the receipt for manual review.
@@ -1182,26 +1228,51 @@ def _extract_receipt_with_status(
         return _finish(data, ocr_seconds, distill_seconds)
 
     try:
-        # PRIMARY: local RapidOCR text extraction — fast, runs offline, and is the
-        # default path for every receipt now.
+        # PRIMARY: built-in local RapidOCR text extraction — fast, runs offline.
         _cb("ocr", model="rapidocr")
         t_ocr = time.perf_counter()
-        ocr_text = _extract_local_ocr(image_path)
+        local_text = _extract_local_ocr(image_path)
         ocr_seconds = time.perf_counter() - t_ocr
-        if ocr_text:
-            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                         "primary OCR", ok=True, duration_s=ocr_seconds)
+        if local_text:
+            _append_step(step_log, "local_ocr", "OCR (built-in)",
+                         "RapidOCR", ok=True, duration_s=ocr_seconds)
+        else:
+            _append_step(step_log, "local_ocr", "OCR (built-in)",
+                         "no text extracted", ok=False, duration_s=ocr_seconds)
+
+        # SECONDARY (optional): when a dedicated OCR model is selected, also
+        # transcribe with the vision LLM so the distillation model can
+        # cross-reference both readings of the same receipt. Reasoning is forced
+        # off for this transcription pass.
+        llm_text = None
+        if _active_ocr_model:
+            _cb("ocr", model=_active_ocr_model)
+            t_llm = time.perf_counter()
+            llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
+            llm_secs = time.perf_counter() - t_llm
+            ocr_seconds += llm_secs
+            _append_step(
+                step_log, "llm_ocr", "OCR (LLM)",
+                _active_ocr_model if llm_text else f"{_active_ocr_model} – no text",
+                ok=bool(llm_text), duration_s=llm_secs,
+            )
+
+        combined_text = _combine_ocr_sources(local_text, llm_text)
+        if combined_text:
+            both = bool(local_text and llm_text)
+            engine = ("rapidocr+llm" if both
+                      else "rapidocr" if local_text else "llm-ocr")
+            if both:
+                _append_step(step_log, "cross_reference", "Cross-reference",
+                             "distill model reconciles both OCR sources")
             # Hand the OCR text to the LLM to structure into fields. If LM Studio
             # is unavailable, _distill_text falls back to the offline rule-based
             # parser, which flags the receipt for manual review.
-            data = _distill_text(ocr_text, ocr_seconds, engine="rapidocr")
+            data = _distill_text(combined_text, ocr_seconds, engine=engine)
             if data is not None:
                 return data
             print(f"[extract] OCR+distill low-confidence for {image_path.name}, "
                   "trying direct vision")
-        else:
-            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                         "no text extracted", ok=False, duration_s=ocr_seconds)
 
         # RESCUE: OCR found nothing usable (or distillation was low-confidence) —
         # let a vision-capable LLM read the image directly when one is available.
@@ -1777,8 +1848,8 @@ def process_receipts_batch(
         # Always use user-supplied job fields — never trust LLM extraction for these
         if category == "fuel":
             data["expense_description"] = None
-        data["job_name"]   = job_name_default or None
-        data["job_number"] = job_number_default or None
+        data["job_name"]   = job_name_default or DEFAULT_JOB_NAME
+        data["job_number"] = job_number_default or DEFAULT_JOB_NUMBER
 
         flags_list = _normalize_flags(data.get("flags") or [])
         if flags_list and not data.get("_flag"):

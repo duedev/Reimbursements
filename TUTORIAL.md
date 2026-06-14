@@ -34,7 +34,7 @@ LM Studio runs the AI that reads your receipts. Everything stays on your compute
 3. Open LM Studio.
 4. In the left sidebar, click the **Search** icon (magnifying glass).
 5. In the search box, type `gemma-4-12b-qat`. When the result appears, click the **Download** button next to it. The download is a few gigabytes — let it finish.
-6. Optional but recommended for difficult receipts: also search `olmOCR-2-7B` and download it the same way. This model handles blurry or handwritten receipts much better.
+6. Optional but recommended for difficult receipts: also search `olmOCR-2-7B` and download it the same way. This model handles blurry or handwritten receipts much better. Once it's loaded, you can pick it as the **OCR Model** in the app's Settings tab — the app then reads each receipt with *both* its built-in reader and this model and cross-checks the two for accuracy. (The model list in Settings refreshes itself, so whatever you load in LM Studio shows up automatically.)
 7. Click the **Developer** tab in the left sidebar (looks like `</>` or says "Local Server").
 8. Click **Start Server**. The status should turn green and show port **1234**.
 9. Leave LM Studio open in the background — the app needs it running while you process receipts.
@@ -119,9 +119,21 @@ The Kanban board shows each receipt moving through four columns:
 
 If the AI got a field wrong (wrong vendor name, wrong amount, etc.), click on the field directly in the card. A small text box will appear. Type the correct value and press Enter.
 
+**Job name and job number**
+
+If you leave the **Job Name** or **Job Number** boxes empty, every receipt is stamped with the placeholder text **"Default Job Name"** and **"Default Job Number"** in the spreadsheet. That is on purpose: open the finished sheet, use Find & Replace (Ctrl+F / Cmd+F), and swap those placeholders for the real values in one go.
+
+**Reviewing and approving**
+
+Each completed card has a **Review & Approve** button. Click it to see the receipt image next to its extracted fields, fix anything that looks off, and approve it. To speed through a whole batch, use **Approve & Next**: it approves the current receipt and immediately opens the next one that still needs review, with a counter showing how many remain — so you can clear the batch in one pass. (If you turned on "Require review & approval" in Settings, the Generate button stays disabled until that counter reaches zero.)
+
 **Generating the spreadsheet**
 
 Once at least one receipt reaches Completed, a **Generate Spreadsheet** button appears. Click it. Your browser will download the Excel file. The filename will look like `Reimbursements_YourName_2025-06-10.xlsx`. You will also find a copy in the Reports folder you chose in Step 4.
+
+**Report history**
+
+Past reports are listed in the **Report History** card, where you can re-download any of them. To tidy up, click **Clear History** — this deletes the saved report files from the Reports folder (your receipt images are not affected).
 
 ---
 

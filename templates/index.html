@@ -1251,7 +1251,7 @@
           <button class="manage-saved-btn" type="button" title="Manage saved job names" aria-label="Manage saved job names"
                   onclick="toggleManagePanel('manage-panel-jobnames','saved_job_names')">&#9998;</button>
         </span>
-        <input type="text" id="job-name" placeholder="Optional" list="job-names-list" autocomplete="off">
+        <input type="text" id="job-name" placeholder="Optional — defaults to &quot;Default Job Name&quot;" list="job-names-list" autocomplete="off">
         <datalist id="job-names-list"></datalist>
         <div class="saved-manage-panel hidden" id="manage-panel-jobnames"></div>
       </label>
@@ -1260,7 +1260,7 @@
           <button class="manage-saved-btn" type="button" title="Manage saved job numbers" aria-label="Manage saved job numbers"
                   onclick="toggleManagePanel('manage-panel-jobnumbers','saved_job_numbers')">&#9998;</button>
         </span>
-        <input type="text" id="job-number" placeholder="Optional" list="job-numbers-list" autocomplete="off">
+        <input type="text" id="job-number" placeholder="Optional — defaults to &quot;Default Job Number&quot;" list="job-numbers-list" autocomplete="off">
         <datalist id="job-numbers-list"></datalist>
         <div class="saved-manage-panel hidden" id="manage-panel-jobnumbers"></div>
       </label>
@@ -1494,9 +1494,10 @@
 
   <!-- Report history -->
   <div class="card hidden" id="reports-card">
-    <div class="card-title" style="display:flex;align-items:center">
+    <div class="card-title" style="display:flex;align-items:center;gap:8px">
       Report History
       <button class="copy-btn" style="margin-left:auto" onclick="loadReports()" title="Refresh list" aria-label="Refresh report list">↻ Refresh</button>
+      <button class="copy-btn" id="clear-reports-btn" title="Delete all past reports from the output folder" aria-label="Clear report history">🗑 Clear History</button>
     </div>
     <div id="reports-list"></div>
   </div>
@@ -1515,10 +1516,10 @@
     <!-- Two model dropdowns -->
     <div class="model-grid">
       <div>
-        <div class="model-section-label">OCR Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — leave blank for direct vision)</span></div>
+        <div class="model-section-label">OCR Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — when set, runs LLM OCR alongside the built-in engine and cross-references both; runs without reasoning)</span></div>
         <div class="model-select-row">
           <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
-          <select id="ocr-model-select" title="Select dedicated OCR model (optional)">
+          <select id="ocr-model-select" title="Optional LLM OCR model. When set, both the built-in engine and this model transcribe each receipt and the distillation model cross-references them.">
             <option value="">(none — direct vision)</option>
           </select>
         </div>
@@ -1535,11 +1536,11 @@
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="Let the model reason step-by-step before answering. Off is faster and usually just as accurate for receipts.">
+             title="Let the distillation model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
         <input type="checkbox" id="reasoning-toggle">
-        Reasoning mode
+        Distillation reasoning
       </label>
-      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list">↻ Refresh Models</button>
+      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
       Loaded in LM Studio
@@ -1742,6 +1743,7 @@
     <div class="mr-form-pane">
       <h3 id="mr-modal-title">&#9998; Review Receipt</h3>
       <p class="modal-sub" id="mr-modal-sub">Review the extracted data.</p>
+      <div id="mr-review-progress" style="display:none;margin-bottom:12px;padding:6px 11px;border-radius:8px;background:rgba(245,158,11,0.12);color:var(--warning);font-size:12px;font-weight:600"></div>
       <div id="mr-approval-banner" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;border-left:3px solid var(--success);background:rgba(45,212,130,0.08);color:var(--success);font-size:12px;font-weight:600">
         &#10003; This receipt is approved
       </div>
@@ -1851,6 +1853,12 @@ function switchTab(name) {
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+  // Refresh the model selectors whenever Settings is opened so the list reflects
+  // whatever the user has loaded in LM Studio right now.
+  if (name === 'settings' && typeof loadModels === 'function') {
+    loadModels();
+    loadLMStudioModels();
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -2729,6 +2737,29 @@ function _closeReviewModal() {
   document.getElementById('manual-review-modal').classList.add('hidden');
 }
 
+// Completed receipts still awaiting approval, in board order (oldest date first).
+function _unapprovedCompleted() {
+  return Object.keys(receiptCards)
+    .filter(fn => {
+      const c = receiptCards[fn];
+      return c && c.status === 'done' && !(c.data && c.data._approved);
+    })
+    .sort((a, b) => {
+      const da = (receiptCards[a].data && receiptCards[a].data.date) || 'zzzz';
+      const db = (receiptCards[b].data && receiptCards[b].data.date) || 'zzzz';
+      if (da !== db) return da < db ? -1 : 1;
+      return a < b ? -1 : 1;
+    });
+}
+
+// Approval sweep: open the next completed receipt that still needs approval,
+// skipping the one we just acted on. Returns false when none remain.
+function _loadNextForApproval(afterFilename) {
+  const queue = _unapprovedCompleted().filter(fn => fn !== afterFilename);
+  if (queue.length) { openManualReview(queue[0]); return true; }
+  return false;
+}
+
 window.openManualReview = function(filename) {
   _mrFilename = filename;
   const card = receiptCards[filename];
@@ -2751,8 +2782,12 @@ window.openManualReview = function(filename) {
   // Approval state
   const approveBtn   = document.getElementById('mr-approve-btn');
   const approvalBanner = document.getElementById('mr-approval-banner');
+  const reviewProgress = document.getElementById('mr-review-progress');
   if (isDone) {
     approveBtn.style.display = '';
+    // Count of completed receipts still needing approval (includes this one when
+    // it's unapproved) — drives the remaining counter and the "& Next" label.
+    const remaining = _unapprovedCompleted().length;
     if (data._approved) {
       approvalBanner.style.display = '';
       approveBtn.textContent = '✗ Remove Approval';
@@ -2760,13 +2795,20 @@ window.openManualReview = function(filename) {
       approveBtn.style.cssText = 'background:rgba(244,86,106,0.1);border-color:rgba(244,86,106,0.4);color:var(--danger)';
     } else {
       approvalBanner.style.display = 'none';
-      approveBtn.textContent = '✓ Approve';
+      approveBtn.textContent = remaining > 1 ? '✓ Approve & Next' : '✓ Approve';
       approveBtn.className = 'btn btn-success';
       approveBtn.style.cssText = '';
+    }
+    if (remaining > 0) {
+      reviewProgress.textContent = `${remaining} receipt${remaining === 1 ? '' : 's'} still need review & approval`;
+      reviewProgress.style.display = '';
+    } else {
+      reviewProgress.style.display = 'none';
     }
   } else {
     approveBtn.style.display = 'none';
     approvalBanner.style.display = 'none';
+    reviewProgress.style.display = 'none';
   }
 
   // Save button label
@@ -2845,8 +2887,22 @@ document.getElementById('mr-approve-btn').addEventListener('click', async () => 
     });
     const d = await res.json();
     if (d.ok) {
-      document.getElementById('manual-review-modal').classList.add('hidden');
-      showToast(newApproved ? `✓ ${_mrFilename} approved` : `Approval removed`, newApproved);
+      const justApproved = _mrFilename;
+      // Optimistically reflect the new state locally so the sweep advances even
+      // before the SSE broadcast arrives, then refresh the board gate/counter.
+      if (card && card.data) card.data._approved = newApproved;
+      _updateGenerateCard();
+      if (newApproved) {
+        showToast(`✓ ${justApproved} approved`, true);
+        // Approve & load the next one still needing review; close when done.
+        if (!_loadNextForApproval(justApproved)) {
+          _closeReviewModal();
+          showToast('All completed receipts are approved 🎉', true);
+        }
+      } else {
+        _closeReviewModal();
+        showToast('Approval removed', false);
+      }
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
@@ -3954,6 +4010,23 @@ async function loadReports() {
   } catch (_) {}
 }
 
+// Clear report history — deletes every generated workbook/CSV from the output folder.
+document.getElementById('clear-reports-btn').addEventListener('click', async () => {
+  if (!confirm('Clear report history? This permanently deletes all generated report files from the output folder. Receipt images are not affected.')) return;
+  try {
+    const res = await fetch('/reports/clear', { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) {
+      showToast(d.removed ? `Cleared ${d.removed} report${d.removed === 1 ? '' : 's'}` : 'No reports to clear', true);
+      loadReports();
+    } else {
+      showToast(`Error: ${d.error || 'unknown'}`, false);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  }
+});
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 document.getElementById('export-csv-btn').addEventListener('click', async () => {
   try {
@@ -4077,6 +4150,15 @@ loadReports();
 setInterval(loadIntakeCount, 15000);
 setInterval(loadRejected, 20000);
 setInterval(loadLMStudioModels, 30000);
+// Auto-refresh the model dropdowns while Settings is open — but never while the
+// user is actively picking from one (that would close the open menu).
+setInterval(() => {
+  const settings = document.getElementById('tab-settings');
+  if (!settings || settings.classList.contains('hidden')) return;
+  const active = document.activeElement;
+  if (active && (active.id === 'ocr-model-select' || active.id === 'distill-model-select')) return;
+  loadModels();
+}, 30000);
 </script>
 </body>
 </html>

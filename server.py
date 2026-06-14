@@ -57,6 +57,8 @@ from process_receipts import (
     OUTPUT_FOLDER,
     RECEIPTS_FOLDER,
     CONFIG_FILE,
+    DEFAULT_JOB_NAME,
+    DEFAULT_JOB_NUMBER,
 )
 
 HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
@@ -489,8 +491,8 @@ def _drain_once() -> bool:
 
             category = classify_category(data)
             data["_category"]  = category
-            data["job_name"]   = item.get("job_name") or None
-            data["job_number"] = item.get("job_number") or None
+            data["job_name"]   = item.get("job_name") or DEFAULT_JOB_NAME
+            data["job_number"] = item.get("job_number") or DEFAULT_JOB_NUMBER
             audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
             flags = _pr._normalize_flags(data.get("flags") or [])
             data["flags"] = flags  # ensure normalised form is stored
@@ -1481,8 +1483,8 @@ async def add_manual_result(body: ManualReceiptRequest):
         "amount":           amt,
         "category":         body.category or "misc",
         "_category":        body.category or "misc",
-        "job_name":         body.job_name.strip() or _last_context.get("job_name") or None,
-        "job_number":       body.job_number.strip() or _last_context.get("job_number") or None,
+        "job_name":         body.job_name.strip() or _last_context.get("job_name") or DEFAULT_JOB_NAME,
+        "job_number":       body.job_number.strip() or _last_context.get("job_number") or DEFAULT_JOB_NUMBER,
         "ai_summary":       body.summary.strip(),
         "_flag":            "Manual entry",
         "_file":            body.filename,
@@ -1813,6 +1815,27 @@ async def download_report(filename: str = ""):
              else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     return FileResponse(str(p), media_type=media,
                         headers={"Content-Disposition": f'attachment; filename="{p.name}"'})
+
+
+@app.post("/reports/clear")
+async def clear_reports():
+    """Manually clear the report history: delete every generated workbook/CSV from
+    the output folder. Scoped to the safe ``Reimbursements_*`` glob inside
+    OUT_FOLDER — never touches receipt images or anything else."""
+    removed = 0
+    errors: list[str] = []
+    try:
+        for pattern in ("Reimbursements_*.xlsx", "Reimbursements_*.csv"):
+            for p in OUT_FOLDER.glob(pattern):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        removed += 1
+                except OSError as exc:
+                    errors.append(f"{p.name}: {exc}")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "removed": removed, "errors": errors})
 
 
 # ── Results management ─────────────────────────────────────────────────────────
@@ -2255,7 +2278,8 @@ class ThinkingRequest(BaseModel):
 
 @app.post("/models/thinking")
 async def set_thinking(body: ThinkingRequest):
-    """Toggle reasoning ("thinking") mode for OCR + distillation, and persist it."""
+    """Toggle reasoning ("thinking") mode for distillation/vision and persist it.
+    The OCR transcription pass always runs without reasoning, regardless."""
     _pr._thinking_enabled = bool(body.enabled)
     cfg = _load_config()
     cfg["thinking_enabled"] = _pr._thinking_enabled
