@@ -786,16 +786,41 @@
       background: rgba(0,0,0,0.28); border: 1px solid var(--border);
       border-radius: 10px; padding: 14px;
     }
+    .modal-review .mr-image-pane .mr-img-stage {
+      position: relative; width: 100%; flex: 1 1 auto; min-height: 0; max-height: 64vh;
+    }
     .modal-review .mr-image-pane .mr-preview {
-      width: 100%; max-height: 64vh; margin: 0; flex: 1 1 auto; background: transparent;
+      width: 100%; height: 100%; max-height: 64vh; margin: 0; display: block;
+      object-fit: contain; background: transparent;
     }
     .modal-review .mr-zoom-hint { font-size: 11px; color: var(--muted); margin-top: 10px; }
     .modal-review .mr-form-pane { flex: 1 1 53%; min-width: 0; display: flex; flex-direction: column; }
     .modal-review .mr-form-pane .btn-row { margin-top: auto; }
     @media (max-width: 760px) {
       .modal-box.modal-review { flex-direction: column; width: 540px; }
-      .modal-review .mr-image-pane .mr-preview { max-height: 38vh; }
+      .modal-review .mr-image-pane .mr-img-stage { max-height: 38vh; }
     }
+
+    /* On-image field markers (vendor/date/amount highlight overlay) */
+    .field-box-overlay { position: absolute; inset: 0; pointer-events: none;
+      overflow: hidden; z-index: 3; }
+    .field-box { position: absolute; border: 2px solid #3b82f6; border-radius: 3px;
+      box-sizing: border-box; background: rgba(255,255,255,0.05); }
+    .field-box-tag { position: absolute; top: -15px; left: -2px; font-size: 9px;
+      font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: 3px;
+      color: #fff; white-space: nowrap; letter-spacing: 0.3px; }
+    .mr-marker-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+      justify-content: center; margin-top: 10px; font-size: 11px; }
+    .mr-marker-toggle { display: inline-flex; align-items: center; gap: 5px;
+      color: var(--muted); cursor: pointer; user-select: none; }
+    .mr-marker-legend { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+    .mk-legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
+    .mk-legend-item.mk-missing { color: var(--muted); }
+    .mk-legend-item .mk-swatch { width: 11px; height: 11px; border-radius: 3px;
+      border: 2px solid; box-sizing: border-box; flex-shrink: 0; }
+    .mk-legend-item em { font-style: normal; opacity: 0.85; }
+    /* Lightbox image gets the same overlay treatment */
+    .lb-img-stage { position: relative; display: flex; align-items: center; justify-content: center; }
 
     /* Image lightbox */
     #img-lightbox {
@@ -1737,7 +1762,14 @@
 <div class="modal-overlay hidden" id="manual-review-modal" role="dialog" aria-modal="true" aria-labelledby="mr-modal-title">
   <div class="modal-box modal-review">
     <div class="mr-image-pane" id="mr-preview-wrap" style="display:none">
-      <img id="mr-preview-img" class="mr-preview" src="" alt="Receipt image">
+      <div class="mr-img-stage" id="mr-img-stage">
+        <img id="mr-preview-img" class="mr-preview" src="" alt="Receipt image">
+        <div class="field-box-overlay" id="mr-box-overlay" aria-hidden="true"></div>
+      </div>
+      <div class="mr-marker-bar" id="mr-marker-bar" style="display:none">
+        <label class="mr-marker-toggle"><input type="checkbox" id="mr-marker-toggle" checked> Show field markers</label>
+        <div class="mr-marker-legend" id="mr-marker-legend"></div>
+      </div>
       <span class="mr-zoom-hint">Click the image to view it full screen</span>
     </div>
     <div class="mr-form-pane">
@@ -1791,7 +1823,10 @@
 <!-- Image lightbox -->
 <div id="img-lightbox" style="display:none" onclick="closeLightbox()" role="dialog" aria-modal="true" aria-label="Receipt image preview">
   <button class="lb-close" onclick="closeLightbox()" title="Close" aria-label="Close image preview">&#10005;</button>
-  <img id="lb-img" src="" alt="Receipt">
+  <div class="lb-img-stage" id="lb-img-stage" onclick="event.stopPropagation()">
+    <img id="lb-img" src="" alt="Receipt">
+    <div class="field-box-overlay" id="lb-box-overlay" aria-hidden="true"></div>
+  </div>
   <aside class="lb-stats" id="lb-stats" onclick="event.stopPropagation()" hidden></aside>
 </div>
 
@@ -2732,6 +2767,95 @@ function toDateInputValue(str) {
 // ── Manual Review Modal ───────────────────────────────────────────────────────
 let _mrFilename = '';
 
+// ── On-image field markers (vendor/date/amount highlight overlay) ─────────────
+// Boxes come from the server as data._field_boxes: { vendor|date|amount: [x,y,w,h] }
+// each normalized 0..1 against the OCR image. We map them onto whatever size the
+// browser renders the image at (object-fit: contain), so they stay aligned on
+// resize and in the full-screen lightbox.
+const FIELD_MARKERS = {
+  vendor: { hue: '#3b82f6', label: 'Vendor' },
+  date:   { hue: '#22c55e', label: 'Date' },
+  amount: { hue: '#f59e0b', label: 'Amount' },
+};
+let _showFieldMarkers = true;   // toggled by the "Show field markers" checkbox
+let _mrFieldBoxes = null;       // boxes for the receipt open in the review modal
+let _lbFieldBoxes = null;       // boxes for the receipt open in the lightbox
+
+// The rectangle (within the element's content box) actually covered by the image
+// under object-fit: contain — accounts for the letterbox padding around tall
+// receipts so boxes land on the real pixels, not the element box.
+function _renderedImageRect(img) {
+  const cw = img.clientWidth, ch = img.clientHeight;
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh || !cw || !ch) return null;
+  const scale = Math.min(cw / nw, ch / nh);
+  const w = nw * scale, h = nh * scale;
+  return { left: (cw - w) / 2, top: (ch - h) / 2, width: w, height: h };
+}
+
+function drawFieldBoxes(boxes, img, overlay) {
+  if (!overlay) return;
+  overlay.innerHTML = '';
+  if (!_showFieldMarkers || !boxes || !img) return;
+  const rect = _renderedImageRect(img);
+  if (!rect) return;
+  for (const key of ['vendor', 'date', 'amount']) {
+    const b = boxes[key];
+    if (!b || b.length < 4) continue;
+    const meta = FIELD_MARKERS[key];
+    const el = document.createElement('div');
+    el.className = 'field-box';
+    el.style.left   = (rect.left + b[0] * rect.width)  + 'px';
+    el.style.top    = (rect.top  + b[1] * rect.height) + 'px';
+    el.style.width  = (b[2] * rect.width)  + 'px';
+    el.style.height = (b[3] * rect.height) + 'px';
+    el.style.borderColor = meta.hue;
+    el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.55), 0 0 10px ' + meta.hue + '88';
+    const tag = document.createElement('span');
+    tag.className = 'field-box-tag';
+    tag.textContent = meta.label;
+    tag.style.background = meta.hue;
+    el.appendChild(tag);
+    overlay.appendChild(el);
+  }
+}
+
+// Legend under the preview: a swatch per field, marking ones we couldn't locate.
+function _renderMarkerLegend(boxes, legendEl) {
+  if (!legendEl) return;
+  const items = ['vendor', 'date', 'amount'].map(key => {
+    const meta = FIELD_MARKERS[key];
+    const found = !!(boxes && boxes[key]);
+    return `<span class="mk-legend-item ${found ? '' : 'mk-missing'}">`
+      + `<span class="mk-swatch" style="border-color:${meta.hue};background:${found ? meta.hue : 'transparent'}"></span>`
+      + `${meta.label}${found ? '' : ' <em>(location not detected)</em>'}</span>`;
+  });
+  legendEl.innerHTML = items.join('');
+}
+
+// Redraw whatever overlay is currently visible (image load, resize, toggle).
+function _refreshFieldMarkers() {
+  const modal = document.getElementById('manual-review-modal');
+  if (modal && !modal.classList.contains('hidden')) {
+    drawFieldBoxes(_mrFieldBoxes, document.getElementById('mr-preview-img'),
+                   document.getElementById('mr-box-overlay'));
+  }
+  const lb = document.getElementById('img-lightbox');
+  if (lb && lb.style.display === 'flex') {
+    drawFieldBoxes(_lbFieldBoxes, document.getElementById('lb-img'),
+                   document.getElementById('lb-box-overlay'));
+  }
+}
+window.addEventListener('resize', _refreshFieldMarkers);
+// The modal markup is parsed before this script runs, so the toggle exists now.
+(function () {
+  const t = document.getElementById('mr-marker-toggle');
+  if (t) t.addEventListener('change', () => {
+    _showFieldMarkers = t.checked;
+    _refreshFieldMarkers();
+  });
+})();
+
 function _closeReviewModal() {
   closeLightbox(); // close lightbox if user opened it from inside the modal
   document.getElementById('manual-review-modal').classList.add('hidden');
@@ -2818,10 +2942,24 @@ window.openManualReview = function(filename) {
   const imgFile = data._new_filename || data._compressed_file || data._file || filename;
   const previewWrap = document.getElementById('mr-preview-wrap');
   const previewImg  = document.getElementById('mr-preview-img');
+  const boxOverlay  = document.getElementById('mr-box-overlay');
+  const markerBar   = document.getElementById('mr-marker-bar');
+  // On-image field markers (vendor/date/amount). Only show the legend/markers
+  // when the app actually located at least one field on this receipt.
+  _mrFieldBoxes = (data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
+  const hasMarkers = _mrFieldBoxes && Object.keys(_mrFieldBoxes).length > 0;
+  if (boxOverlay) boxOverlay.innerHTML = '';
+  if (markerBar) markerBar.style.display = hasMarkers ? '' : 'none';
+  if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'));
   previewImg.src = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
-  previewImg.onload  = () => { previewWrap.style.display = ''; };
+  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay); };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
   previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
+  // Cached images can be already-complete before onload is attached.
+  if (previewImg.complete && previewImg.naturalWidth) {
+    previewWrap.style.display = '';
+    drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay);
+  }
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
 };
@@ -3755,9 +3893,16 @@ function _lbStatsHtml(data, filename) {
 
 function openLightbox(src, filename) {
   const lb = document.getElementById('img-lightbox');
-  document.getElementById('lb-img').src = src;
+  const lbImg = document.getElementById('lb-img');
+  const lbOverlay = document.getElementById('lb-box-overlay');
   const panel = document.getElementById('lb-stats');
   const data = filename && receiptCards[filename] ? receiptCards[filename].data : null;
+  // Field markers full-screen — reuse the same normalized boxes as the modal.
+  _lbFieldBoxes = (data && data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
+  if (lbOverlay) lbOverlay.innerHTML = '';
+  lbImg.onload = () => drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
+  lbImg.src = src;
+  if (lbImg.complete && lbImg.naturalWidth) drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
   if (data && data.vendor) {
     panel.innerHTML = _lbStatsHtml(data, filename);
     panel.hidden = false;

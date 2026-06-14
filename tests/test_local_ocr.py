@@ -94,3 +94,40 @@ def test_extract_local_ocr_handles_engine_exception(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pr, "_get_ocr_engine", lambda: _boom)
     assert pr._extract_local_ocr(img) is None
+
+
+# ── Per-line boxes (geometry preserved for on-image field markup) ──────────────
+
+def test_rapidocr_lines_unchanged_returns_str_list():
+    """_rapidocr_lines must keep returning list[str] — the box extractor is separate."""
+    result = [[[[0, 0], [1, 0], [1, 1], [0, 1]], "SHELL", 0.99]]
+    assert pr._rapidocr_lines((result, 0.0)) == ["SHELL"]
+
+
+def test_rapidocr_line_boxes_tuple_form_keeps_geometry():
+    result = [
+        [[[0, 0], [10, 0], [10, 4], [0, 4]], "SHELL", 0.99],
+        [[[0, 6], [40, 6], [40, 10], [0, 10]], "TOTAL $45.20", 0.98],
+    ]
+    rows = pr._rapidocr_line_boxes((result, 0.5))
+    assert [r["text"] for r in rows] == ["SHELL", "TOTAL $45.20"]
+    assert rows[0]["box"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [0.0, 4.0]]
+    assert rows[0]["score"] == 0.99
+
+
+def test_rapidocr_line_boxes_unified_object_no_boxes_degrades():
+    class _Out:
+        txts = ("SHELL", "TOTAL", "")
+    rows = pr._rapidocr_line_boxes(_Out())
+    assert [r["text"] for r in rows] == ["SHELL", "TOTAL"]
+    assert all(r["box"] is None for r in rows)
+
+
+def test_extract_local_ocr_lines_returns_rows_and_size(monkeypatch, tmp_path):
+    img = tmp_path / "r.png"
+    img.write_bytes(b"fake")  # not a real image → size falls back to 0,0
+    result = [[[[0, 0], [10, 0], [10, 4], [0, 4]], "SHELL", 0.99]]
+    monkeypatch.setattr(pr, "_get_ocr_engine", lambda: (lambda path: (result, 0.3)))
+    rows, w, h = pr._extract_local_ocr_lines(img)
+    assert rows and rows[0]["text"] == "SHELL"
+    assert (w, h) == (0, 0)
