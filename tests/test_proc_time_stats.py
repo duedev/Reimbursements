@@ -37,6 +37,8 @@ def test_extract_records_proc_seconds(tmp_path, monkeypatch):
     img.write_bytes(b"fake")
 
     monkeypatch.setattr(process_receipts, "_active_ocr_model", "")
+    # No local OCR text → vision rescue path records the timing.
+    monkeypatch.setattr(process_receipts, "_extract_local_ocr", lambda path: None)
     monkeypatch.setattr(
         process_receipts, "_extract_with_model",
         lambda client, path, model: {"vendor": "Shell", "amount": 5.0},

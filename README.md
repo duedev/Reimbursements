@@ -288,21 +288,23 @@ Receipt image / PDF
          │
          ▼
   ┌─────────────┐
-  │  Stage 1    │  (Optional — only when a separate OCR model is configured)
-  │  OCR        │  Dedicated model transcribes all visible text verbatim.
-  │             │  Falls back to local RapidOCR if LM Studio's OCR stage is down.
+  │  Stage 1    │  PRIMARY — local RapidOCR transcribes all visible text on-device
+  │  OCR        │  (fast, offline, no LLM). This is the default path for every
+  │             │  receipt.
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │  Stage 2    │  Vision or OCR-text → structured JSON via distillation model.
+  │  Stage 2    │  OCR text → structured JSON via the LM Studio distillation model.
   │  Distill    │  Extracts: date, vendor, amount, category, summary, flags.
   │             │  If LM Studio is unreachable, a local regex parser turns the
-  │             │  RapidOCR text into fields (flagged for manual review) instead
-  │             │  of failing the receipt.
+  │             │  RapidOCR text into fields — cross-referencing a known-vendor
+  │             │  database for the vendor name — and flags it for manual review.
   └──────┬──────┘
          │
-         ├── Low confidence? (missing vendor or amount) ──► Failed
+         ├── No OCR text / low confidence? ──► Vision rescue: a vision-capable
+         │      model reads the image directly; still failing ──► Failed
+         │
          │
          ▼
   ┌─────────────┐

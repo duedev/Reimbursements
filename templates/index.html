@@ -3350,21 +3350,28 @@ document.getElementById('ocr-test-input').addEventListener('change', async (e) =
     if (d.ok && d.text) {
       statusEl.textContent = `✓ ${d.chars} chars extracted`;
       statusEl.style.color = 'var(--success)';
-      // Show a lightbox with the extracted text
-      const pre = document.createElement('pre');
-      pre.style.cssText = 'white-space:pre-wrap;font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:60vh;overflow-y:auto;margin-top:10px';
-      pre.textContent = d.text;
+      // Show a lightbox with the source image next to the extracted text so the
+      // transcription can be verified at a glance.
+      const imgURL = URL.createObjectURL(file);
       const modal = document.createElement('div');
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
-      modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto">
+      modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <strong style="font-size:14px">RapidOCR — Extracted Text</strong>
-          <button style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1" onclick="this.closest('[style*=position]').remove()">✕</button>
+          <strong style="font-size:14px">RapidOCR — Image &amp; Extracted Text</strong>
+          <button class="ocr-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
         </div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${d.chars} characters from <strong>${esc(file.name)}</strong></p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${d.chars} characters from <strong>${esc(file.name)}</strong> — compare the image with the text to verify accuracy.</p>
+        <div class="ocr-test-cols" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
+          <img src="${imgURL}" alt="Uploaded receipt" style="flex:1 1 240px;max-width:45%;min-width:200px;max-height:60vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        </div>
       </div>`;
-      modal.querySelector('div').appendChild(pre);
-      modal.addEventListener('click', ev => { if (ev.target === modal) modal.remove(); });
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'flex:1 1 280px;min-width:240px;white-space:pre-wrap;font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:60vh;overflow-y:auto;margin:0';
+      pre.textContent = d.text;
+      modal.querySelector('.ocr-test-cols').appendChild(pre);
+      const closeModal = () => { URL.revokeObjectURL(imgURL); modal.remove(); };
+      modal.querySelector('.ocr-test-close').addEventListener('click', closeModal);
+      modal.addEventListener('click', ev => { if (ev.target === modal) closeModal(); });
       document.body.appendChild(modal);
     } else {
       statusEl.textContent = d.ok ? '⚠ No text extracted' : `✗ ${d.error || 'failed'}`;

@@ -99,31 +99,10 @@ def _thinking_body(budget: int) -> dict:
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}
     return {"thinking": {"type": "disabled"}}
 
-FUEL_VENDORS = {
-    "shell", "chevron", "arco", "mobil", "exxon", "bp", "76", "valero",
-    "marathon", "speedway", "sunoco", "citgo", "texaco", "pilot", "loves",
-    "love's", "casey", "kwik trip", "wawa", "quiktrip", "circle k", "ampm",
-    "gas station", "fuel station", "petro", "petroleum", "flying j",
-    "bucees", "buc-ee", "racetrac", "racetrack", "cenex", "sinclair",
-    "murphy", "murphy usa", "tom thumb", "stripes", "kwik fill",
-    "kum & go", "sheetz", "thorntons", "mapco", "gulf", "hess",
-    "conoco", "phillips 66", "pdq", "getgo", "flash foods", "moto mart",
-    "pantry", "road ranger", "git n go", "corner store",
-}
-
-FUEL_KEYWORDS = {
-    "gas", "gasoline", "diesel", "petrol", "fuel", "pump", "gallon",
-    "gallons", "unleaded", "e85", "fill-up",
-    "fill up", "fueling", "service station", "gas pump", "octane",
-    "auto fuel", "motor fuel", "regular unleaded", "premium unleaded",
-    "price/gal", "per gallon",
-}
-
-MATS_VENDORS = {
-    "home depot", "lowes", "lowe's", "menards", "ace hardware", "true value",
-    "harbor freight", "fastenal", "grainger", "blueprint", "print shop",
-    "reprographics", "planning department", "building supply",
-}
+# Brand / keyword sets and the known-vendor database live in vendor_db so the
+# offline parser can name a real vendor (not the store address) and so the lists
+# have a single home. The category-scoring patterns below are built from them.
+from vendor_db import FUEL_VENDORS, FUEL_KEYWORDS, MATS_VENDORS, match_vendor
 
 
 def _kw_pattern(kw: str) -> "re.Pattern[str]":
@@ -692,7 +671,12 @@ def _strip_json(raw: str) -> str:
 
 
 def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optional[str]:
-    """Stage 1: dedicated OCR model extracts raw text only."""
+    """Transcribe a receipt to raw text with an LM Studio OCR/vision model.
+
+    Retained for callers that want an LLM-based OCR pass, but no longer part of
+    the default pipeline — local RapidOCR (_extract_local_ocr) is the primary
+    text source now.
+    """
     try:
         b64, mime = encode_image(image_path)
         thinking_body = _thinking_body(4096)
@@ -890,6 +874,71 @@ def _find_date_in_text(text: str) -> str:
     return ""
 
 
+_ADDRESS_HINTS = re.compile(
+    r"\b(st|street|ave|avenue|rd|road|blvd|boulevard|ln|lane|dr|drive|hwy|"
+    r"highway|ct|court|pkwy|parkway|ste|suite|unit|apt|fl|floor|"
+    r"way|plaza|pike|terrace|trail)\b",
+    re.IGNORECASE,
+)
+_STATE_ZIP = re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
+_PHONE = re.compile(r"\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}")
+
+
+def _looks_like_address(line: str) -> bool:
+    """True when a line looks like a street address, phone, website or city/zip —
+    i.e. something the vendor name should NOT be pulled from."""
+    s = line.strip()
+    low = s.lower()
+    if low.startswith(("http", "www.")) or ".com" in low or "@" in low:
+        return True
+    if _PHONE.search(s) or _STATE_ZIP.search(s):
+        return True
+    # "123 Main St", "1700 W 7th Ave" — leading street number plus a street word.
+    if re.match(r"^\s*\d{1,6}\s+\w", s) and _ADDRESS_HINTS.search(s):
+        return True
+    return False
+
+
+def _guess_vendor_line(ocr_text: str) -> str:
+    """Pick the most plausible business-name line from OCR text.
+
+    Used only when no known brand matched. Scans the top of the receipt (where
+    the name almost always sits), skips address/phone/website/total/number lines,
+    and prefers short ALL-CAPS or Title-Case lines that read like a name.
+    """
+    best_line, best_score = "", -1.0
+    for idx, raw in enumerate(ocr_text.splitlines()[:8]):
+        s = raw.strip()
+        if len(s) < 3 or not any(c.isalpha() for c in s):
+            continue
+        if _looks_like_address(s):
+            continue
+        letters = sum(c.isalpha() for c in s)
+        digits = sum(c.isdigit() for c in s)
+        if digits > letters:                       # mostly a number → not a name
+            continue
+        if re.search(r"\b(total|subtotal|tax|cash|change|visa|debit|credit|"
+                     r"balance|amount|receipt|invoice|tel|phone)\b", s, re.IGNORECASE):
+            continue
+        score = 5.0 - idx                           # earlier lines score higher
+        if s.isupper():
+            score += 2.0                            # storefront names are often ALL CAPS
+        elif s == s.title():
+            score += 1.0                            # Title Case also reads like a name
+        if 3 <= len(s) <= 40:
+            score += 1.0
+        if score > best_score:
+            best_line, best_score = s[:60], score
+    if best_line:
+        return best_line
+    # Nothing scored — fall back to the first line with letters (legacy behaviour).
+    for raw in ocr_text.splitlines():
+        s = raw.strip()
+        if len(s) >= 3 and any(c.isalpha() for c in s):
+            return s[:60]
+    return ""
+
+
 def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
     """Rule-based field extraction from raw OCR text — no LLM involved.
 
@@ -907,24 +956,29 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         candidates = extract_candidate_totals(ocr_text)
         amount = max(candidates) if candidates else 0.0
 
-    vendor = ""
-    for line in ocr_text.splitlines():
-        s = line.strip()
-        if len(s) >= 3 and any(c.isalpha() for c in s):
-            vendor = s[:60]
-            break
+    # Vendor: first try the known-vendor database (handles the common case where
+    # the OCR'd name would otherwise lose out to the store address), then fall
+    # back to the address-skipping line heuristic.
+    matched = match_vendor(ocr_text)
+    if matched:
+        vendor, matched_category = matched
+    else:
+        vendor, matched_category = _guess_vendor_line(ocr_text), None
 
     if not amount or not vendor:
         return None
 
-    low = ocr_text.lower()
-    if (any(rx.search(low) for rx in _FUEL_VENDOR_PATTERNS.values())
-            or any(rx.search(low) for rx in _FUEL_KEYWORD_PATTERNS.values())):
-        category = "fuel"
-    elif any(rx.search(low) for rx in _MATS_VENDOR_PATTERNS.values()):
-        category = "mats"
+    if matched_category:
+        category = matched_category
     else:
-        category = "misc"
+        low = ocr_text.lower()
+        if (any(rx.search(low) for rx in _FUEL_VENDOR_PATTERNS.values())
+                or any(rx.search(low) for rx in _FUEL_KEYWORD_PATTERNS.values())):
+            category = "fuel"
+        elif any(rx.search(low) for rx in _MATS_VENDOR_PATTERNS.values()):
+            category = "mats"
+        else:
+            category = "misc"
 
     return {
         "date":                _find_date_in_text(ocr_text),
@@ -1046,12 +1100,16 @@ def _extract_receipt_with_status(
     step_log: Optional[list] = None,
 ) -> Optional[dict]:
     """
-    2-stage pipeline with Kanban status callbacks and per-item step logging.
-    If _active_ocr_model is set and differs from _active_distill_model:
-      Stage 1: OCR model extracts raw text
-      Stage 2: distillation model returns structured data + summary + flags
-    Otherwise:
-      Single stage: distillation model analyzes the image directly.
+    OCR-first pipeline with Kanban status callbacks and per-item step logging:
+
+      1. PRIMARY  — local RapidOCR transcribes the receipt text (fast, offline).
+      2. DISTILL  — the LM Studio model structures that text into fields. If the
+                    LLM is unreachable, an offline rule-based parser fills the
+                    fields and flags the receipt for manual review.
+      3. RESCUE   — only when OCR produced no usable text (or distillation came
+                    back low-confidence) does a vision-capable model read the
+                    image directly.
+
     Each branch is recorded in step_log (if provided) for the per-item process log.
     """
     # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
@@ -1124,41 +1182,29 @@ def _extract_receipt_with_status(
         return _finish(data, ocr_seconds, distill_seconds)
 
     try:
-        if _active_ocr_model and _active_ocr_model != _active_distill_model:
-            _cb("ocr", model=_active_ocr_model)
-            t_ocr = time.perf_counter()
-            ocr_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
-            ocr_seconds = time.perf_counter() - t_ocr
-            if not ocr_text:
-                _append_step(step_log, "lm_ocr", "OCR (LM Studio)",
-                             f"{_active_ocr_model} – no response",
-                             ok=False, duration_s=ocr_seconds)
-                # LM Studio OCR stage failed/unreachable — try local RapidOCR
-                _cb("ocr", model="rapidocr")
-                t_ocr = time.perf_counter()
-                ocr_text = _extract_local_ocr(image_path)
-                ocr_seconds = time.perf_counter() - t_ocr
-                if ocr_text:
-                    _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                                 "fallback – LM Studio unavailable",
-                                 ok=True, duration_s=ocr_seconds)
-                    data = _distill_text(ocr_text, ocr_seconds, engine="rapidocr")
-                    if data is not None:
-                        return data
-                else:
-                    _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                                 "no text extracted", ok=False, duration_s=ocr_seconds)
-                ocr_text = None
-            else:
-                _append_step(step_log, "lm_ocr", "OCR (LM Studio)",
-                             _active_ocr_model, ok=True, duration_s=ocr_seconds)
-            if ocr_text:
-                data = _distill_text(ocr_text, ocr_seconds)
-                if data is not None:
-                    return data
-                print(f"[extract] Two-step low-confidence for {image_path.name}, "
-                      "falling back to direct vision")
+        # PRIMARY: local RapidOCR text extraction — fast, runs offline, and is the
+        # default path for every receipt now.
+        _cb("ocr", model="rapidocr")
+        t_ocr = time.perf_counter()
+        ocr_text = _extract_local_ocr(image_path)
+        ocr_seconds = time.perf_counter() - t_ocr
+        if ocr_text:
+            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
+                         "primary OCR", ok=True, duration_s=ocr_seconds)
+            # Hand the OCR text to the LLM to structure into fields. If LM Studio
+            # is unavailable, _distill_text falls back to the offline rule-based
+            # parser, which flags the receipt for manual review.
+            data = _distill_text(ocr_text, ocr_seconds, engine="rapidocr")
+            if data is not None:
+                return data
+            print(f"[extract] OCR+distill low-confidence for {image_path.name}, "
+                  "trying direct vision")
+        else:
+            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
+                         "no text extracted", ok=False, duration_s=ocr_seconds)
 
+        # RESCUE: OCR found nothing usable (or distillation was low-confidence) —
+        # let a vision-capable LLM read the image directly when one is available.
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _extract_with_model(client, image_path, _active_distill_model)
@@ -1166,23 +1212,9 @@ def _extract_receipt_with_status(
         if data is not None:
             _append_step(step_log, "vision", "Vision",
                          _active_distill_model or "", ok=True, duration_s=vision_dur)
-            return _finish(data, distill_seconds=vision_dur)
+            return _finish(data, ocr_seconds=ocr_seconds, distill_seconds=vision_dur)
         _append_step(step_log, "vision", "Vision",
                      f"{_active_distill_model} – no response", ok=False, duration_s=vision_dur)
-
-        # Direct vision failed too — last resort: RapidOCR text + distillation
-        # (covers vision-incapable distill models while the text API still works)
-        _cb("ocr", model="rapidocr")
-        t_ocr = time.perf_counter()
-        ocr_text = _extract_local_ocr(image_path)
-        ocr_dur = time.perf_counter() - t_ocr
-        if ocr_text:
-            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                         "last-resort fallback after vision failed",
-                         ok=True, duration_s=ocr_dur)
-            return _distill_text(ocr_text, ocr_dur, engine="rapidocr")
-        _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
-                     "no text extracted", ok=False, duration_s=ocr_dur)
         return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")

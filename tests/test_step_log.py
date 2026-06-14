@@ -1,5 +1,4 @@
-"""Tests for per-item process step logging."""
-from pathlib import Path
+"""Tests for per-item process step logging (OCR-first pipeline)."""
 from unittest.mock import MagicMock
 
 import process_receipts as pr
@@ -8,17 +7,18 @@ import process_receipts as pr
 GOOD = {"vendor": "Shell", "amount": 45.20, "date": "2026-05-01", "flags": []}
 
 
-def _setup(monkeypatch, tmp_path, *, lm_ocr, local_ocr, distill, vision):
+def _setup(monkeypatch, tmp_path, *, local_ocr, distill, vision):
+    """Mock the OCR-first pipeline pieces: RapidOCR text, LLM distillation, vision."""
     img = tmp_path / "r.jpg"
     img.write_bytes(b"fake")
-    monkeypatch.setattr(pr, "_active_ocr_model", "ocr-model")
     monkeypatch.setattr(pr, "_active_distill_model", "distill-model")
-    monkeypatch.setattr(pr, "_extract_raw_ocr",      MagicMock(return_value=lm_ocr))
-    monkeypatch.setattr(pr, "_extract_local_ocr",    MagicMock(return_value=local_ocr))
+    monkeypatch.setattr(pr, "_extract_local_ocr", MagicMock(return_value=local_ocr))
     monkeypatch.setattr(pr, "_unified_distillation",
-                        MagicMock(side_effect=distill) if callable(distill) else MagicMock(return_value=distill))
+                        MagicMock(side_effect=distill) if callable(distill)
+                        else MagicMock(return_value=distill))
     monkeypatch.setattr(pr, "_extract_with_model",
-                        MagicMock(side_effect=vision) if callable(vision) else MagicMock(return_value=vision))
+                        MagicMock(side_effect=vision) if callable(vision)
+                        else MagicMock(return_value=vision))
     return img
 
 
@@ -42,90 +42,70 @@ def test_append_step_populates_list():
 
 # ── Step recording inside _extract_receipt_with_status ────────────────────────
 
-def test_steps_recorded_lm_ocr_success(tmp_path, monkeypatch):
-    """Happy path: LM OCR → distillation → step log shows both ok."""
+def test_steps_recorded_ocr_then_distill(tmp_path, monkeypatch):
+    """Happy path: RapidOCR → LLM distillation → step log shows both ok, no vision."""
     img = _setup(monkeypatch, tmp_path,
-                 lm_ocr="SHELL\nTOTAL $45.20", local_ocr=None,
-                 distill=lambda c, t: dict(GOOD), vision=None)
-    steps: list = []
-    data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
-    assert data is not None
-    labels = [s["label"] for s in steps]
-    assert "OCR (LM Studio)" in labels
-    assert "Distillation" in labels
-    assert all(s["ok"] for s in steps)
-    # Steps are also attached to data
-    assert "_steps" in data
-    assert len(data["_steps"]) == len(steps)
-
-
-def test_steps_lm_ocr_fails_local_ocr_fallback(tmp_path, monkeypatch):
-    """LM Studio OCR fails → local OCR (RapidOCR) fallback; step log shows the handoff."""
-    img = _setup(monkeypatch, tmp_path,
-                 lm_ocr=None, local_ocr="SHELL\nTOTAL $45.20",
-                 distill=lambda c, t: dict(GOOD), vision=None)
+                 local_ocr="SHELL\nTOTAL $45.20",
+                 distill=lambda c, t: dict(GOOD),
+                 vision=AssertionError("vision rescue should not run"))
     steps: list = []
     data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
     assert data is not None
     by_step = {s["step"]: s for s in steps}
-    assert by_step["lm_ocr"]["ok"] is False
     assert by_step["local_ocr"]["ok"] is True
-    assert "fallback" in by_step["local_ocr"]["detail"].lower()
     assert by_step["distillation"]["ok"] is True
+    assert "vision" not in by_step
+    assert data["_steps"] and len(data["_steps"]) == len(steps)
 
 
-def test_steps_vision_path(tmp_path, monkeypatch):
-    """No OCR model → direct vision; step records vision step."""
-    img = tmp_path / "r.jpg"
-    img.write_bytes(b"fake")
-    monkeypatch.setattr(pr, "_active_ocr_model", "")
-    monkeypatch.setattr(pr, "_active_distill_model", "distill-model")
-    monkeypatch.setattr(pr, "_extract_with_model", MagicMock(return_value=dict(GOOD)))
+def test_steps_no_ocr_text_falls_back_to_vision(tmp_path, monkeypatch):
+    """RapidOCR finds nothing → vision rescue; step log shows the handoff."""
+    img = _setup(monkeypatch, tmp_path,
+                 local_ocr=None,
+                 distill=AssertionError("distill should not run without OCR text"),
+                 vision=lambda c, p, m: dict(GOOD))
     steps: list = []
     data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
     assert data is not None
     by_step = {s["step"]: s for s in steps}
-    assert "vision" in by_step
+    assert by_step["local_ocr"]["ok"] is False
     assert by_step["vision"]["ok"] is True
 
 
 def test_steps_fully_failed_all_logged(tmp_path, monkeypatch):
     """Everything fails → step log records each failure."""
-    img = tmp_path / "r.jpg"
-    img.write_bytes(b"fake")
-    monkeypatch.setattr(pr, "_active_ocr_model", "")
-    monkeypatch.setattr(pr, "_active_distill_model", "distill-model")
-    monkeypatch.setattr(pr, "_extract_with_model",  MagicMock(return_value=None))
-    monkeypatch.setattr(pr, "_unified_distillation", MagicMock(return_value=None))
-    monkeypatch.setattr(pr, "_extract_local_ocr",    MagicMock(return_value=None))
+    img = _setup(monkeypatch, tmp_path,
+                 local_ocr=None, distill=None,
+                 vision=None)
     steps: list = []
     data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
     assert data is None
     by_step = {s["step"]: s for s in steps}
-    assert by_step["vision"]["ok"] is False
     assert by_step["local_ocr"]["ok"] is False
+    assert by_step["vision"]["ok"] is False
 
 
 def test_steps_distillation_falls_back_to_local_parse(tmp_path, monkeypatch):
-    """LM distillation unreachable → local parse; step log shows both."""
+    """LM distillation unreachable → offline parser; step log shows both."""
     img = _setup(monkeypatch, tmp_path,
-                 lm_ocr="SHELL\nTOTAL $45.20", local_ocr=None,
+                 local_ocr="SHELL\nUNLEADED\nTOTAL $45.20\n05/01/2026",
                  distill=lambda c, t: None,  # LM distillation unreachable
-                 vision=None)
+                 vision=AssertionError("vision rescue should not run"))
     steps: list = []
     data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
     assert data is not None  # local parse rescued it
     by_step = {s["step"]: s for s in steps}
+    assert by_step["local_ocr"]["ok"] is True
     assert by_step["distillation"]["ok"] is False
-    assert "local_parse" in by_step
     assert by_step["local_parse"]["ok"] is True
 
 
 def test_steps_empty_when_step_log_none(tmp_path, monkeypatch):
     """Omitting step_log (backward compat) must not affect the return value."""
     img = _setup(monkeypatch, tmp_path,
-                 lm_ocr="SHELL\nTOTAL $45.20", local_ocr=None,
-                 distill=lambda c, t: dict(GOOD), vision=None)
+                 local_ocr="SHELL\nTOTAL $45.20",
+                 distill=lambda c, t: dict(GOOD),
+                 vision=AssertionError("vision rescue should not run"))
     data = pr._extract_receipt_with_status(MagicMock(), img, None)  # no step_log
     assert data is not None
     assert "_steps" not in data
