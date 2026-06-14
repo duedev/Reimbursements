@@ -50,17 +50,17 @@ Model recommendations go stale fast. Rather than chasing specific names, use the
 
 ## 3. Edge AI (Raspberry Pi 5, NPU-class devices)
 
-**PaddleOCR on edge hardware: yes, works fine.** It is already the bundled offline OCR fallback in this codebase and runs on CPU — a Pi 5 handles it at reasonable speed for the batch sizes a single user generates.
+**Local OCR on edge hardware: yes, works fine.** The bundled offline OCR fallback is RapidOCR (PaddleOCR's PP-OCR models run on onnxruntime) and runs on CPU — a Pi 5 handles it at reasonable speed for the batch sizes a single user generates.
 
 **7B+ vision LLMs on edge hardware: not practical today.** A Pi 5 (4 GB or 8 GB RAM, no discrete VRAM) takes several minutes per image with a quantized 7B model. That is not a usable receipt-processing experience.
 
 **Realistic edge path:**
 
-- Run PaddleOCR on-device to extract raw text from receipt images.
+- Run the local OCR (RapidOCR) on-device to extract raw text from receipt images.
 - Send that text (not the image) to a model for structured extraction. Text is tiny compared to images, so this works well over a local network connection to a more capable machine running LM Studio or Ollama.
 - Alternatively, a 1–3B parameter text-only instruction model can run on a Pi 5 at usable speed and can handle the distillation step if the OCR text quality is good.
 
-**Hardware accelerators (Hailo-8, Google Coral):** These accelerators are built for CNN-style inference — image classification, object detection, semantic segmentation. They do not accelerate transformer-based LLMs in any meaningful way. PaddleOCR's detection stage (a CNN) does benefit from a Coral or Hailo; the recognition and distillation stages do not. Unless you are deploying at scale on embedded hardware, this is not worth pursuing.
+**Hardware accelerators (Hailo-8, Google Coral):** These accelerators are built for CNN-style inference — image classification, object detection, semantic segmentation. They do not accelerate transformer-based LLMs in any meaningful way. The OCR detection stage (a CNN) does benefit from a Coral or Hailo; the recognition and distillation stages do not. Unless you are deploying at scale on embedded hardware, this is not worth pursuing.
 
 ---
 
@@ -69,7 +69,7 @@ Model recommendations go stale fast. Rather than chasing specific names, use the
 The launch wizard (the three-question folder setup in `launch.sh` / `launch.bat`) has eliminated the biggest friction point. The next improvements in order of practical impact:
 
 **1. Publish a pre-built image to GHCR.**
-The current flow builds the Docker image locally on first run. PaddleOCR's build is slow — it can take 10–15 minutes on a typical laptop and will fail silently on machines with weak internet or low disk space. Publishing a pre-built image to GitHub Container Registry means `launch.sh` just does `docker compose pull` and starts immediately. This is the single highest-value thing you can do for non-technical user onboarding.
+The current flow builds the Docker image locally on first run. Swapping the heavy paddlepaddle stack for RapidOCR (pure onnxruntime wheels, ONNX models bundled, no first-run download) made that build dramatically lighter and more reliable, but it can still take a few minutes and depends on the user's internet. Publishing a pre-built image to GitHub Container Registry means `launch.sh` just does `docker compose pull` and starts immediately. This is the single highest-value thing you can do for non-technical user onboarding.
 
 **2. One-file installer scripts.**
 A PowerShell script for Windows and a shell script for Mac that check for Docker, check for LM Studio, download the ZIP, and run launch.bat/launch.sh would eliminate the GitHub ZIP step entirely. This is a meaningful improvement but lower priority than the pre-built image.

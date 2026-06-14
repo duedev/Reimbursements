@@ -21,8 +21,8 @@ jobs:
           cache-dependency-path: requirements-test.txt
 
       - name: Install dependencies
-        # Lightweight test deps only — the heavy paddle* OCR stack is lazy-imported,
-        # unused by the tests, and its transitive GPUtil wheel fails to build.
+        # Lightweight test deps only — the local OCR stack (rapidocr-onnxruntime)
+        # is lazy-imported and unit-tested with mocks, so CI doesn't install it.
         run: pip install -r requirements-test.txt
 
       - name: Syntax check

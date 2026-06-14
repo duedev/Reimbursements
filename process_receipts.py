@@ -330,7 +330,7 @@ def initialize_models() -> str:
 #                  GRAYSCALE_ENABLED is off.
 #   1. autocrop  — trim uniform background borders (autocrop_image_file / the
 #                  in-memory autocrop_receipt inside encode_image).
-#   2. OCR/text  — run extraction (LM Studio vision/OCR or the PaddleOCR fallback)
+#   2. OCR/text  — run extraction (LM Studio vision/OCR or the RapidOCR fallback)
 #                  against the autocropped, full-resolution image.
 #   3. compress  — DEFERRED to spreadsheet-generation time (compress_result_images
 #                  / generate_spreadsheet). Re-encoding/downscaling the stored
@@ -713,221 +713,112 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
         return None
 
 
-# ── PaddleOCR fallback ─────────────────────────────────────────────────────────
-# Local CPU OCR used when the LM Studio OCR stage fails or is unreachable.
-# The recognized text feeds the same distillation stage as LM Studio OCR.
+# ── Local OCR fallback (RapidOCR) ───────────────────────────────────────────────
+# Local CPU OCR used when the LM Studio OCR stage fails or is unreachable. The
+# recognized text feeds the same distillation stage as LM Studio OCR.
+#
+# RapidOCR runs PaddleOCR's PP-OCR models on onnxruntime: the ONNX weights ship
+# inside the wheel (no first-run model download) and there is no paddlepaddle /
+# paddlex / langchain / setuptools chain to keep version-aligned — which is what
+# made the previous PaddleOCR fallback so brittle inside the slim Docker image.
 
-PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "1").lower() not in ("0", "false", "no")
+# Honour the legacy PADDLEOCR_ENABLED name so existing deploys / .env files keep
+# toggling the fallback after the engine swap.
+LOCAL_OCR_ENABLED = (
+    os.getenv("LOCAL_OCR_ENABLED", os.getenv("PADDLEOCR_ENABLED", "1")).lower()
+    not in ("0", "false", "no")
+)
 
-_paddle_engine = None          # PaddleOCR instance, or False after init failure
-_paddle_init_error: str = ""   # last engine-init exception (exposed by /debug/paddle-status)
-_paddle_lock = threading.Lock()
+_ocr_engine = None          # RapidOCR instance, or False after an init failure
+_ocr_init_error: str = ""   # last engine-init exception (exposed by /debug/ocr-status)
+_ocr_lock = threading.Lock()
 
 
-def _shim_langchain_for_paddle() -> None:
-    """Let ``import paddleocr`` survive a missing or renamed ``langchain``.
+def _import_rapidocr():
+    """Return the RapidOCR class from whichever package is installed.
 
-    paddlex (pulled in by paddleocr) eagerly runs, for its PP-ChatOCR retriever::
-
-        from langchain.docstore.document import Document
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-    langchain >= 1.0 deleted ``langchain.docstore`` / ``langchain.text_splitter``
-    (they live in ``langchain_core`` / ``langchain_text_splitters`` now), so the
-    import blows up with "No module named 'langchain.docstore'" — even though
-    paddleocr itself is installed and the receipts fallback never touches that
-    retriever.
-
-    Pre-register lightweight stand-ins for exactly those import targets when they
-    don't already resolve, re-exporting the real classes from the new packages when
-    present and falling back to inert placeholders otherwise.  A module that still
-    imports cleanly is never clobbered, so this is a no-op on a healthy install and
-    idempotent on repeat calls.
+    Prefer the mature, self-contained ``rapidocr-onnxruntime`` (PP-OCR models
+    bundled in the wheel, onnxruntime backend, no runtime download); fall back to
+    the newer unified ``rapidocr`` package when that's the one present.
     """
-    import importlib
-    import types
-
-    def _ensure(mod_name: str, attrs: dict, is_pkg: bool = False) -> None:
-        try:
-            importlib.import_module(mod_name)
-            return  # real module resolves — leave it untouched
-        except Exception:
-            pass
-        mod = sys.modules.get(mod_name)
-        if mod is None:
-            mod = types.ModuleType(mod_name)
-            if is_pkg:
-                mod.__path__ = []  # mark as a package so child lookups resolve
-            sys.modules[mod_name] = mod
-        for key, val in attrs.items():
-            setattr(mod, key, val)
-
     try:
-        from langchain_core.documents import Document as _Doc  # type: ignore
-    except Exception:
-        class _Doc:  # minimal stand-in; the retriever path is never run here
-            def __init__(self, page_content: str = "", metadata=None, **_kw):
-                self.page_content = page_content
-                self.metadata = metadata or {}
-
-    try:
-        from langchain_text_splitters import RecursiveCharacterTextSplitter as _Splitter  # type: ignore
-    except Exception:
-        try:
-            from langchain_text_splitters.character import RecursiveCharacterTextSplitter as _Splitter  # type: ignore
-        except Exception:
-            class _Splitter:  # inert stand-in
-                def __init__(self, *_a, **_kw): ...
-                def split_text(self, text):  # noqa: D401
-                    return [text]
-
-    # Parents before children so dotted-import resolution finds each level.
-    _ensure("langchain", {}, is_pkg=True)
-    _ensure("langchain.docstore", {}, is_pkg=True)
-    _ensure("langchain.docstore.document", {"Document": _Doc})
-    _ensure("langchain.text_splitter", {"RecursiveCharacterTextSplitter": _Splitter})
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        from rapidocr import RapidOCR  # newer unified package
+    return RapidOCR
 
 
-def _patch_paddle_predictor_option() -> None:
-    """Shim PaddlePredictorOption so a positional model_name still works.
-
-    paddleocr 3.x constructs PaddlePredictorOption(model_name, device_type=…,
-    device_id=…) with a positional first argument, but paddlex >= 3.1 made the
-    signature keyword-only (__init__(self, **kwargs)).  paddleocr's paddlex
-    dependency is unbounded upstream, so a mismatched install dies during
-    engine init with "takes 1 positional argument but 2 were given".
-    requirements.txt pins a matching trio; this shim additionally gives
-    environments where the versions have already drifted a chance, by
-    re-passing the positional model_name as a keyword and progressively
-    dropping arguments the installed class rejects (the receipts fallback OCR
-    runs CPU-only, so losing device hints degrades to the default device).
-    It must wrap the class in the module where paddleocr *calls* it
-    (paddleocr._common_args) — that module binds the name at import time, so
-    patching only the defining module would not take effect.
-    """
-    import importlib
-    import inspect
-
-    def _needs_shim(cls) -> bool:
-        if getattr(cls, "_receipts_compat_shim", False):
-            return False  # already patched
-        try:
-            params = [p for name, p in inspect.signature(cls.__init__).parameters.items()
-                      if name != "self"]
-        except (TypeError, ValueError):
-            return True  # can't inspect — wrap defensively
-        return not any(
-            p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
-            for p in params
-        )
-
-    def _shimmed(cls):
-        class _Compat(cls):  # type: ignore[valid-type]
-            _receipts_compat_shim = True
-
-            def __init__(self, *args, **kwargs):
-                # paddlex raises a bare Exception for unsupported options, so
-                # each rung of the ladder has to catch broadly.
-                attempts = [((), {"model_name": args[0], **kwargs}) if args else None,
-                            ((), kwargs),
-                            ((), {})]
-                last_exc = None
-                for attempt in attempts:
-                    if attempt is None:
-                        continue
-                    a, kw = attempt
-                    try:
-                        super().__init__(*a, **kw)
-                        return
-                    except Exception as exc:  # noqa: BLE001
-                        last_exc = exc
-                raise last_exc  # nothing worked — surface the real error
-
-        _Compat.__name__ = cls.__name__
-        _Compat.__qualname__ = cls.__qualname__
-        return _Compat
-
-    for mod_name in ("paddleocr._common_args", "paddlex.inference"):
-        try:
-            module = importlib.import_module(mod_name)
-        except Exception:
-            continue
-        cls = getattr(module, "PaddlePredictorOption", None)
-        if cls is not None and _needs_shim(cls):
-            setattr(module, "PaddlePredictorOption", _shimmed(cls))
-
-
-def _get_paddle_engine():
-    """Lazy PaddleOCR singleton. Returns None when disabled or unavailable."""
-    global _paddle_engine, _paddle_init_error
-    if not PADDLEOCR_ENABLED:
+def _get_ocr_engine():
+    """Lazy local-OCR (RapidOCR) singleton. Returns None when disabled/unavailable."""
+    global _ocr_engine, _ocr_init_error
+    if not LOCAL_OCR_ENABLED:
         return None
-    if _paddle_engine is not None:
-        return _paddle_engine or None
-    with _paddle_lock:
-        if _paddle_engine is not None:
-            return _paddle_engine or None
+    if _ocr_engine is not None:
+        return _ocr_engine or None
+    with _ocr_lock:
+        if _ocr_engine is not None:
+            return _ocr_engine or None
         try:
-            # Apply compat shims before importing paddleocr: one keeps the import
-            # alive across the langchain API removal (see _shim_langchain_for_paddle),
-            # the other works around paddleocr/paddlex constructor drift (see
-            # _patch_paddle_predictor_option).
-            _shim_langchain_for_paddle()
-            _patch_paddle_predictor_option()
-            from paddleocr import PaddleOCR
-            try:  # PaddleOCR 3.x (with orientation detection)
-                _paddle_engine = PaddleOCR(use_textline_orientation=True, lang="en")
-            except TypeError:
-                try:  # PaddleOCR 3.x (without orientation — avoids sub-model init)
-                    _paddle_engine = PaddleOCR(use_textline_orientation=False, lang="en")
-                except TypeError:  # PaddleOCR 2.x
-                    _paddle_engine = PaddleOCR(use_angle_cls=True, lang="en")
-            _paddle_init_error = ""
-            print("[paddle] PaddleOCR fallback engine initialised")
+            RapidOCR = _import_rapidocr()
+            _ocr_engine = RapidOCR()
+            _ocr_init_error = ""
+            print("[ocr] RapidOCR fallback engine initialised")
         except Exception as exc:
-            print(f"[paddle] PaddleOCR unavailable: {exc}")
-            _paddle_engine = False
-            _paddle_init_error = str(exc)
-    return _paddle_engine or None
+            print(f"[ocr] RapidOCR unavailable: {exc}")
+            _ocr_engine = False
+            _ocr_init_error = str(exc)
+    return _ocr_engine or None
 
 
-def _reset_paddle_engine_failure() -> None:
+def _reset_ocr_engine_failure() -> None:
     """Clear a cached engine-init failure so the next call retries.
 
     A failed init is cached (engine = False) to avoid re-paying a slow doomed
-    init on every receipt.  Diagnostics call this first so a fixed environment
-    (packages reinstalled, network restored) is picked up without a restart.
-    A working engine is never discarded.
+    init on every receipt. Diagnostics call this first so a fixed environment
+    (package reinstalled) is picked up without a restart; a working engine is
+    never discarded.
     """
-    global _paddle_engine
-    with _paddle_lock:
-        if _paddle_engine is False:
-            _paddle_engine = None
+    global _ocr_engine
+    with _ocr_lock:
+        if _ocr_engine is False:
+            _ocr_engine = None
 
 
-def _extract_paddle_ocr(image_path: Path) -> Optional[str]:
-    """Run PaddleOCR on an image, returning recognized lines joined by newlines."""
-    engine = _get_paddle_engine()
+def _rapidocr_lines(out) -> list[str]:
+    """Pull recognized text out of a RapidOCR result, in the engine's reading
+    order (top-to-bottom, left-to-right), one detected box per line.
+
+    Handles both APIs: the mature rapidocr-onnxruntime returns ``(result,
+    elapse)`` where ``result`` is a list of ``[box, text, score]``; the newer
+    unified ``rapidocr`` package returns an object exposing a ``.txts`` sequence.
+    """
+    txts = getattr(out, "txts", None)
+    if txts is not None:  # newer unified rapidocr package
+        return [str(t) for t in txts if t]
+    result = out[0] if isinstance(out, tuple) and out else out  # (result, elapse)
+    lines: list[str] = []
+    for entry in result or []:
+        try:
+            text = entry[1]
+        except (IndexError, TypeError):
+            continue
+        if text:
+            lines.append(str(text))
+    return lines
+
+
+def _extract_local_ocr(image_path: Path) -> Optional[str]:
+    """Run the local OCR engine (RapidOCR) on an image, returning recognized
+    lines joined by newlines (None when the engine is unavailable or finds nothing)."""
+    engine = _get_ocr_engine()
     if engine is None:
         return None
     try:
-        lines: list[str] = []
-        if hasattr(engine, "predict"):  # 3.x API
-            for res in engine.predict(str(image_path)) or []:
-                texts = res.get("rec_texts") if isinstance(res, dict) else getattr(res, "rec_texts", None)
-                if texts:
-                    lines.extend(t for t in texts if t)
-        else:  # 2.x API
-            for page in engine.ocr(str(image_path)) or []:
-                for entry in page or []:
-                    try:
-                        lines.append(entry[1][0])
-                    except (IndexError, TypeError):
-                        pass
-        text = "\n".join(lines).strip()
+        out = engine(str(image_path))
+        text = "\n".join(_rapidocr_lines(out)).strip()
         return text or None
     except Exception as exc:
-        print(f"[paddle] OCR failed for {image_path.name}: {exc}")
+        print(f"[ocr] local OCR failed for {image_path.name}: {exc}")
         return None
 
 
@@ -955,10 +846,10 @@ def _append_step(
 
 
 # ── Offline rule-based distillation ────────────────────────────────────────────
-# When LM Studio is disabled/unreachable the OCR text (from PaddleOCR) still needs
+# When LM Studio is disabled/unreachable the OCR text (from RapidOCR) still needs
 # to be turned into structured fields. Sending it to the LM Studio distillation
 # model would fail too, so receipts that successfully OCR'd would otherwise land in
-# "failed". This pure-regex parser is the genuine PaddleOCR fallback: no model
+# "failed". This pure-regex parser is the genuine offline fallback: no model
 # required, so an imported image still produces a usable (if lower-confidence)
 # result when the AI backend is down.
 
@@ -1242,20 +1133,20 @@ def _extract_receipt_with_status(
                 _append_step(step_log, "lm_ocr", "OCR (LM Studio)",
                              f"{_active_ocr_model} – no response",
                              ok=False, duration_s=ocr_seconds)
-                # LM Studio OCR stage failed/unreachable — try local PaddleOCR
-                _cb("ocr", model="paddleocr")
+                # LM Studio OCR stage failed/unreachable — try local RapidOCR
+                _cb("ocr", model="rapidocr")
                 t_ocr = time.perf_counter()
-                ocr_text = _extract_paddle_ocr(image_path)
+                ocr_text = _extract_local_ocr(image_path)
                 ocr_seconds = time.perf_counter() - t_ocr
                 if ocr_text:
-                    _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                    _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
                                  "fallback – LM Studio unavailable",
                                  ok=True, duration_s=ocr_seconds)
-                    data = _distill_text(ocr_text, ocr_seconds, engine="paddleocr")
+                    data = _distill_text(ocr_text, ocr_seconds, engine="rapidocr")
                     if data is not None:
                         return data
                 else:
-                    _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+                    _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
                                  "no text extracted", ok=False, duration_s=ocr_seconds)
                 ocr_text = None
             else:
@@ -1279,19 +1170,19 @@ def _extract_receipt_with_status(
         _append_step(step_log, "vision", "Vision",
                      f"{_active_distill_model} – no response", ok=False, duration_s=vision_dur)
 
-        # Direct vision failed too — last resort: PaddleOCR text + distillation
+        # Direct vision failed too — last resort: RapidOCR text + distillation
         # (covers vision-incapable distill models while the text API still works)
-        _cb("ocr", model="paddleocr")
+        _cb("ocr", model="rapidocr")
         t_ocr = time.perf_counter()
-        ocr_text = _extract_paddle_ocr(image_path)
-        paddle_dur = time.perf_counter() - t_ocr
+        ocr_text = _extract_local_ocr(image_path)
+        ocr_dur = time.perf_counter() - t_ocr
         if ocr_text:
-            _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
+            _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
                          "last-resort fallback after vision failed",
-                         ok=True, duration_s=paddle_dur)
-            return _distill_text(ocr_text, paddle_dur, engine="paddleocr")
-        _append_step(step_log, "paddle_ocr", "OCR (PaddleOCR)",
-                     "no text extracted", ok=False, duration_s=paddle_dur)
+                         ok=True, duration_s=ocr_dur)
+            return _distill_text(ocr_text, ocr_dur, engine="rapidocr")
+        _append_step(step_log, "local_ocr", "OCR (RapidOCR)",
+                     "no text extracted", ok=False, duration_s=ocr_dur)
         return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")
