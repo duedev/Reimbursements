@@ -85,15 +85,29 @@ Order matters. The canonical order is:
 1. **Autocrop** — trim uniform background borders so the receipt fills the frame.
    Conservative: if the detected crop would discard too much (or almost nothing),
    leave the image untouched. Keep the image at **full resolution** here.
-2. **Extraction** — read the receipt with the local model. Two modes:
-   - **Direct vision:** the vision model reads the image and returns structured
-     fields in one step.
-   - **Two-stage (optional):** a dedicated OCR model first transcribes all visible
-     text verbatim; a second "distillation" model turns that text into structured
-     fields. Useful for hard/handwritten/low-res receipts.
+2. **Extraction** — read the receipt with a built-in OCR engine plus the local
+   model. The canonical flow:
+   - **OCR (built-in, primary):** a local on-device OCR engine transcribes the
+     visible text. Fast, fully offline, runs on every receipt.
+   - **OCR (LLM, optional):** when the user has selected a dedicated OCR model,
+     a vision LLM *also* transcribes the same receipt. When both an engine and a
+     model produce text, **both transcriptions are handed to the distillation
+     model together so it can cross-reference the two readings** — preferring
+     values that agree and using the clearer reading where they differ. This
+     catches engine misreads on hard/handwritten/low-res receipts.
+   - **Distillation:** the "distillation" model turns the OCR text into
+     structured fields, reconciling the printed total.
+   - **Direct vision (rescue):** only when OCR produced no usable text (or
+     distillation came back low-confidence) does a vision-capable model read the
+     image directly.
    - **Resilient fallback:** if the model endpoint is unreachable, fall back to a
-     local OCR engine and a plain regex parser so the receipt yields *something*
+     plain regex parser over the OCR text so the receipt yields *something*
      (flagged for manual review) instead of failing outright.
+   - **Reasoning is per stage:** the OCR/transcription pass **always** runs with
+     reasoning off (verbatim transcription never benefits from it); the
+     distillation/vision pass uses reasoning by default (a live UI toggle), since
+     reconciling fields and catching anomalies is where step-by-step reasoning
+     helps.
 3. **Classify** — assign a category (see §7).
 4. **Validate** — confidence scoring, amount verification, threshold/date flags.
 5. **Rename & file** — move to the completed area under a sortable name.
@@ -114,7 +128,7 @@ Order matters. The canonical order is:
 | amount | Total amount |
 | category | fuel / materials / misc (derived) |
 | summary | One-line AI description of the purchase |
-| job name / job number | User-supplied per batch (never trusted from the model) |
+| job name / job number | User-supplied per batch (never trusted from the model). When left blank, stamped with the literal placeholders `Default Job Name` / `Default Job Number` so the value is visible in the sheet and the user can Ctrl+F find-and-replace it in one pass. |
 | expense description | For misc receipts |
 | flags | Any anomalies (threshold, stale date, duplicate, low confidence, …) |
 | confidence | 0–100 score (derived) |
@@ -171,6 +185,13 @@ Order matters. The canonical order is:
   blocked — both in the UI (disabled button) and server-side (rejected request) —
   until **every** completed receipt is approved. A live status line shows how many
   still need review; a counter badge appears on the board's Completed column.
+- **Approve-and-next sweep:** the review dialog shows a counter of how many
+  completed receipts still need review/approval, and its primary action approves
+  the current receipt and **immediately loads the next one still needing
+  approval** (the button reads "Approve & Next" while more remain, "Approve" on
+  the last). When the last one is approved the dialog closes with an all-clear
+  toast — so a batch can be cleared in one continuous pass without reopening the
+  dialog per card.
 - The review dialog's **Cancel** control must be clearly visible (not look
   disabled or secondary).
 
@@ -205,11 +226,16 @@ Deliberately avoid the generic purple/indigo "AI default" palette.
    ones last. A search box filters cards (focusable with `/`).
 5. **Processing & Errors** — progress bar, live log, and a collapsible error
    sub-section.
-6. **Report History** — list and re-download past reports.
+6. **Report History** — list and re-download past reports, plus a **Clear
+   History** control that deletes all generated report files from the output
+   folder (confirmed first; receipt images are untouched).
 
-**Settings tab:** AI model selectors (OCR + distillation, switchable live),
-folder paths, schedule, image-processing toggles, review/approval toggle, email
-delivery config (with a "send test" action), and a **Maintenance** card (§13).
+**Settings tab:** AI model selectors (OCR + distillation, switchable live and
+**auto-refreshing** so the list tracks whatever is loaded in the model runtime —
+no manual refresh required), a per-stage **reasoning** toggle (drives the
+distillation pass; OCR always runs without reasoning), folder paths, schedule,
+image-processing toggles, review/approval toggle, email delivery config (with a
+"send test" action), and a **Maintenance** card (§13).
 
 **Celebration:** when a batch finishes, fire a generous confetti burst **and play
 a short, cheerful celebratory tone**. (The confetti should be lavish — on the
@@ -260,7 +286,9 @@ safety). It contains **five sheets**, in this order:
    - Columns: `# | Date | Store | Job Name | Job Number/Expense | Amount |
      Summary | Notes`. Amounts use an accounting currency format; dates a short
      `m/d/yy`. Flagged notes get a red background; amounts over the category
-     threshold are conditionally highlighted.
+     threshold are conditionally highlighted. Receipts with no job supplied show
+     the literal `Default Job Name` / `Default Job Number` placeholders so they
+     are visible and Ctrl+F find-and-replaceable across the sheet.
    - **Fit to content:** columns auto-fit their width and rows grow to fit wrapped
      text so nothing is clipped.
    - Header/meta rows are frozen so they stay visible when scrolling; print setup
@@ -304,6 +332,10 @@ Also offer a one-click **CSV export** of all completed receipts.
   directories (upload staging, PDF page folders, and any empty job subfolder),
   walking bottom-up so nested empties collapse. Only ever removes directories that
   contain no files; never the pending-intake root or real input files.
+- **Clear report history:** a manual action (in the Report History card) that
+  deletes every generated report file from the output folder. Scoped to the safe
+  report-name glob — never touches receipt images or unrelated files. Confirmed
+  before running.
 
 ---
 
@@ -336,7 +368,10 @@ All of the following are adjustable at runtime from the UI (no restart), with
 sensible defaults, and persisted:
 
 - Folder paths (intake, output) and host-path display hints.
-- AI model selection (OCR model optional; distillation model).
+- AI model selection (OCR model optional — when set, runs LLM OCR alongside the
+  built-in engine and cross-references both; distillation model). The selectable
+  model list auto-refreshes from the running model runtime.
+- Reasoning mode for the distillation pass (OCR always runs without reasoning).
 - Image processing: autocrop on/off, compression on/off, JPEG quality,
   max stored image dimension.
 - Local-OCR fallback on/off.
