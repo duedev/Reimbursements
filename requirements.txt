@@ -13,6 +13,12 @@ PyMuPDF>=1.24.0
 paddlepaddle==3.0.*
 paddleocr==3.0.*
 paddlex==3.0.*
+# Python 3.12's ensurepip no longer bundles setuptools, and the slim base image
+# ships without it — but paddlepaddle/paddlex import pkg_resources/setuptools at
+# engine-init time, so the fallback dies with "No module named 'setuptools'".
+# Pin below 81: setuptools 81 deprecated and 82 removed pkg_resources, which would
+# just turn this into "No module named 'pkg_resources'" instead.
+setuptools<81
 # paddlex eagerly imports langchain.docstore for a retriever the receipts fallback
 # never uses; langchain>=1.0 removed that module, which would make `import paddleocr`
 # fail with "No module named 'langchain.docstore'". process_receipts shims those
