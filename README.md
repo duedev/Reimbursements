@@ -240,7 +240,7 @@ Leave `SMTP_HOST` empty (and the UI fields blank) to disable email entirely.
 
 #### Image processing
 
-Black-&-white conversion, JPEG compression, and the PaddleOCR fallback are
+Black-&-white conversion, JPEG compression, and the RapidOCR fallback are
 toggleable in **Settings → Image processing** (no restart needed). The defaults
 below apply until changed in the UI.
 
@@ -251,7 +251,7 @@ below apply until changed in the UI.
 | `COMPRESS_ENABLED` | `1` | Re-encode stored receipts to optimized JPEG |
 | `JPEG_QUALITY` | `85` | Stored-image JPEG quality (40–95) |
 | `STORE_MAX_PX` | `2000` | Cap the longest side of stored receipt images |
-| `PADDLEOCR_ENABLED` | `1` | Local CPU OCR fallback when LM Studio's OCR stage is down |
+| `LOCAL_OCR_ENABLED` | `1` | Local CPU OCR fallback (RapidOCR) when LM Studio's OCR stage is down. The legacy `PADDLEOCR_ENABLED` name is still honored. |
 
 #### UI folder shortcuts
 
@@ -290,7 +290,7 @@ Receipt image / PDF
   ┌─────────────┐
   │  Stage 1    │  (Optional — only when a separate OCR model is configured)
   │  OCR        │  Dedicated model transcribes all visible text verbatim.
-  │             │  Falls back to local PaddleOCR if LM Studio's OCR stage is down.
+  │             │  Falls back to local RapidOCR if LM Studio's OCR stage is down.
   └──────┬──────┘
          │
          ▼
@@ -298,7 +298,7 @@ Receipt image / PDF
   │  Stage 2    │  Vision or OCR-text → structured JSON via distillation model.
   │  Distill    │  Extracts: date, vendor, amount, category, summary, flags.
   │             │  If LM Studio is unreachable, a local regex parser turns the
-  │             │  PaddleOCR text into fields (flagged for manual review) instead
+  │             │  RapidOCR text into fields (flagged for manual review) instead
   │             │  of failing the receipt.
   └──────┬──────┘
          │
@@ -419,7 +419,7 @@ Numbers**.
 | Method | Path | Notes |
 |---|---|---|
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
-| `GET/POST` | `/settings/processing` | `autocrop`, `grayscale`, `compress`, `paddleocr`, `jpeg_quality` |
+| `GET/POST` | `/settings/processing` | `autocrop`, `grayscale`, `compress`, `local_ocr`, `jpeg_quality` |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |

@@ -162,7 +162,7 @@ def _processing_settings() -> dict:
         "autocrop":     _pr.AUTOCROP_ENABLED,
         "grayscale":    _pr.GRAYSCALE_ENABLED,
         "compress":     _pr.COMPRESS_ENABLED,
-        "paddleocr":    _pr.PADDLEOCR_ENABLED,
+        "local_ocr":    _pr.LOCAL_OCR_ENABLED,
         "jpeg_quality": _pr.JPEG_QUALITY,
     }
 
@@ -179,8 +179,12 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
         _pr.GRAYSCALE_ENABLED = bool(proc["grayscale"])
     if "compress" in proc:
         _pr.COMPRESS_ENABLED = bool(proc["compress"])
-    if "paddleocr" in proc:
-        _pr.PADDLEOCR_ENABLED = bool(proc["paddleocr"])
+    # "local_ocr" is the current key; "paddleocr" is read for backward compat with
+    # configs saved before the RapidOCR swap so a prior "disabled" choice sticks.
+    if "local_ocr" in proc:
+        _pr.LOCAL_OCR_ENABLED = bool(proc["local_ocr"])
+    elif "paddleocr" in proc:
+        _pr.LOCAL_OCR_ENABLED = bool(proc["paddleocr"])
     if proc.get("jpeg_quality") is not None:
         try:
             _pr.JPEG_QUALITY = max(40, min(95, int(proc["jpeg_quality"])))
@@ -890,7 +894,7 @@ async def lifespan(app: FastAPI):
     global _schedule_wakeup
     _schedule_wakeup = asyncio.Event()   # bind to this app's running loop
     _restore_state()
-    _apply_processing_config()   # restore UI-saved auto-crop / compress / PaddleOCR settings
+    _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -2412,7 +2416,7 @@ class ProcessingSettingsRequest(BaseModel):
     autocrop:     bool | None = None
     grayscale:    bool | None = None
     compress:     bool | None = None
-    paddleocr:    bool | None = None
+    local_ocr:    bool | None = None
     jpeg_quality: int | None = None
 
 
@@ -2429,7 +2433,7 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
         if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)
-        if body.paddleocr is not None: proc["paddleocr"] = bool(body.paddleocr)
+        if body.local_ocr is not None: proc["local_ocr"] = bool(body.local_ocr)
         if body.jpeg_quality is not None:
             proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
         cfg["processing"] = proc
@@ -2654,81 +2658,35 @@ async def remove_saved_field(body: RemoveFieldRequest):
     return JSONResponse({"ok": True})
 
 
-# ── PaddleOCR diagnostics ──────────────────────────────────────────────────────
+# ── Local OCR (RapidOCR) diagnostics ────────────────────────────────────────────
 
-@app.get("/debug/paddle-status")
-async def paddle_status():
-    """Check whether PaddleOCR is installed and loadable."""
+@app.get("/debug/ocr-status")
+async def ocr_status():
+    """Check whether the local OCR engine (RapidOCR) is installed and loadable."""
     def _check():
-        # Apply the langchain compat shim first so a paddlex-side langchain>=1.0
-        # break doesn't masquerade as "PaddleOCR not installed".
         try:
-            _pr._shim_langchain_for_paddle()
-        except Exception:
-            pass
-        try:
-            from paddleocr import PaddleOCR  # noqa: F401
+            _pr._import_rapidocr()
         except ImportError as exc:
-            missing = getattr(exc, "name", "") or ""
-            # paddleocr itself missing → genuinely not installed.
-            if missing == "paddleocr" or missing.startswith("paddleocr."):
-                return {
-                    "available": False,
-                    "reason": f"PaddleOCR is not installed in this Python environment: {exc}",
-                    "fix": ("Install the pinned set: pip install 'paddlepaddle==3.0.*' "
-                            "'paddleocr==3.0.*' 'paddlex==3.0.*'"),
-                }
-            # paddleocr IS installed but a transitive import failed. The classic
-            # culprit is langchain>=1.0 removing langchain.docstore (used by
-            # paddlex). Don't mislabel that as "not installed".
-            if missing.startswith("langchain"):
-                return {
-                    "available": False,
-                    "reason": (f"PaddleOCR is installed, but a dependency import failed: {exc}. "
-                               "paddlex imports 'langchain.docstore', which langchain>=1.0 removed."),
-                    "fix": ("The app now shims this automatically — if it still fails, either pin a "
-                            "compatible langchain (pip install 'langchain<1.0') or install the split "
-                            "packages it moved to (pip install langchain-core langchain-text-splitters)."),
-                }
             return {
                 "available": False,
-                "reason": f"PaddleOCR is installed, but a dependency import failed: {exc}",
-                "fix": (f"A package PaddleOCR needs ('{missing or 'unknown'}') is missing or "
-                        "incompatible. Reinstall the pinned set: pip install 'paddlepaddle==3.0.*' "
-                        "'paddleocr==3.0.*' 'paddlex==3.0.*'"),
+                "reason": f"RapidOCR is not installed in this Python environment: {exc}",
+                "fix": ("Install it (it's in requirements.txt): "
+                        "pip install 'rapidocr-onnxruntime' 'onnxruntime' "
+                        "— or rebuild the Docker image."),
             }
         # Retry a previously failed init so a fixed environment is picked up
         # without restarting the server.
-        _pr._reset_paddle_engine_failure()
-        engine = _pr._get_paddle_engine()
+        _pr._reset_ocr_engine_failure()
+        engine = _pr._get_ocr_engine()
         if engine is None:
-            init_err = _pr._paddle_init_error or "unknown error during PaddleOCR.__init__"
-            if "positional argument" in init_err:
-                fix = (
-                    "paddleocr/paddlex version mismatch — paddlex 3.1+ broke the API "
-                    "paddleocr 3.0.x relies on. Reinstall the matching pinned set: "
-                    "pip install 'paddlepaddle==3.0.*' 'paddleocr==3.0.*' 'paddlex==3.0.*' "
-                    "(or rebuild the Docker image), then run this test again."
-                )
-            elif "setuptools" in init_err or "pkg_resources" in init_err:
-                fix = (
-                    "Python 3.12 dropped the bundled setuptools, but paddlepaddle/paddlex "
-                    "import pkg_resources/setuptools at runtime. Install it (it's now pinned "
-                    "in requirements.txt): pip install 'setuptools<81' — the <81 pin keeps "
-                    "pkg_resources, which setuptools 82 removed. Then rebuild the Docker image."
-                )
-            else:
-                fix = (
-                    "Common causes: missing model files (PaddleOCR downloads them on first "
-                    "run — check for network/permission errors above), incompatible "
-                    "paddlepaddle/paddleocr/paddlex versions, or insufficient RAM. "
-                    "Reinstall the pinned set: pip install 'paddlepaddle==3.0.*' "
-                    "'paddleocr==3.0.*' 'paddlex==3.0.*'"
-                )
+            init_err = _pr._ocr_init_error or "unknown error during RapidOCR init"
             return {
                 "available": False,
-                "reason": f"PaddleOCR imported but engine failed to initialise: {init_err}",
-                "fix": fix,
+                "reason": f"RapidOCR imported but engine failed to initialise: {init_err}",
+                "fix": ("The ONNX models ship inside the wheel, so no download is needed. "
+                        "Reinstall the OCR stack: pip install --force-reinstall "
+                        "'rapidocr-onnxruntime' 'onnxruntime' (or rebuild the Docker image); "
+                        "if it persists, check available RAM/disk."),
             }
         return {"available": True, "engine": str(type(engine).__name__)}
 
@@ -2736,22 +2694,22 @@ async def paddle_status():
     return JSONResponse(result)
 
 
-@app.post("/debug/paddle-test")
-async def paddle_test(files: list[UploadFile] = File(...)):
-    """Run PaddleOCR on an uploaded image and return the extracted text."""
+@app.post("/debug/ocr-test")
+async def ocr_test(files: list[UploadFile] = File(...)):
+    """Run the local OCR engine (RapidOCR) on an uploaded image, return the text."""
     if not files:
         return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
 
     f = files[0]
     suffix = Path(f.filename or "test.jpg").suffix or ".jpg"
-    tmp = PROCESSING_FOLDER / f"_paddle_test{suffix}"
+    tmp = PROCESSING_FOLDER / f"_ocr_test{suffix}"
     PROCESSING_FOLDER.mkdir(parents=True, exist_ok=True)
     try:
         content = await f.read()
         tmp.write_bytes(content)
 
         def _run():
-            return _pr._extract_paddle_ocr(tmp)
+            return _pr._extract_local_ocr(tmp)
 
         text = await asyncio.get_event_loop().run_in_executor(None, _run)
         return JSONResponse({

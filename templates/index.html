@@ -1635,14 +1635,14 @@
       </label>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <label class="check-label">
-          <input type="checkbox" id="proc-paddleocr">
-          PaddleOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
+          <input type="checkbox" id="proc-localocr">
+          RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
         </label>
-        <button class="copy-btn" id="paddle-test-btn" title="Upload a receipt image to test PaddleOCR extraction" style="flex-shrink:0">
-          Test PaddleOCR
+        <button class="copy-btn" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
+          Test OCR
         </button>
-        <input type="file" id="paddle-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test PaddleOCR">
-        <span id="paddle-test-status" style="font-size:11px;color:var(--muted)"></span>
+        <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the local OCR">
+        <span id="ocr-test-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
       <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
         <span style="min-width:96px">JPEG quality</span>
@@ -2954,7 +2954,7 @@ const _ERROR_EXPLANATIONS = [
   [/stalled|stuck/i,                        'Processing timed out. LM Studio may be overloaded — wait a moment and click "Nudge Queue".'],
   [/could not extract/i,                    'One or more required fields are missing. Open the failed card and use "Create" to fill them in.'],
   [/pdf/i,                                  'PDF conversion issue — check that PyMuPDF is installed (pip install pymupdf).'],
-  [/paddle/i,                               'PaddleOCR fallback also failed. Check Settings → PaddleOCR for details.'],
+  [/rapid ?ocr|local ?ocr|paddle/i,         'Local OCR (RapidOCR) fallback also failed. Check Settings → RapidOCR for details.'],
   [/duplicate/i,                            'This receipt appears to match another already in the batch — review both before exporting.'],
   [/amount.*not found|verify manually/i,    'The extracted dollar amount doesn\'t match any total on the receipt — double-check before exporting.'],
 ];
@@ -3282,7 +3282,7 @@ async function loadProcessingSettings() {
     const d = await (await fetch('/settings/processing')).json();
     document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
-    document.getElementById('proc-paddleocr').checked  = d.paddleocr !== false;
+    document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
     document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
   } catch (_) {}
@@ -3293,7 +3293,7 @@ async function saveProcessingSettings() {
   const body = {
     grayscale:    document.getElementById('proc-grayscale').checked,
     compress:     document.getElementById('proc-compress').checked,
-    paddleocr:    document.getElementById('proc-paddleocr').checked,
+    local_ocr:    document.getElementById('proc-localocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
   };
   try {
@@ -3312,26 +3312,26 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-grayscale', 'proc-compress', 'proc-paddleocr'].forEach(id => {
+['proc-grayscale', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
 });
 
-// ── PaddleOCR test ────────────────────────────────────────────────────────────
-document.getElementById('paddle-test-btn').addEventListener('click', () => {
-  document.getElementById('paddle-test-input').click();
+// ── Local OCR (RapidOCR) test ──────────────────────────────────────────────────
+document.getElementById('ocr-test-btn').addEventListener('click', () => {
+  document.getElementById('ocr-test-input').click();
 });
-document.getElementById('paddle-test-input').addEventListener('change', async (e) => {
+document.getElementById('ocr-test-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const statusEl = document.getElementById('paddle-test-status');
-  const btn = document.getElementById('paddle-test-btn');
-  statusEl.textContent = 'Running PaddleOCR…';
+  const statusEl = document.getElementById('ocr-test-status');
+  const btn = document.getElementById('ocr-test-btn');
+  statusEl.textContent = 'Running OCR…';
   statusEl.style.color = 'var(--muted)';
   btn.disabled = true;
 
-  // First check if PaddleOCR is available
+  // First check if the local OCR engine is available
   try {
-    const chk = await fetch('/debug/paddle-status');
+    const chk = await fetch('/debug/ocr-status');
     const chkData = await chk.json();
     if (!chkData.available) {
       statusEl.innerHTML = `<span style="color:var(--danger)">&#10007; ${chkData.reason}</span>`
@@ -3345,7 +3345,7 @@ document.getElementById('paddle-test-input').addEventListener('change', async (e
   try {
     const form = new FormData();
     form.append('files', file, file.name);
-    const res = await fetch('/debug/paddle-test', { method: 'POST', body: form });
+    const res = await fetch('/debug/ocr-test', { method: 'POST', body: form });
     const d = await res.json();
     if (d.ok && d.text) {
       statusEl.textContent = `✓ ${d.chars} chars extracted`;
@@ -3358,7 +3358,7 @@ document.getElementById('paddle-test-input').addEventListener('change', async (e
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
       modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <strong style="font-size:14px">PaddleOCR — Extracted Text</strong>
+          <strong style="font-size:14px">RapidOCR — Extracted Text</strong>
           <button style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1" onclick="this.closest('[style*=position]').remove()">✕</button>
         </div>
         <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${d.chars} characters from <strong>${esc(file.name)}</strong></p>

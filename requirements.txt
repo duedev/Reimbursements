@@ -5,21 +5,10 @@ openai>=1.57.0
 openpyxl>=3.1.5
 Pillow>=11.0.0
 PyMuPDF>=1.24.0
-# Local OCR fallback when the LM Studio OCR stage is unreachable (heavy: ~600MB)
-# Pin all three to the same major.minor: paddleocr's own paddlex dependency is
-# unbounded upstream, and paddlex >= 3.1 made PaddlePredictorOption.__init__
-# keyword-only, which breaks paddleocr 3.0.x engine init with
-# "PaddlePredictorOption.__init__() takes 1 positional argument but 2 were given".
-paddlepaddle==3.0.*
-paddleocr==3.0.*
-paddlex==3.0.*
-# Python 3.12's ensurepip no longer bundles setuptools, and the slim base image
-# ships without it — but paddlepaddle/paddlex import pkg_resources/setuptools at
-# engine-init time, so the fallback dies with "No module named 'setuptools'".
-# Pin below 81: setuptools 81 deprecated and 82 removed pkg_resources, which would
-# just turn this into "No module named 'pkg_resources'" instead.
-setuptools<81
-# paddlex eagerly imports langchain.docstore for a retriever the receipts fallback
-# never uses; langchain>=1.0 removed that module, which would make `import paddleocr`
-# fail with "No module named 'langchain.docstore'". process_receipts shims those
-# imports at engine-init time, so no langchain pin is required here.
+# Local OCR fallback, used when the LM Studio OCR stage is unreachable. RapidOCR
+# runs PaddleOCR's PP-OCR models on onnxruntime: the ONNX weights ship inside the
+# wheel (no first-run download) and there's no paddlepaddle/paddlex/langchain/
+# setuptools dependency chain to keep aligned — far more robust in a slim Docker
+# image than the previous paddleocr stack. ~80MB vs paddle's ~600MB.
+rapidocr-onnxruntime>=1.3,<2
+onnxruntime>=1.16

@@ -61,8 +61,8 @@ def test_local_parse_picks_grand_total_not_tendered_cash():
 
 # ── End-to-end fallback when LM Studio is unreachable ─────────────────────────
 
-def test_paddle_fallback_when_lm_fully_down(monkeypatch, tmp_path):
-    """No OCR model, vision unreachable, distillation unreachable: PaddleOCR text
+def test_local_ocr_fallback_when_lm_fully_down(monkeypatch, tmp_path):
+    """No OCR model, vision unreachable, distillation unreachable: local OCR text
     must still yield a result via the local parser instead of dropping to failed."""
     img = tmp_path / "r.jpg"
     img.write_bytes(b"fake")
@@ -70,12 +70,12 @@ def test_paddle_fallback_when_lm_fully_down(monkeypatch, tmp_path):
     monkeypatch.setattr(pr, "_active_distill_model", "distill")
     monkeypatch.setattr(pr, "_extract_with_model", MagicMock(return_value=None))
     monkeypatch.setattr(pr, "_unified_distillation", MagicMock(return_value=None))
-    monkeypatch.setattr(pr, "_extract_paddle_ocr",
+    monkeypatch.setattr(pr, "_extract_local_ocr",
                         MagicMock(return_value="SHELL\nUNLEADED\nTOTAL $45.20\n05/01/2026"))
 
     data = pr._extract_receipt_with_status(MagicMock(), img, None)
     assert data is not None
-    assert data["_ocr_engine"] == "paddleocr"
+    assert data["_ocr_engine"] == "rapidocr"
     assert data["_local_parse"] is True
     assert data["amount"] == 45.20
 
@@ -89,7 +89,7 @@ def test_lm_distillation_preferred_over_local_parse(monkeypatch, tmp_path):
     monkeypatch.setattr(pr, "_active_distill_model", "distill")
     monkeypatch.setattr(pr, "_extract_with_model", MagicMock(return_value=None))
     monkeypatch.setattr(pr, "_unified_distillation", MagicMock(return_value=dict(good)))
-    monkeypatch.setattr(pr, "_extract_paddle_ocr", MagicMock(return_value="CHEVRON\nTOTAL $30.00"))
+    monkeypatch.setattr(pr, "_extract_local_ocr", MagicMock(return_value="CHEVRON\nTOTAL $30.00"))
 
     data = pr._extract_receipt_with_status(MagicMock(), img, None)
     assert data is not None
@@ -107,7 +107,7 @@ def test_distilled_amount_reconciled_against_ocr_text(monkeypatch, tmp_path):
     monkeypatch.setattr(pr, "_active_distill_model", "distill")
     monkeypatch.setattr(pr, "_extract_with_model", MagicMock(return_value=None))
     monkeypatch.setattr(pr, "_unified_distillation", MagicMock(return_value=dict(hallucinated)))
-    monkeypatch.setattr(pr, "_extract_paddle_ocr",
+    monkeypatch.setattr(pr, "_extract_local_ocr",
                         MagicMock(return_value="CHEVRON\nSUBTOTAL $28.50\nTAX $1.50\nTOTAL $30.00"))
 
     data = pr._extract_receipt_with_status(MagicMock(), img, None)

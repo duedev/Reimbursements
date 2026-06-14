@@ -18,7 +18,7 @@ def client(tmp_path, monkeypatch):
         "ai_summary": "Fuel fill-up", "_file": "IMG_1.jpg",
         "_new_filename": "fuel_05-01-26_shell.jpg",
         "_flag": "", "_confidence": 92, "_amount_verified": True,
-        "_ocr_engine": "paddleocr", "_proc_seconds": 12.5,
+        "_ocr_engine": "rapidocr", "_proc_seconds": 12.5,
     })
     with TestClient(server.app) as c:
         yield c
@@ -44,7 +44,7 @@ def test_approving_preserves_extraction_metadata(client):
     assert rec["_confidence"] == 92
     assert rec["_amount_verified"] is True
     assert rec["_flag"] == ""              # not rewritten as "Manual entry"
-    assert rec["_ocr_engine"] == "paddleocr"
+    assert rec["_ocr_engine"] == "rapidocr"
 
 
 def test_editing_amount_clears_amount_verified(client):
