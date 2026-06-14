@@ -1313,14 +1313,7 @@
              accept="image/*,.pdf,application/pdf,.zip,application/zip,application/x-zip-compressed"
              aria-label="Choose receipt images, PDFs, or a zip archive">
     </label>
-    <!-- Add to Queue always stays at the top of the file section -->
     <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
-      <button class="btn btn-primary btn-md" id="process-btn" disabled>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-        </svg>
-        Add to Queue
-      </button>
       <span class="status-note" id="file-count-note"></span>
       <span class="intake-note hidden" id="intake-row">
         <span><strong id="intake-count">0</strong> waiting in intake folder</span>
@@ -1915,7 +1908,6 @@ function toggleSection(bodyId, toggleId) {
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
 const fileList     = document.getElementById('file-list');
-const processBtn   = document.getElementById('process-btn');
 const stopBtn      = document.getElementById('stop-btn');
 const statusBadge  = document.getElementById('status-badge');
 const progressCard = document.getElementById('progress-card');
@@ -1984,6 +1976,7 @@ function addFiles(newFiles) {
   const existing = new Set(selectedFiles.map(f => f.name + f.size));
   valid.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
   renderFileList();
+  if (selectedFiles.length) _submitQueue();
 }
 
 function renderFileList() {
@@ -1997,8 +1990,6 @@ function renderFileList() {
       <button title="Remove" aria-label="Remove ${esc(f.name)}" onclick="removeFile(${i})">×</button>`;
     fileList.appendChild(item);
   });
-  processBtn.disabled = selectedFiles.length === 0;
-  // Selection summary so the action button's effect is predictable
   const note = document.getElementById('file-count-note');
   if (note) {
     if (selectedFiles.length === 0) {
@@ -2378,10 +2369,10 @@ function _updateApprovalGate(doneCards) {
 }
 
 // ── Add to Queue (file upload) ────────────────────────────────────────────────
-processBtn.addEventListener('click', async () => {
+async function _submitQueue() {
   if (!selectedFiles.length) return;
-  processBtn.disabled = true;
-  processBtn.innerHTML = '<span class="spinner"></span> Queuing…';
+  const note = document.getElementById('file-count-note');
+  if (note) note.textContent = 'Queuing…';
 
   const form = new FormData();
   selectedFiles.forEach(f => form.append('files', f, f.name));
@@ -2404,14 +2395,9 @@ processBtn.addEventListener('click', async () => {
     kanbanCard.classList.remove('hidden');
   } catch (err) {
     showToast(`Queue error: ${err.message}`, false);
-  } finally {
-    processBtn.disabled = selectedFiles.length === 0;
-    processBtn.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-      </svg> Add to Queue`;
+    renderFileList();
   }
-});
+}
 
 // ── Intake folder file count ──────────────────────────────────────────────────
 async function loadIntakeCount() {
