@@ -2710,6 +2710,13 @@ async def paddle_status():
                     "pip install 'paddlepaddle==3.0.*' 'paddleocr==3.0.*' 'paddlex==3.0.*' "
                     "(or rebuild the Docker image), then run this test again."
                 )
+            elif "setuptools" in init_err or "pkg_resources" in init_err:
+                fix = (
+                    "Python 3.12 dropped the bundled setuptools, but paddlepaddle/paddlex "
+                    "import pkg_resources/setuptools at runtime. Install it (it's now pinned "
+                    "in requirements.txt): pip install 'setuptools<81' — the <81 pin keeps "
+                    "pkg_resources, which setuptools 82 removed. Then rebuild the Docker image."
+                )
             else:
                 fix = (
                     "Common causes: missing model files (PaddleOCR downloads them on first "

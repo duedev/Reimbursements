@@ -17,13 +17,25 @@ RUN pip install --no-cache-dir -r requirements.txt
 # to matching versions, so no compat shim is needed here.  Best-effort: a
 # network-restricted build still succeeds, models then download on first use.
 # Run as appuser so the models land in its HOME and are found at runtime.
+#
+# This stays best-effort (the `|| true`) so a network-restricted build can't
+# fail here, but it now prints a loud warning when the engine can't even be
+# constructed (e.g. a missing setuptools / dependency-drift problem) rather than
+# swallowing it silently — that masked class of failure is why the runtime
+# fallback kept breaking with no signal at build time.
 USER appuser
 RUN python - <<'PYEOF' || true
-from paddleocr import PaddleOCR
 try:
-    PaddleOCR(use_textline_orientation=True, lang='en')
-except TypeError:  # PaddleOCR 2.x
-    PaddleOCR(use_angle_cls=True, lang='en')
+    from paddleocr import PaddleOCR
+    try:
+        PaddleOCR(use_textline_orientation=True, lang='en')
+    except TypeError:  # PaddleOCR 2.x
+        PaddleOCR(use_angle_cls=True, lang='en')
+    print('[build] PaddleOCR models pre-downloaded')
+except Exception as exc:  # noqa: BLE001 - surface, don't fail the build
+    print(f'[build] WARNING: PaddleOCR pre-init failed ({type(exc).__name__}: {exc}). '
+          'The image still builds; if this is an import/dependency error (not a '
+          'network/model-download error) the runtime OCR fallback will be unavailable.')
 PYEOF
 USER root
 
