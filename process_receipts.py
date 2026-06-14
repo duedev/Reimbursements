@@ -50,7 +50,14 @@ GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       "")
 # confirm which build is actually running (handy after a `docker compose up`
 # that may have reused a stale image). Override at build time with BUILD_TAG.
 APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
-MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "0"))  # 0 = no cap (ThreadPoolExecutor default)
+# Concurrency cap for the batch worker. The local LM Studio model is the
+# bottleneck and serves one model instance: flooding it with the ThreadPoolExecutor
+# default (~min(32, cpu+4)) does not speed anything up and routinely pushes
+# per-request latency past LLM_TIMEOUT, so receipts silently fall back to the
+# lower-accuracy offline parser. A small fixed pool overlaps one receipt's OCR
+# (CPU) with another's LLM call without VRAM thrash. Raise only when LM Studio is
+# configured for true parallelism with VRAM headroom. 0 = no cap (legacy default).
+MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "3"))
 # Per-request timeout (seconds) for the LM Studio / OpenAI client. Without it a
 # hung model request blocks a worker thread forever; bounded retries cover
 # transient drops. Override via LLM_TIMEOUT.
@@ -811,19 +818,109 @@ def _rapidocr_lines(out) -> list[str]:
     return lines
 
 
+def _as_xy_pairs(box) -> Optional[list]:
+    """Coerce a RapidOCR polygon into a plain list of ``[x, y]`` float pairs.
+
+    Accepts the nested 4-point form (``[[x, y], …]``, possibly numpy rows) or a
+    flat ``[x1, y1, x2, y2, …]`` sequence. Returns None when the shape isn't
+    usable so callers can simply skip markup for that line."""
+    if box is None:
+        return None
+    try:
+        pts = list(box)
+        if not pts:
+            return None
+        first = pts[0]
+        # Flat [x1, y1, x2, y2, …] (scalars, no per-point length) → pair it up.
+        if not isinstance(first, (list, tuple)) and not hasattr(first, "__len__"):
+            pts = [pts[i:i + 2] for i in range(0, len(pts) - 1, 2)]
+        out = []
+        for p in pts:
+            xy = list(p)
+            out.append([float(xy[0]), float(xy[1])])
+        return out or None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _rapidocr_line_boxes(out) -> list:
+    """Like :func:`_rapidocr_lines` but keeps each detected line's geometry.
+
+    Returns ``[{"text": str, "box": [[x, y], …] | None, "score": float}, …]`` in
+    the engine's reading order. The bounding box (RapidOCR's 4-point polygon) and
+    per-line confidence are exactly what ``_rapidocr_lines`` discards; preserving
+    them lets the UI mark up where each field was read — with no LLM involved.
+
+    Degrades gracefully: the newer unified ``rapidocr`` package may expose only
+    ``.txts`` (no boxes), in which case ``box`` is None and the overlay is simply
+    skipped while the text still flows to distillation."""
+    txts = getattr(out, "txts", None)
+    if txts is not None:  # newer unified rapidocr package
+        boxes  = getattr(out, "boxes", None)
+        scores = getattr(out, "scores", None)
+        rows: list = []
+        for i, t in enumerate(txts):
+            if not t:
+                continue
+            box = _as_xy_pairs(boxes[i]) if boxes is not None and i < len(boxes) else None
+            score = 0.0
+            if scores is not None and i < len(scores):
+                try:
+                    score = float(scores[i])
+                except (TypeError, ValueError):
+                    score = 0.0
+            rows.append({"text": str(t), "box": box, "score": score})
+        return rows
+    result = out[0] if isinstance(out, tuple) and out else out  # (result, elapse)
+    rows = []
+    for entry in result or []:
+        try:
+            box, text, score = entry[0], entry[1], entry[2]
+        except (IndexError, TypeError):
+            continue
+        if not text:
+            continue
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            score = 0.0
+        rows.append({"text": str(text), "box": _as_xy_pairs(box), "score": score})
+    return rows
+
+
+def _extract_local_ocr_lines(image_path: Path) -> tuple:
+    """Run the local OCR engine once and return per-line boxes plus the image's
+    pixel size: ``(rows, width, height)``.
+
+    The boxes are in the coordinate space of ``image_path`` as the engine read it
+    (after the in-place grayscale/autocrop passes, before the deferred export
+    compression), so normalizing them by ``(width, height)`` yields resolution-
+    independent positions that still map onto the image shown in the UI. Returns
+    ``([], 0, 0)`` when the engine is unavailable or errors out."""
+    engine = _get_ocr_engine()
+    if engine is None:
+        return [], 0, 0
+    try:
+        out = engine(str(image_path))
+        rows = _rapidocr_line_boxes(out)
+    except Exception as exc:
+        print(f"[ocr] local OCR failed for {image_path.name}: {exc}")
+        return [], 0, 0
+    w = h = 0
+    try:
+        with Image.open(image_path) as im:
+            w, h = im.size
+    except Exception:
+        pass
+    return rows, w, h
+
+
 def _extract_local_ocr(image_path: Path) -> Optional[str]:
     """Run the local OCR engine (RapidOCR) on an image, returning recognized
     lines joined by newlines (None when the engine is unavailable or finds nothing)."""
-    engine = _get_ocr_engine()
-    if engine is None:
-        return None
-    try:
-        out = engine(str(image_path))
-        text = "\n".join(_rapidocr_lines(out)).strip()
-        return text or None
-    except Exception as exc:
-        print(f"[ocr] local OCR failed for {image_path.name}: {exc}")
-        return None
+    rows, _, _ = _extract_local_ocr_lines(image_path)
+    text = "\n".join(r["text"] for r in rows).strip()
+    return text or None
 
 
 def _combine_ocr_sources(
@@ -1163,6 +1260,12 @@ def _extract_receipt_with_status(
     # reads the file directly) and the vision model (via encode_image) get the
     # cleaner image. In-place, suffix preserved → no downstream path changes.
     grayscale_image_file(image_path)
+    # Autocrop the uniform photo border next, still BEFORE OCR — this is the
+    # canonical greyscale → autocrop → OCR order (autocrop_receipt is conservative:
+    # it no-ops unless it can trim a clear border). OCR then reads the cropped
+    # image, which is also the one shown in the UI, so the field-markup boxes stay
+    # pixel-aligned with the preview. Gated by AUTOCROP_ENABLED.
+    autocrop_image_file(image_path)
 
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
@@ -1229,9 +1332,18 @@ def _extract_receipt_with_status(
 
     try:
         # PRIMARY: built-in local RapidOCR text extraction — fast, runs offline.
+        # Capture the per-line boxes too (same single OCR pass) so the final
+        # fields can later be marked up on the image without any LLM.
         _cb("ocr", model="rapidocr")
         t_ocr = time.perf_counter()
-        local_text = _extract_local_ocr(image_path)
+        local_rows, ocr_img_w, ocr_img_h = _extract_local_ocr_lines(image_path)
+        local_text = "\n".join(r["text"] for r in local_rows).strip() or None
+        # Fall back to the plain text reader only when the box-aware pass never ran
+        # the engine (img size 0×0 → engine unavailable, e.g. RapidOCR not installed
+        # or stubbed in tests). A real image that simply held no text returns a
+        # non-zero size, so this never double-runs the engine in production.
+        if local_text is None and ocr_img_w == 0 and ocr_img_h == 0:
+            local_text = _extract_local_ocr(image_path)
         ocr_seconds = time.perf_counter() - t_ocr
         if local_text:
             _append_step(step_log, "local_ocr", "OCR (built-in)",
@@ -1270,6 +1382,12 @@ def _extract_receipt_with_status(
             # parser, which flags the receipt for manual review.
             data = _distill_text(combined_text, ocr_seconds, engine=engine)
             if data is not None:
+                # Locate vendor/date/amount on the image from the RapidOCR boxes
+                # (after reconcile_amount, so the amount box follows any
+                # correction). Rules-based, cheap, no extra OCR or LLM call.
+                field_boxes = locate_field_boxes(local_rows, ocr_img_w, ocr_img_h, data)
+                if field_boxes:
+                    data["_field_boxes"] = field_boxes
                 return data
             print(f"[extract] OCR+distill low-confidence for {image_path.name}, "
                   "trying direct vision")
@@ -1448,6 +1566,125 @@ def audit_amount(data: Optional[dict], raw_text: str) -> Optional[str]:
     closest = min(candidates, key=lambda c: abs(c - amount))
     return (f"Amount ${amount:.2f} not found in receipt text "
             f"(closest printed total: ${closest:.2f}) — verify manually")
+
+
+# ── On-image field localization (rules-based, no LLM) ──────────────────────────
+# Map the final vendor / date / amount values back to the OCR line that produced
+# each, so the UI can draw a highlight box on the receipt image showing exactly
+# where the app read the field. This reuses the same matchers the pipeline already
+# trusts — no model call, no extra OCR pass — and intentionally OMITS any field it
+# cannot confidently locate so the UI can flag it instead of drawing a wrong box.
+
+def _poly_to_norm_rect(box, img_w: int, img_h: int) -> Optional[list]:
+    """Axis-aligned ``[x, y, w, h]`` normalized to 0..1 from a 4-point polygon.
+
+    Normalizing by the OCR image size makes the box resolution-independent, so it
+    survives the deferred export compression/downscale and still lands correctly
+    on whatever size the image is rendered at in the browser."""
+    if not box or img_w <= 0 or img_h <= 0:
+        return None
+    try:
+        xs = [float(p[0]) for p in box]
+        ys = [float(p[1]) for p in box]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not xs or not ys:
+        return None
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    nx = max(0.0, min(1.0, x0 / img_w))
+    ny = max(0.0, min(1.0, y0 / img_h))
+    nw = max(0.0, min(1.0 - nx, (x1 - x0) / img_w))
+    nh = max(0.0, min(1.0 - ny, (y1 - y0) / img_h))
+    if nw <= 0 or nh <= 0:
+        return None
+    return [round(nx, 5), round(ny, 5), round(nw, 5), round(nh, 5)]
+
+
+def locate_field_boxes(line_boxes, img_w: int, img_h: int,
+                       data: Optional[dict]) -> dict:
+    """Locate the vendor/date/amount values on the receipt image, rules-based.
+
+    Given RapidOCR's per-line boxes (from :func:`_extract_local_ocr_lines`) and
+    the final extracted ``data``, return ``{"vendor": [x,y,w,h], "date": …,
+    "amount": …}`` with each box normalized to 0..1. Fields that can't be matched
+    to a line are omitted entirely (the UI shows a "location not detected" note).
+
+    Matching reuses the pipeline's own helpers — the money regex for the amount,
+    the date regex for the date, vendor-name containment for the vendor — so the
+    markup agrees with how the fields were grounded (e.g. the amount box follows a
+    ``reconcile_amount`` correction onto the printed grand-total line)."""
+    out: dict = {}
+    if not data or not line_boxes or img_w <= 0 or img_h <= 0:
+        return out
+    rows = [r for r in line_boxes if r.get("box")]  # only lines with geometry
+    if not rows:
+        return out
+
+    # ── Amount: the line whose printed money value equals the FINAL amount ──────
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount > 0:
+        candidates = []  # (priority, row) — lower priority number wins
+        for r in rows:
+            text = r["text"]
+            if not any(abs(amount - v) < 0.005 for v in _money_values(text)):
+                continue
+            if _GRAND_TOTAL_RE.search(text):
+                prio = 0                       # GRAND TOTAL / TOTAL DUE …
+            elif _PLAIN_TOTAL_RE.search(text) and not _NON_GRAND_LINE_RE.search(text):
+                prio = 1                       # a plain TOTAL line
+            elif _NON_GRAND_LINE_RE.search(text):
+                prio = 3                       # subtotal/tax/tender share the value
+            else:
+                prio = 2                       # a bare number that happens to match
+            candidates.append((prio, r))
+        if candidates:
+            candidates.sort(key=lambda c: c[0])
+            rect = _poly_to_norm_rect(candidates[0][1]["box"], img_w, img_h)
+            if rect:
+                out["amount"] = rect
+
+    # ── Date: the first line that parses to the same ISO date ───────────────────
+    want_date = (data.get("date") or "").strip()
+    if want_date:
+        for r in rows:
+            if _find_date_in_text(r["text"]) == want_date:
+                rect = _poly_to_norm_rect(r["box"], img_w, img_h)
+                if rect:
+                    out["date"] = rect
+                break
+
+    # ── Vendor: the line that best contains the vendor name ─────────────────────
+    vendor = (data.get("vendor") or "").strip().lower()
+    if vendor:
+        best = None  # (score, row)
+        for idx, r in enumerate(rows):
+            tlow = r["text"].strip().lower()
+            if not tlow:
+                continue
+            if tlow == vendor:
+                score = 3.0
+            elif vendor in tlow or tlow in vendor:
+                score = 2.0
+            else:
+                vtok = set(re.findall(r"[a-z0-9]+", vendor))
+                ttok = set(re.findall(r"[a-z0-9]+", tlow))
+                shared = vtok & ttok
+                if not shared:
+                    continue
+                score = 1.0 + len(shared) / max(len(vtok), 1)
+            score -= idx * 0.01  # earlier lines win ties — the name sits up top
+            if best is None or score > best[0]:
+                best = (score, r)
+        if best is not None:
+            rect = _poly_to_norm_rect(best[1]["box"], img_w, img_h)
+            if rect:
+                out["vendor"] = rect
+
+    return out
 
 
 # ── Category classification ────────────────────────────────────────────────────

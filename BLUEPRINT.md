@@ -74,7 +74,10 @@ The user can keep adding receipts at any time; processing is continuous.
   area on arrival, a "processing" area while in flight (so failed/in-progress
   images have a visible home), and a "completed receipts" area once renamed.
 - The queue is **persistent and drains continuously** by a background worker;
-  multiple receipts process in parallel (a configurable concurrency limit).
+  multiple receipts process in parallel under a **small, configurable concurrency
+  limit**. The local model is the bottleneck, so a handful at a time (default a few)
+  is both faster and more reliable than flooding it — an oversized pool only causes
+  request timeouts that degrade to the lower-accuracy offline parser.
 
 ---
 
@@ -82,9 +85,13 @@ The user can keep adding receipts at any time; processing is continuous.
 
 Order matters. The canonical order is:
 
-1. **Autocrop** — trim uniform background borders so the receipt fills the frame.
-   Conservative: if the detected crop would discard too much (or almost nothing),
-   leave the image untouched. Keep the image at **full resolution** here.
+1. **Greyscale then autocrop** — flatten to high-contrast greyscale, then trim
+   uniform background borders so the receipt fills the frame. Both run in place and
+   **before OCR** (the canonical greyscale→autocrop→OCR order), so the OCR engine,
+   the vision model, the on-image markup boxes, and the stored preview all see the
+   same cleaned-up image. Autocrop is conservative: if the detected crop would
+   discard too much (or almost nothing), leave the image untouched. Keep the image
+   at **full resolution** here.
 2. **Extraction** — read the receipt with a built-in OCR engine plus the local
    model. The canonical flow:
    - **OCR (built-in, primary):** a local on-device OCR engine transcribes the
@@ -108,6 +115,14 @@ Order matters. The canonical order is:
      distillation/vision pass uses reasoning by default (a live UI toggle), since
      reconciling fields and catching anomalies is where step-by-step reasoning
      helps.
+   - **On-image field markup (no model):** the built-in OCR engine reports the
+     position of every line it reads. The app maps the final vendor, date and amount
+     back to the exact line each value came from — purely rule-based, reusing the
+     same money/date/vendor matchers used elsewhere — and records a normalized box.
+     The review screen and the full-screen image view then **highlight on the receipt
+     image precisely where each field was taken**, so a human can verify at a glance.
+     A field that can't be confidently located is left un-boxed and flagged as such
+     rather than mis-highlighted. Works with no model running.
 3. **Classify** — assign a category (see §7).
 4. **Validate** — confidence scoring, amount verification, threshold/date flags.
 5. **Rename & file** — move to the completed area under a sortable name.

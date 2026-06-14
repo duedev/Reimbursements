@@ -56,8 +56,13 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 Order matters (see `BLUEPRINT.md` §5). Current flow:
 
-1. **Grayscale pre-pass** then **autocrop** (autocrop is applied later in the batch path; compression is deferred to export time).
-2. **OCR (built-in, primary):** `_extract_local_ocr` (RapidOCR), always runs.
+1. **Grayscale pre-pass** then **autocrop** — both in-place and **BEFORE OCR**
+   (canonical greyscale→autocrop→OCR order, now applied in the web-worker path too,
+   not just the CLI batch path). Compression is deferred to export time.
+2. **OCR (built-in, primary):** `_extract_local_ocr_lines` (RapidOCR), always runs —
+   returns per-line **boxes + dims** (text via `_extract_local_ocr`, kept as a fallback
+   for the engine-unavailable/test path). `_rapidocr_line_boxes` preserves the geometry
+   `_rapidocr_lines` discards.
 3. **OCR (LLM, optional):** when `_active_ocr_model` is set, `_extract_raw_ocr`
    also transcribes via the vision LLM. `_combine_ocr_sources` then merges both
    transcriptions (labelled A/B) so the distillation model **cross-references**
@@ -66,7 +71,12 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
    grounds the amount in the printed total.
 5. **Vision rescue:** `_extract_with_model` only if OCR text is missing/low-confidence.
 6. **Offline fallback:** `_local_distill_from_ocr` regex parser when the LLM is down.
-7. Back in `server.py` worker: `classify_category`, `audit_amount`, confidence,
+7. **Field markup (rules-based, no LLM):** after a successful distill,
+   `locate_field_boxes` maps the final vendor/date/amount back to the RapidOCR line
+   that produced each (reusing the money/date/vendor matchers), stored normalized
+   0..1 on `data["_field_boxes"]`. The amount box is computed **after**
+   `reconcile_amount`, so it follows any correction onto the printed grand-total line.
+8. Back in `server.py` worker: `classify_category`, `audit_amount`, confidence,
    review/approval defaults, job-field defaults, rename, dedup.
 
 **Reasoning is per stage** (`_thinking_body(budget, enabled=...)`):
@@ -140,9 +150,15 @@ user input, never the placeholder.
   directly. Watch for duplicate element IDs (there's a UI-layout test).
 - Receipt record dicts use `_`-prefixed internal fields (`_file`, `_new_filename`,
   `_category`, `_approved`, `_review_required`, `_confidence`, `_ocr_engine`,
-  `_raw_ocr`, `_steps`, `_proc_seconds`, …). User-facing fields are unprefixed.
+  `_raw_ocr`, `_steps`, `_proc_seconds`, `_field_boxes`, …). User-facing fields are
+  unprefixed. `_field_boxes` = `{vendor|date|amount: [x,y,w,h]}` normalized 0..1 to
+  the OCR image; must be added to `_safe_receipt_data`'s whitelist to reach the UI.
 - Compression is **deferred to export time** (`generate_spreadsheet`), never per
   receipt — keep OCR reading full-res images.
+- **Batch concurrency:** `MAX_PARALLEL_REQUESTS` (default **3**, env-overridable)
+  caps the worker's `ThreadPoolExecutor`. The local LM Studio model is the
+  bottleneck — an unbounded pool times out and silently falls back to the offline
+  parser. Raise only with a parallel-capable LM Studio + VRAM headroom.
 - Don't send receipt content to any cloud service. Only outbound call is the local
   model endpoint.
 - Module-level model globals persist across tests; monkeypatch them, don't set
@@ -152,6 +168,17 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-14 (later):** **On-image field markup** — RapidOCR per-line boxes are
+  now preserved (`_rapidocr_line_boxes`, `_extract_local_ocr_lines`) and the final
+  vendor/date/amount are mapped back to the line that produced them by a rules-based,
+  **LLM-free** `locate_field_boxes` (normalized `_field_boxes`, whitelisted in
+  `_safe_receipt_data`). The review modal and full-screen lightbox draw colour-coded
+  overlay boxes (`drawFieldBoxes`, `#mr-box-overlay`/`#lb-box-overlay`) with a legend
+  + "Show field markers" toggle; fields that can't be located show a "location not
+  detected" note. **Flow/concurrency tuning:** `MAX_PARALLEL_REQUESTS` default 0→**3**
+  (avoids LLM timeouts → offline-parser fallback); autocrop now runs **before OCR in
+  the web-worker path** (canonical order; keeps boxes pixel-aligned with the preview).
+  Added `tests/test_field_markup.py` + box tests in `tests/test_local_ocr.py`.
 - **2026-06-14:** Per-stage reasoning (OCR always off, distillation default on);
   dual built-in + LLM OCR cross-referenced by the distill model
   (`_combine_ocr_sources`, `_ocr_engine == "rapidocr+llm"`); approve-and-next
