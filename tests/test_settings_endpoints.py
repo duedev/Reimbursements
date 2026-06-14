@@ -22,8 +22,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_run_stall_checker", lambda: None)
     monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
     # Save runtime globals so endpoint mutations don't leak into other tests
-    saved = (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.LOCAL_OCR_ENABLED,
-             pr.JPEG_QUALITY, pr._thinking_enabled)
+    saved = (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
+             pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled)
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
@@ -32,18 +32,21 @@ def client(tmp_path, monkeypatch):
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
-    (pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED, pr.LOCAL_OCR_ENABLED,
-     pr.JPEG_QUALITY, pr._thinking_enabled) = saved
+    (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
+     pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled) = saved
 
 
 def test_processing_round_trip(client):
     r = client.post("/settings/processing",
-                    json={"autocrop": False, "local_ocr": False, "jpeg_quality": 55})
+                    json={"autorotate": False, "autocrop": False,
+                          "local_ocr": False, "jpeg_quality": 55})
     assert r.status_code == 200 and r.json()["ok"]
+    assert pr.AUTOROTATE_ENABLED is False
     assert pr.AUTOCROP_ENABLED is False
     assert pr.LOCAL_OCR_ENABLED is False
     assert pr.JPEG_QUALITY == 55
-    assert client.get("/settings/processing").json()["jpeg_quality"] == 55
+    g = client.get("/settings/processing").json()
+    assert g["jpeg_quality"] == 55 and g["autorotate"] is False
 
 
 def test_processing_clamps_quality(client):

@@ -56,13 +56,18 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 Order matters (see `BLUEPRINT.md` §5). Current flow:
 
-1. **Grayscale pre-pass** then **autocrop** — both in-place and **BEFORE OCR**
-   (canonical greyscale→autocrop→OCR order, now applied in the web-worker path too,
-   not just the CLI batch path). Compression is deferred to export time.
-2. **OCR (built-in, primary):** `_extract_local_ocr_lines` (RapidOCR), always runs —
-   returns per-line **boxes + dims** (text via `_extract_local_ocr`, kept as a fallback
-   for the engine-unavailable/test path). `_rapidocr_line_boxes` preserves the geometry
-   `_rapidocr_lines` discards.
+1. **Auto-rotate** (`autorotate_image_file`, EXIF → upright pixels) then **grayscale**
+   then **autocrop** — all in-place and **BEFORE OCR** (canonical
+   autorotate→greyscale→autocrop→OCR order, applied in the web-worker path too, not
+   just the CLI batch path). A deeper **OCR-guided** rotation check runs inside the OCR
+   step (below). Compression is deferred to export time.
+2. **OCR (built-in, primary):** `_ocr_lines_best_orientation` → `_extract_local_ocr_lines`
+   (RapidOCR), always runs — returns per-line **boxes + dims** (text via
+   `_extract_local_ocr`, kept as a fallback for the engine-unavailable/test path).
+   `_rapidocr_line_boxes` preserves the geometry `_rapidocr_lines` discards. On a weak
+   upright read, `_ocr_lines_best_orientation` tries the three 90° rotations
+   (`_ocr_orientation_score`) and rewrites the file to whichever reads best (logged as
+   an `autorotate` step) — rules-based, no LLM.
 3. **OCR (LLM, optional):** when `_active_ocr_model` is set, `_extract_raw_ocr`
    also transcribes via the vision LLM. `_combine_ocr_sources` then merges both
    transcriptions (labelled A/B) so the distillation model **cross-references**
@@ -168,6 +173,15 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-14 (autorotate):** **Auto-rotate to upright** (rules-based, no model) —
+  `autorotate_image_file` bakes a photo's EXIF Orientation into the pixels before OCR
+  (also fixes OCR-vs-browser orientation disagreement that would misalign the markup
+  boxes); when the upright OCR read is weak, `_ocr_lines_best_orientation` tries the
+  three 90° rotations and rewrites the file to whichever RapidOCR reads best
+  (`_ocr_orientation_score`, logged as an `autorotate` step). Settings: `autorotate`
+  toggle (`AUTOROTATE_ENABLED`; also `ORIENT_BY_OCR`/`ORIENT_MIN_SCORE`/
+  `ORIENT_IMPROVE_RATIO` env knobs) wired through `/settings/processing` + the Image
+  Processing card. Added `tests/test_autorotate.py`.
 - **2026-06-14 (later):** **On-image field markup** — RapidOCR per-line boxes are
   now preserved (`_rapidocr_line_boxes`, `_extract_local_ocr_lines`) and the final
   vendor/date/amount are mapped back to the line that produced them by a rules-based,
