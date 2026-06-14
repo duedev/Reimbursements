@@ -161,6 +161,7 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
 def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
+        "autorotate":   _pr.AUTOROTATE_ENABLED,
         "autocrop":     _pr.AUTOCROP_ENABLED,
         "grayscale":    _pr.GRAYSCALE_ENABLED,
         "compress":     _pr.COMPRESS_ENABLED,
@@ -175,6 +176,8 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     if "thinking_enabled" in cfg:
         _pr._thinking_enabled = bool(cfg["thinking_enabled"])
     proc = cfg.get("processing") or {}
+    if "autorotate" in proc:
+        _pr.AUTOROTATE_ENABLED = bool(proc["autorotate"])
     if "autocrop" in proc:
         _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
     if "grayscale" in proc:
@@ -2437,6 +2440,7 @@ async def get_version():
 # ── Image-processing settings ──────────────────────────────────────────────────
 
 class ProcessingSettingsRequest(BaseModel):
+    autorotate:   bool | None = None
     autocrop:     bool | None = None
     grayscale:    bool | None = None
     compress:     bool | None = None
@@ -2454,6 +2458,7 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
     try:
         cfg = _load_config()
         proc = cfg.get("processing") or {}
+        if body.autorotate is not None: proc["autorotate"] = bool(body.autorotate)
         if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
         if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)

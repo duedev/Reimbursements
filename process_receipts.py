@@ -371,6 +371,19 @@ STORE_MAX_PX     = int(os.getenv("STORE_MAX_PX", "2000"))  # cap the longest sid
 # the web preview) finds the same converted file — no extra path to track.
 GRAYSCALE_ENABLED = os.getenv("GRAYSCALE_ENABLED", "1").lower() not in ("0", "false", "no")
 
+# Auto-rotate — get the receipt's text facing the right way up BEFORE OCR. Two
+# tiers, both rules-based (no model):
+#   • EXIF: bake a phone photo's stored Orientation tag into the pixels, so the OCR
+#     engine (which reads raw pixels and ignores EXIF) and the browser agree on
+#     which way is up — also keeps the field-markup boxes aligned with the preview.
+#   • OCR-guided: when the upright read is weak, try the three 90° rotations and keep
+#     whichever RapidOCR reads best — catches scans/photos with no orientation tag,
+#     including upside-down (180°) shots. Bounded: only fires on a weak upright read.
+AUTOROTATE_ENABLED   = os.getenv("AUTOROTATE_ENABLED", "1").lower() not in ("0", "false", "no")
+ORIENT_BY_OCR        = os.getenv("ORIENT_BY_OCR", "1").lower() not in ("0", "false", "no")
+ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright read this strong → skip the search
+ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
+
 
 def autocrop_receipt(img: Image.Image) -> Image.Image:
     """Trim uniform background borders around a receipt photo.
@@ -462,6 +475,51 @@ def grayscale_image_file(path: Path) -> bool:
             gray.save(path, format=fmt)
         else:
             gray.save(path)
+        return True
+    except Exception:
+        return False
+
+
+def _save_image_inplace(img: "Image.Image", path: Path, fmt: str = "") -> None:
+    """Save an image over ``path``, honoring JPEG_QUALITY and keeping the original
+    format where possible (mirrors the save behavior of grayscale/autocrop)."""
+    if path.suffix.lower() in (".jpg", ".jpeg"):
+        img.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    elif fmt:
+        img.save(path, format=fmt)
+    else:
+        img.save(path)
+
+
+def _exif_orientation(img: "Image.Image") -> int:
+    """The EXIF Orientation tag (1 = normal) for an open image, 1 on absence/error."""
+    try:
+        return int(img.getexif().get(0x0112, 1) or 1)
+    except Exception:
+        return 1
+
+
+def autorotate_image_file(path: Path) -> bool:
+    """Bake the photo's EXIF orientation into the pixels, in place, BEFORE OCR.
+
+    Phone cameras store a sideways/upside-down shot upright-on-screen via an EXIF
+    Orientation tag. The OCR engine reads raw pixels and ignores that tag, so it
+    would transcribe rotated text while the browser shows the receipt upright —
+    hurting OCR and knocking the field-markup boxes out of alignment. Applying the
+    rotation to the pixels (and dropping the tag) makes the stored file, the OCR
+    engine, and the browser agree on which way is up. No-op when the orientation is
+    already normal, when disabled, or on any error (best-effort)."""
+    if not AUTOROTATE_ENABLED:
+        return False
+    try:
+        with Image.open(path) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            if _exif_orientation(raw) in (0, 1):
+                return False                       # already upright — don't recompress
+            fmt = (raw.format or "").upper()
+            fixed = ImageOps.exif_transpose(raw)   # applies the rotation and strips the tag
+        _save_image_inplace(fixed, path, fmt)
         return True
     except Exception:
         return False
@@ -923,6 +981,92 @@ def _extract_local_ocr(image_path: Path) -> Optional[str]:
     return text or None
 
 
+def _rotate_ops() -> list:
+    """The three 90° transpose ops with labels, resolved across Pillow versions
+    (``Image.Transpose.ROTATE_90`` on new Pillow, ``Image.ROTATE_90`` on old)."""
+    base = getattr(Image, "Transpose", Image)
+    ops = []
+    for label, name in (("90°", "ROTATE_90"), ("180°", "ROTATE_180"), ("270°", "ROTATE_270")):
+        op = getattr(base, name, None)
+        if op is not None:
+            ops.append((op, label))
+    return ops
+
+
+_ROTATE_OPS = _rotate_ops()
+
+
+def _ocr_orientation_score(rows: list) -> float:
+    """How well a page reads when OCR'd: recognized alnum chars weighted by mean
+    line confidence. Upright receipts yield far more clear text than rotated ones,
+    so this reliably ranks the four orientations — no model needed."""
+    if not rows:
+        return 0.0
+    chars = 0
+    confs: list = []
+    for r in rows:
+        chars += sum(c.isalnum() for c in (r.get("text") or ""))
+        s = r.get("score")
+        if s is not None:
+            try:
+                confs.append(float(s))
+            except (TypeError, ValueError):
+                pass
+    mean_conf = (sum(confs) / len(confs)) if confs else 0.5
+    return chars * (0.5 + 0.5 * mean_conf)
+
+
+def _ocr_lines_best_orientation(image_path: Path) -> tuple:
+    """Local OCR, but if the page reads poorly try the three 90° rotations and keep
+    whichever RapidOCR reads best — rewriting the file in place at the winning angle
+    so the stored image, the OCR boxes, and the UI preview all share one orientation.
+
+    Returns ``(rows, w, h, note)`` where ``note`` is a human string when a rotation
+    was applied (for the step log), else ``""``. Bounded: the rotation search only
+    runs on a weak upright read, so well-oriented receipts pay nothing extra."""
+    rows, w, h = _extract_local_ocr_lines(image_path)
+    if not (AUTOROTATE_ENABLED and ORIENT_BY_OCR and w > 0 and h > 0):
+        return rows, w, h, ""
+    base_score = _ocr_orientation_score(rows)
+    if base_score >= ORIENT_MIN_SCORE:
+        return rows, w, h, ""
+
+    best = (base_score, None, rows, w, h)  # (score, op, rows, w, h)
+    for op, label in _ROTATE_OPS:
+        tmp = None
+        try:
+            with Image.open(image_path) as im:
+                fmt = (im.format or "").upper()
+                cand = im.transpose(op)
+            tmp = image_path.with_name(f".orient_{label}_{image_path.name}")
+            _save_image_inplace(cand, tmp, fmt)
+            crows, cw, ch = _extract_local_ocr_lines(tmp)
+        except Exception:
+            crows, cw, ch = [], 0, 0
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+        cscore = _ocr_orientation_score(crows)
+        if cscore > best[0] * ORIENT_IMPROVE_RATIO:
+            best = (cscore, op, crows, cw, ch)
+
+    _, op, brows, bw, bh = best
+    if op is None:
+        return rows, w, h, ""
+    try:
+        with Image.open(image_path) as im:
+            fmt = (im.format or "").upper()
+            fixed = im.transpose(op)
+        _save_image_inplace(fixed, image_path, fmt)
+    except Exception:
+        return rows, w, h, ""
+    label = next((lbl for o, lbl in _ROTATE_OPS if o == op), "")
+    return brows, bw, bh, f"auto-rotated {label} — OCR reads upright"
+
+
 def _combine_ocr_sources(
     local_text: Optional[str], llm_text: Optional[str]
 ) -> Optional[str]:
@@ -1255,6 +1399,11 @@ def _extract_receipt_with_status(
 
     Each branch is recorded in step_log (if provided) for the per-item process log.
     """
+    # Orientation pre-pass — bake the photo's EXIF rotation into the pixels FIRST,
+    # so every later step (OCR, the vision model, the markup boxes, the preview)
+    # sees text the right way up. A deeper OCR-guided rotation check runs inside the
+    # OCR step below, where the engine's read tells us which way is actually upright.
+    autorotate_image_file(image_path)
     # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
     # receipt to high-contrast grayscale in place so both the OCR engine (which
     # reads the file directly) and the vision model (via encode_image) get the
@@ -1336,7 +1485,7 @@ def _extract_receipt_with_status(
         # fields can later be marked up on the image without any LLM.
         _cb("ocr", model="rapidocr")
         t_ocr = time.perf_counter()
-        local_rows, ocr_img_w, ocr_img_h = _extract_local_ocr_lines(image_path)
+        local_rows, ocr_img_w, ocr_img_h, orient_note = _ocr_lines_best_orientation(image_path)
         local_text = "\n".join(r["text"] for r in local_rows).strip() or None
         # Fall back to the plain text reader only when the box-aware pass never ran
         # the engine (img size 0×0 → engine unavailable, e.g. RapidOCR not installed
@@ -1345,6 +1494,8 @@ def _extract_receipt_with_status(
         if local_text is None and ocr_img_w == 0 and ocr_img_h == 0:
             local_text = _extract_local_ocr(image_path)
         ocr_seconds = time.perf_counter() - t_ocr
+        if orient_note:
+            _append_step(step_log, "autorotate", "Auto-rotate", orient_note)
         if local_text:
             _append_step(step_log, "local_ocr", "OCR (built-in)",
                          "RapidOCR", ok=True, duration_s=ocr_seconds)

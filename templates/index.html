@@ -1652,6 +1652,10 @@
     </p>
     <div style="display:flex;flex-direction:column;gap:11px">
       <label class="check-label">
+        <input type="checkbox" id="proc-autorotate">
+        Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up before OCR (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
+      </label>
+      <label class="check-label">
         <input type="checkbox" id="proc-grayscale">
         Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
       </label>
@@ -3474,6 +3478,7 @@ document.getElementById('require-approval').addEventListener('change', async () 
 async function loadProcessingSettings() {
   try {
     const d = await (await fetch('/settings/processing')).json();
+    document.getElementById('proc-autorotate').checked = d.autorotate !== false;
     document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
     document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
@@ -3485,6 +3490,7 @@ async function loadProcessingSettings() {
 let _procSaveTimer = null;
 async function saveProcessingSettings() {
   const body = {
+    autorotate:   document.getElementById('proc-autorotate').checked,
     grayscale:    document.getElementById('proc-grayscale').checked,
     compress:     document.getElementById('proc-compress').checked,
     local_ocr:    document.getElementById('proc-localocr').checked,
@@ -3506,7 +3512,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-grayscale', 'proc-compress', 'proc-localocr'].forEach(id => {
+['proc-autorotate', 'proc-grayscale', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
 });
 
