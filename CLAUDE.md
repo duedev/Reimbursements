@@ -138,7 +138,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **264 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **311 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -173,6 +173,26 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-15 (edge-case hardening):** Defensive safeguards so one malformed
+  input can't crash the pipeline, poison totals, or leak a file —
+  `tests/test_edge_hardening.py` (+30 tests). Changes:
+  * **LLM JSON parsing** — extracted one hardened `_parse_llm_record` (replaces
+    the two duplicate `_parse` closures in `_unified_distillation` /
+    `_extract_with_model`). Now returns `None` for valid-but-non-object replies
+    (`null`, `[]`, a bare number/string) instead of raising on `result["flags"]`,
+    so the retry / offline fallback takes over cleanly.
+  * **Config load** — `_load_config` only returns `dict`; a hand-corrupted
+    config (`null` / list / number) no longer crashes every `.get()` caller.
+  * **Non-finite amounts** — `/results/update` rejects `inf`/`nan` (400) and
+    `/results/add-manual` coerces them to `0.0`; a `NaN` would otherwise serialise
+    to invalid JSON and break the SSE feed + persisted state the browser reads.
+  * **Symlink-safe previews** — `GET /receipt-image` now serves only real files
+    that resolve inside the working folders (`_serveable`), blocking a planted
+    symlink from turning the preview into an arbitrary-file read.
+  * **Bounded rename collisions** — `rename_receipt_image` caps the numbered-suffix
+    scan at 9999 then falls back to a random suffix (no more unbounded `while True`).
+  * **Upload guards** — `/queue/add` skips empty (0-byte) files and ones over
+    `MAX_UPLOAD_BYTES` (env, default 100 MiB) before staging them to disk.
 - **2026-06-14 (autorotate):** **Auto-rotate to upright** (rules-based, no model) —
   `autorotate_image_file` bakes a photo's EXIF Orientation into the pixels before OCR
   (also fixes OCR-vs-browser orientation disagreement that would misalign the markup

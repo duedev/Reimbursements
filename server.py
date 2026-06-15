@@ -8,6 +8,7 @@ import copy
 import csv
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -80,6 +81,11 @@ STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snap
 STALL_TIMEOUT_SECS  = int(os.getenv("STALL_TIMEOUT_SECS",  "180"))  # 3 min
 STALL_CHECK_INTERVAL = int(os.getenv("STALL_CHECK_INTERVAL", "60"))   # 1 min
 
+# Largest single uploaded file we'll stage to disk. A receipt photo/PDF is a few
+# MB at most; the generous default keeps the whole file out of memory only when
+# something pathological (or a mis-targeted upload) arrives. 0 disables the cap.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))  # 100 MiB
+
 # ── Global state ───────────────────────────────────────────────────────────────
 
 _work_queue: deque = deque()
@@ -126,7 +132,12 @@ _status_ts_lock = threading.Lock()
 def _load_config() -> dict:
     try:
         if CONFIG_FILE.exists():
-            return json.loads(CONFIG_FILE.read_text())
+            data = json.loads(CONFIG_FILE.read_text())
+            # A corrupt/hand-edited config that parses to a non-object (null,
+            # a list, a bare number) must not propagate — every caller does
+            # cfg.get(...), which would raise on anything but a dict.
+            if isinstance(data, dict):
+                return data
     except Exception:
         pass
     return {}
@@ -1011,9 +1022,21 @@ async def queue_add(
     # images/PDFs and discarding the archive itself (extract → import → clean up).
     staged: list[Path] = []
     for f in files:
-        dest = tmp_dir / Path(f.filename or "receipt").name   # basename only → no path traversal
+        name = Path(f.filename or "receipt").name   # basename only → no path traversal
+        size = getattr(f, "size", None)
+        if MAX_UPLOAD_BYTES and size is not None and size > MAX_UPLOAD_BYTES:
+            skipped.append(name)
+            _broadcast({"type": "log",
+                        "message": f"[upload] {name}: skipped — exceeds "
+                                   f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MiB upload limit"})
+            continue
+        payload = await f.read()
+        if not payload:
+            skipped.append(name)            # empty/zero-byte file — nothing to process
+            continue
+        dest = tmp_dir / name
         with open(dest, "wb") as fh:
-            fh.write(await f.read())
+            fh.write(payload)
         if dest.suffix.lower() in ARCHIVE_EXTENSIONS:
             members = extract_archive(dest, tmp_dir)
             dest.unlink(missing_ok=True)
@@ -1316,10 +1339,26 @@ async def get_receipt_image(filename: str = ""):
         search += [d for d in PROCESSING_FOLDER.iterdir() if d.is_dir()]
     except Exception:
         pass
+
+    _roots = [IMAGES_FOLDER.resolve(), PROCESSING_FOLDER.resolve(), INTAKE_FOLDER.resolve()]
+
+    def _serveable(p: Path) -> bool:
+        # Must be a real file (never a symlink) that resolves to somewhere
+        # inside our working folders.  Blocks a planted symlink — e.g.
+        # ``photo.jpg`` → ``/etc/passwd`` — from turning this preview endpoint
+        # into an arbitrary-file read.
+        try:
+            if p.is_symlink() or not p.is_file():
+                return False
+            rp = p.resolve()
+            return any(rp == root or root in rp.parents for root in _roots)
+        except OSError:
+            return False
+
     # Exact name match
     for folder in search:
         p = folder / filename
-        if p.exists() and p.is_file():
+        if _serveable(p):
             mt = ext_map.get(p.suffix.lower(), "image/jpeg")
             return FileResponse(str(p), media_type=mt)
     # Fuzzy extension match — handles .png → .jpg renames after compression
@@ -1327,7 +1366,7 @@ async def get_receipt_image(filename: str = ""):
     for folder in search:
         for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
             p = folder / (stem + ext)
-            if p.exists() and p.is_file():
+            if _serveable(p):
                 mt = ext_map.get(ext, "image/jpeg")
                 return FileResponse(str(p), media_type=mt)
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -1478,6 +1517,10 @@ async def add_manual_result(body: ManualReceiptRequest):
     try:
         amt = float(body.amount) if body.amount.strip() else 0.0
     except ValueError:
+        amt = 0.0
+    # Guard against "inf"/"nan", which parse as floats but serialise to invalid
+    # JSON and corrupt every total/average downstream.
+    if not math.isfinite(amt):
         amt = 0.0
 
     data: dict = {
@@ -1868,6 +1911,12 @@ async def update_result(body: UpdateResultRequest):
             value = round(float(str(value).replace("$", "").replace(",", "")), 2)
         except ValueError:
             return JSONResponse({"ok": False, "error": "Amount must be a number"},
+                                status_code=400)
+        # "inf"/"nan" parse fine as floats but would poison every downstream
+        # total/average and produce invalid JSON (NaN) that breaks the SSE feed
+        # and the persisted state file the browser reads back.
+        if not math.isfinite(value):
+            return JSONResponse({"ok": False, "error": "Amount must be a finite number"},
                                 status_code=400)
     elif field == "category":
         if value not in ("fuel", "mats", "misc"):

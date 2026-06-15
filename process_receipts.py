@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 import concurrent.futures
 import threading
 import urllib.request
@@ -755,6 +756,31 @@ def _strip_json(raw: str) -> str:
     return match.group(0) if match else raw
 
 
+def _parse_llm_record(raw: str) -> Optional[dict]:
+    """Parse a model's JSON reply into a record dict, or None if it isn't one.
+
+    Hardened against two distinct LLM failure modes:
+      * text that isn't JSON at all (``JSONDecodeError``), and
+      * text that is *valid* JSON but not an object — e.g. a bare ``null``,
+        ``[]``, ``"oops"`` or a number.
+
+    Either way we return None so the caller can retry or fall back to the
+    offline parser, rather than crashing on ``result["flags"]`` / ``.get`` when
+    ``result`` turns out not to be a dict.
+    """
+    try:
+        result = json.loads(_strip_json(raw))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    result["flags"] = _normalize_flags(result.get("flags") or [])
+    # normalise "summary" field name to "ai_summary" used downstream
+    if "summary" in result and "ai_summary" not in result:
+        result["ai_summary"] = result.pop("summary")
+    return result
+
+
 def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optional[str]:
     """Transcribe a receipt to raw text with an LM Studio OCR/vision model.
 
@@ -1285,17 +1311,7 @@ def _unified_distillation(
     system_msg = {"role": "system", "content": "You are a receipt data extractor. Respond with valid JSON only."}
     user_msg   = {"role": "user", "content": prompt}
 
-    def _parse(raw: str) -> Optional[dict]:
-        raw = _strip_json(raw)
-        try:
-            result = json.loads(raw)
-            result["flags"] = _normalize_flags(result.get("flags") or [])
-            # normalise "summary" field name to "ai_summary" used downstream
-            if "summary" in result and "ai_summary" not in result:
-                result["ai_summary"] = result.pop("summary")
-            return result
-        except json.JSONDecodeError:
-            return None
+    _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
     try:
@@ -1333,16 +1349,7 @@ def _extract_with_model(
     today = date.today().isoformat()
     prompt = _GEMMA_VISION_TEMPLATE.replace("{today}", today)
 
-    def _parse(raw: str) -> Optional[dict]:
-        raw = _strip_json(raw)
-        try:
-            result = json.loads(raw)
-            result["flags"] = _normalize_flags(result.get("flags") or [])
-            if "summary" in result and "ai_summary" not in result:
-                result["ai_summary"] = result.pop("summary")
-            return result
-        except json.JSONDecodeError:
-            return None
+    _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
     try:
@@ -1946,13 +1953,17 @@ def rename_receipt_image(
     new_path = out_dir / f"{stem}{ext}"
 
     if new_path.exists() and new_path.resolve() != img_path.resolve():
-        counter = 2
-        while True:
+        # Walk numbered suffixes, but cap the scan so a folder already holding
+        # thousands of same-named receipts can't spin here indefinitely — past
+        # the cap, fall back to a short random suffix that's guaranteed unique.
+        new_path = None
+        for counter in range(2, 10000):
             candidate = out_dir / f"{stem}_{counter}{ext}"
             if not candidate.exists():
                 new_path = candidate
                 break
-            counter += 1
+        if new_path is None:
+            new_path = out_dir / f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
 
     if new_path.resolve() != img_path.resolve():
         shutil.move(str(img_path), str(new_path))
