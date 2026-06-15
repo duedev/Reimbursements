@@ -24,6 +24,9 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 - `TUTORIAL.md` — end-user, non-technical setup/usage guide.
 - `README.md` — fuller project README.
 - `ADVISORY.md` — security/operational advisory.
+- `DESIGN_FROM_SCRATCH.md` — a design note: how the app would be rebuilt if the
+  drivers were *low cost + ease of use* instead of *privacy + local-only*
+  (hosted vision model, scale-to-zero web app). Not the current architecture.
 
 ## Stack
 
@@ -138,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **313 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **323 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -173,6 +176,20 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-15 (auto-crop control + preview):** Surfaced and made auto-crop
+  testable — `tests/test_autocrop_endpoint.py` (+5) and analyze tests in
+  `tests/test_autocrop.py` (+5).
+  * **Refactor** — detection logic extracted into `autocrop_analyze(img)` (single
+    source of truth returning `{bbox, kept_ratio, would_crop, reason}`);
+    `autocrop_receipt` is now a thin apply step over it. Behavior unchanged.
+  * **`POST /debug/autocrop-test`** — uploads an image, returns before/after dims,
+    the crop decision + human-readable reason, and a JPEG preview data URL
+    (mirrors `/debug/ocr-test`).
+  * **UI** — the **auto-crop toggle** is now exposed in Settings → Image
+    Processing (`proc-autocrop`; the `/settings/processing` backend already
+    supported it but the SPA never sent it), plus a **"Test Auto-crop"** button
+    that shows the original vs. cropped side-by-side with the decision. Honors the
+    enabled flag (shows a "preview only" note when off).
 - **2026-06-15 (usability & SSE efficiency):** `tests/test_sse_stream.py` (+2 tests).
   * **Snappier, leaner live board** — the `/events` SSE loop decoupled its poll
     cadence from its keep-alive: `SSE_POLL_SECS` (0.25s) delivers real board/log

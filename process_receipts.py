@@ -386,20 +386,22 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
-def autocrop_receipt(img: Image.Image) -> Image.Image:
-    """Trim uniform background borders around a receipt photo.
+def autocrop_analyze(img: Image.Image) -> dict:
+    """Inspect what auto-crop would do to ``img`` without mutating it.
 
-    Conservative by design: returns the original image unchanged whenever the
-    detected crop is suspiciously aggressive (<40% of the area kept), trims
-    almost nothing, or detection fails for any reason.
+    Returns a diagnostics dict — ``{"bbox", "kept_ratio", "would_crop",
+    "reason"}`` — that is the single source of truth for both the pipeline
+    (``autocrop_receipt``) and the Settings → "Test Auto-crop" preview.  ``bbox``
+    is the detected content box *with* the safety margin (or None), ``kept_ratio``
+    is its area as a fraction of the original, and ``reason`` is a short,
+    human-readable explanation of the decision.
     """
-    if not AUTOCROP_ENABLED:
-        return img
     try:
         gray = img.convert("L")
         w, h = gray.size
         if w < 64 or h < 64:
-            return img
+            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                    "reason": "image too small to crop (min 64×64 px)"}
         # Background estimated from the median of the four 8x8 corner patches
         samples = []
         for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
@@ -412,7 +414,8 @@ def autocrop_receipt(img: Image.Image) -> Image.Image:
         mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
         bbox = mask.getbbox()
         if not bbox:
-            return img
+            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                    "reason": "no content edges stand out from the background"}
 
         mx = int(w * AUTOCROP_MARGIN)
         my = int(h * AUTOCROP_MARGIN)
@@ -420,13 +423,38 @@ def autocrop_receipt(img: Image.Image) -> Image.Image:
         top    = max(0, bbox[1] - my)
         right  = min(w, bbox[2] + mx)
         bottom = min(h, bbox[3] + my)
-
         kept = ((right - left) * (bottom - top)) / float(w * h)
-        if kept < AUTOCROP_MIN_RATIO or kept > AUTOCROP_MAX_RATIO:
-            return img
-        return img.crop((left, top, right, bottom))
-    except Exception:
+        margined = (left, top, right, bottom)
+
+        if kept < AUTOCROP_MIN_RATIO:
+            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
+                    "reason": f"crop looks too aggressive — would keep only "
+                              f"{kept:.0%} (min {AUTOCROP_MIN_RATIO:.0%})"}
+        if kept > AUTOCROP_MAX_RATIO:
+            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
+                    "reason": f"borders are negligible — keeps {kept:.0%} "
+                              f"(max {AUTOCROP_MAX_RATIO:.0%})"}
+        return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
+                "reason": f"trims background to {kept:.0%} of the original"}
+    except Exception as exc:
+        return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                "reason": f"detection error: {exc}"}
+
+
+def autocrop_receipt(img: Image.Image) -> Image.Image:
+    """Trim uniform background borders around a receipt photo.
+
+    Conservative by design: returns the original image unchanged whenever the
+    detected crop is suspiciously aggressive (<40% of the area kept), trims
+    almost nothing, or detection fails for any reason.  All of that logic lives
+    in ``autocrop_analyze``; this is the in-memory apply step.
+    """
+    if not AUTOCROP_ENABLED:
         return img
+    info = autocrop_analyze(img)
+    if info["would_crop"] and info["bbox"]:
+        return img.crop(info["bbox"])
+    return img
 
 
 def autocrop_image_file(path: Path) -> bool:

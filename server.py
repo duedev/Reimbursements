@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import copy
 import csv
@@ -2817,6 +2818,49 @@ async def ocr_test(files: list[UploadFile] = File(...)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.post("/debug/autocrop-test")
+async def autocrop_test(files: list[UploadFile] = File(...)):
+    """Preview the auto-crop on an uploaded image — before/after dims, the
+    decision (and why), and a JPEG preview of the result. Lets a user confirm
+    auto-crop behaves on their receipts without running a whole batch."""
+    if not files:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+
+    content = await files[0].read()
+    if not content:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    def _run() -> dict:
+        from PIL import Image as PILImage
+        with PILImage.open(io.BytesIO(content)) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            img = raw.convert("RGB")
+            ow, oh = img.size
+            info    = _pr.autocrop_analyze(img)        # what it would do + why
+            cropped = _pr.autocrop_receipt(img)         # what the pipeline does
+            cw, ch  = cropped.size
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=85, optimize=True)
+        return {
+            "ok":         True,
+            "enabled":    _pr.AUTOCROP_ENABLED,
+            "cropped":    (cw, ch) != (ow, oh),
+            "would_crop": bool(info["would_crop"]),
+            "original":   [ow, oh],
+            "result":     [cw, ch],
+            "kept_ratio": round(float(info["kept_ratio"]), 4),
+            "reason":     info["reason"],
+            "preview":    "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
+        }
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 # ── Admin / maintenance ────────────────────────────────────────────────────────

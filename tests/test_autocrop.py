@@ -3,7 +3,9 @@ import base64
 
 from PIL import Image
 
-from process_receipts import autocrop_receipt, autocrop_image_file, encode_image
+from process_receipts import (
+    autocrop_analyze, autocrop_receipt, autocrop_image_file, encode_image,
+)
 
 
 def _receipt_on_background(size=(1000, 1000), box=(200, 150, 800, 900),
@@ -56,3 +58,39 @@ def test_encode_image_round_trip(tmp_path):
     assert mime == "image/jpeg"
     raw = base64.b64decode(b64)
     assert raw[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+
+# ── autocrop_analyze: diagnostics that drive both the pipeline and the test UI ──
+
+def test_analyze_reports_crop_for_bordered_receipt():
+    info = autocrop_analyze(_receipt_on_background())
+    assert info["would_crop"] is True
+    assert info["bbox"] is not None
+    assert 0.40 <= info["kept_ratio"] <= 0.95
+    assert info["reason"]
+
+
+def test_analyze_skips_full_frame_with_reason():
+    info = autocrop_analyze(_receipt_on_background(box=(5, 5, 995, 995)))
+    assert info["would_crop"] is False
+    assert "negligible" in info["reason"]
+
+
+def test_analyze_skips_tiny_content_with_reason():
+    info = autocrop_analyze(_receipt_on_background(box=(450, 450, 550, 550)))
+    assert info["would_crop"] is False
+    assert "aggressive" in info["reason"]
+
+
+def test_analyze_skips_too_small_image():
+    info = autocrop_analyze(Image.new("RGB", (40, 40), (255, 255, 255)))
+    assert info["would_crop"] is False
+    assert "too small" in info["reason"]
+
+
+def test_analyze_and_receipt_agree():
+    # The thin apply step must crop exactly when analyze says it would.
+    img = _receipt_on_background()
+    info = autocrop_analyze(img)
+    out = autocrop_receipt(img)
+    assert (out.size != img.size) == info["would_crop"]
