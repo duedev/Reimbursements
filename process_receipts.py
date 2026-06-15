@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 import concurrent.futures
 import threading
 import urllib.request
@@ -385,20 +386,22 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
-def autocrop_receipt(img: Image.Image) -> Image.Image:
-    """Trim uniform background borders around a receipt photo.
+def autocrop_analyze(img: Image.Image) -> dict:
+    """Inspect what auto-crop would do to ``img`` without mutating it.
 
-    Conservative by design: returns the original image unchanged whenever the
-    detected crop is suspiciously aggressive (<40% of the area kept), trims
-    almost nothing, or detection fails for any reason.
+    Returns a diagnostics dict — ``{"bbox", "kept_ratio", "would_crop",
+    "reason"}`` — that is the single source of truth for both the pipeline
+    (``autocrop_receipt``) and the Settings → "Test Auto-crop" preview.  ``bbox``
+    is the detected content box *with* the safety margin (or None), ``kept_ratio``
+    is its area as a fraction of the original, and ``reason`` is a short,
+    human-readable explanation of the decision.
     """
-    if not AUTOCROP_ENABLED:
-        return img
     try:
         gray = img.convert("L")
         w, h = gray.size
         if w < 64 or h < 64:
-            return img
+            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                    "reason": "image too small to crop (min 64×64 px)"}
         # Background estimated from the median of the four 8x8 corner patches
         samples = []
         for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
@@ -411,7 +414,8 @@ def autocrop_receipt(img: Image.Image) -> Image.Image:
         mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
         bbox = mask.getbbox()
         if not bbox:
-            return img
+            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                    "reason": "no content edges stand out from the background"}
 
         mx = int(w * AUTOCROP_MARGIN)
         my = int(h * AUTOCROP_MARGIN)
@@ -419,13 +423,38 @@ def autocrop_receipt(img: Image.Image) -> Image.Image:
         top    = max(0, bbox[1] - my)
         right  = min(w, bbox[2] + mx)
         bottom = min(h, bbox[3] + my)
-
         kept = ((right - left) * (bottom - top)) / float(w * h)
-        if kept < AUTOCROP_MIN_RATIO or kept > AUTOCROP_MAX_RATIO:
-            return img
-        return img.crop((left, top, right, bottom))
-    except Exception:
+        margined = (left, top, right, bottom)
+
+        if kept < AUTOCROP_MIN_RATIO:
+            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
+                    "reason": f"crop looks too aggressive — would keep only "
+                              f"{kept:.0%} (min {AUTOCROP_MIN_RATIO:.0%})"}
+        if kept > AUTOCROP_MAX_RATIO:
+            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
+                    "reason": f"borders are negligible — keeps {kept:.0%} "
+                              f"(max {AUTOCROP_MAX_RATIO:.0%})"}
+        return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
+                "reason": f"trims background to {kept:.0%} of the original"}
+    except Exception as exc:
+        return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
+                "reason": f"detection error: {exc}"}
+
+
+def autocrop_receipt(img: Image.Image) -> Image.Image:
+    """Trim uniform background borders around a receipt photo.
+
+    Conservative by design: returns the original image unchanged whenever the
+    detected crop is suspiciously aggressive (<40% of the area kept), trims
+    almost nothing, or detection fails for any reason.  All of that logic lives
+    in ``autocrop_analyze``; this is the in-memory apply step.
+    """
+    if not AUTOCROP_ENABLED:
         return img
+    info = autocrop_analyze(img)
+    if info["would_crop"] and info["bbox"]:
+        return img.crop(info["bbox"])
+    return img
 
 
 def autocrop_image_file(path: Path) -> bool:
@@ -753,6 +782,31 @@ def _strip_json(raw: str) -> str:
     raw = re.sub(r"\s*```$", "", raw)
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     return match.group(0) if match else raw
+
+
+def _parse_llm_record(raw: str) -> Optional[dict]:
+    """Parse a model's JSON reply into a record dict, or None if it isn't one.
+
+    Hardened against two distinct LLM failure modes:
+      * text that isn't JSON at all (``JSONDecodeError``), and
+      * text that is *valid* JSON but not an object — e.g. a bare ``null``,
+        ``[]``, ``"oops"`` or a number.
+
+    Either way we return None so the caller can retry or fall back to the
+    offline parser, rather than crashing on ``result["flags"]`` / ``.get`` when
+    ``result`` turns out not to be a dict.
+    """
+    try:
+        result = json.loads(_strip_json(raw))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    result["flags"] = _normalize_flags(result.get("flags") or [])
+    # normalise "summary" field name to "ai_summary" used downstream
+    if "summary" in result and "ai_summary" not in result:
+        result["ai_summary"] = result.pop("summary")
+    return result
 
 
 def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optional[str]:
@@ -1285,17 +1339,7 @@ def _unified_distillation(
     system_msg = {"role": "system", "content": "You are a receipt data extractor. Respond with valid JSON only."}
     user_msg   = {"role": "user", "content": prompt}
 
-    def _parse(raw: str) -> Optional[dict]:
-        raw = _strip_json(raw)
-        try:
-            result = json.loads(raw)
-            result["flags"] = _normalize_flags(result.get("flags") or [])
-            # normalise "summary" field name to "ai_summary" used downstream
-            if "summary" in result and "ai_summary" not in result:
-                result["ai_summary"] = result.pop("summary")
-            return result
-        except json.JSONDecodeError:
-            return None
+    _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
     try:
@@ -1333,16 +1377,7 @@ def _extract_with_model(
     today = date.today().isoformat()
     prompt = _GEMMA_VISION_TEMPLATE.replace("{today}", today)
 
-    def _parse(raw: str) -> Optional[dict]:
-        raw = _strip_json(raw)
-        try:
-            result = json.loads(raw)
-            result["flags"] = _normalize_flags(result.get("flags") or [])
-            if "summary" in result and "ai_summary" not in result:
-                result["ai_summary"] = result.pop("summary")
-            return result
-        except json.JSONDecodeError:
-            return None
+    _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
     try:
@@ -1946,13 +1981,17 @@ def rename_receipt_image(
     new_path = out_dir / f"{stem}{ext}"
 
     if new_path.exists() and new_path.resolve() != img_path.resolve():
-        counter = 2
-        while True:
+        # Walk numbered suffixes, but cap the scan so a folder already holding
+        # thousands of same-named receipts can't spin here indefinitely — past
+        # the cap, fall back to a short random suffix that's guaranteed unique.
+        new_path = None
+        for counter in range(2, 10000):
             candidate = out_dir / f"{stem}_{counter}{ext}"
             if not candidate.exists():
                 new_path = candidate
                 break
-            counter += 1
+        if new_path is None:
+            new_path = out_dir / f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
 
     if new_path.resolve() != img_path.resolve():
         shutil.move(str(img_path), str(new_path))

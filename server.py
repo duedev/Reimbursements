@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import copy
 import csv
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -80,6 +82,18 @@ STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snap
 STALL_TIMEOUT_SECS  = int(os.getenv("STALL_TIMEOUT_SECS",  "180"))  # 3 min
 STALL_CHECK_INTERVAL = int(os.getenv("STALL_CHECK_INTERVAL", "60"))   # 1 min
 
+# Largest single uploaded file we'll stage to disk. A receipt photo/PDF is a few
+# MB at most; the generous default keeps the whole file out of memory only when
+# something pathological (or a mis-targeted upload) arrives. 0 disables the cap.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))  # 100 MiB
+
+# SSE tuning. Poll the per-client queue often so the live board/log feels
+# instant, but only emit a keep-alive comment every SSE_HEARTBEAT_SECS — the two
+# were previously coupled at 1s, which added up to a second of delivery latency
+# and sent 15× more idle traffic than a keep-alive needs.
+SSE_POLL_SECS      = float(os.getenv("SSE_POLL_SECS", "0.25"))
+SSE_HEARTBEAT_SECS = float(os.getenv("SSE_HEARTBEAT_SECS", "15"))
+
 # ── Global state ───────────────────────────────────────────────────────────────
 
 _work_queue: deque = deque()
@@ -126,7 +140,12 @@ _status_ts_lock = threading.Lock()
 def _load_config() -> dict:
     try:
         if CONFIG_FILE.exists():
-            return json.loads(CONFIG_FILE.read_text())
+            data = json.loads(CONFIG_FILE.read_text())
+            # A corrupt/hand-edited config that parses to a non-object (null,
+            # a list, a bare number) must not propagate — every caller does
+            # cfg.get(...), which would raise on anything but a dict.
+            if isinstance(data, dict):
+                return data
     except Exception:
         pass
     return {}
@@ -1011,9 +1030,21 @@ async def queue_add(
     # images/PDFs and discarding the archive itself (extract → import → clean up).
     staged: list[Path] = []
     for f in files:
-        dest = tmp_dir / Path(f.filename or "receipt").name   # basename only → no path traversal
+        name = Path(f.filename or "receipt").name   # basename only → no path traversal
+        size = getattr(f, "size", None)
+        if MAX_UPLOAD_BYTES and size is not None and size > MAX_UPLOAD_BYTES:
+            skipped.append(name)
+            _broadcast({"type": "log",
+                        "message": f"[upload] {name}: skipped — exceeds "
+                                   f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MiB upload limit"})
+            continue
+        payload = await f.read()
+        if not payload:
+            skipped.append(name)            # empty/zero-byte file — nothing to process
+            continue
+        dest = tmp_dir / name
         with open(dest, "wb") as fh:
-            fh.write(await f.read())
+            fh.write(payload)
         if dest.suffix.lower() in ARCHIVE_EXTENSIONS:
             members = extract_archive(dest, tmp_dir)
             dest.unlink(missing_ok=True)
@@ -1274,13 +1305,24 @@ async def events_global():
     async def generate():
         try:
             yield f"data: {json.dumps(full_state)}\n\n"
+            last_beat = time.monotonic()
             while True:
                 try:
                     msg = q.get_nowait()
-                    yield f"data: {json.dumps(msg)}\n\n"
                 except Empty:
-                    yield ": heartbeat\n\n"
-                    await asyncio.sleep(1)
+                    # Idle: emit a keep-alive comment only every heartbeat
+                    # interval so proxies don't drop the connection, then yield
+                    # control briefly. A short poll keeps real events snappy —
+                    # they're delivered within SSE_POLL_SECS, not up to a whole
+                    # heartbeat later.
+                    now = time.monotonic()
+                    if now - last_beat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_beat = now
+                    await asyncio.sleep(SSE_POLL_SECS)
+                    continue
+                yield f"data: {json.dumps(msg)}\n\n"
+                last_beat = time.monotonic()
         finally:
             _remove_subscriber(q)
 
@@ -1316,10 +1358,26 @@ async def get_receipt_image(filename: str = ""):
         search += [d for d in PROCESSING_FOLDER.iterdir() if d.is_dir()]
     except Exception:
         pass
+
+    _roots = [IMAGES_FOLDER.resolve(), PROCESSING_FOLDER.resolve(), INTAKE_FOLDER.resolve()]
+
+    def _serveable(p: Path) -> bool:
+        # Must be a real file (never a symlink) that resolves to somewhere
+        # inside our working folders.  Blocks a planted symlink — e.g.
+        # ``photo.jpg`` → ``/etc/passwd`` — from turning this preview endpoint
+        # into an arbitrary-file read.
+        try:
+            if p.is_symlink() or not p.is_file():
+                return False
+            rp = p.resolve()
+            return any(rp == root or root in rp.parents for root in _roots)
+        except OSError:
+            return False
+
     # Exact name match
     for folder in search:
         p = folder / filename
-        if p.exists() and p.is_file():
+        if _serveable(p):
             mt = ext_map.get(p.suffix.lower(), "image/jpeg")
             return FileResponse(str(p), media_type=mt)
     # Fuzzy extension match — handles .png → .jpg renames after compression
@@ -1327,7 +1385,7 @@ async def get_receipt_image(filename: str = ""):
     for folder in search:
         for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
             p = folder / (stem + ext)
-            if p.exists() and p.is_file():
+            if _serveable(p):
                 mt = ext_map.get(ext, "image/jpeg")
                 return FileResponse(str(p), media_type=mt)
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -1478,6 +1536,10 @@ async def add_manual_result(body: ManualReceiptRequest):
     try:
         amt = float(body.amount) if body.amount.strip() else 0.0
     except ValueError:
+        amt = 0.0
+    # Guard against "inf"/"nan", which parse as floats but serialise to invalid
+    # JSON and corrupt every total/average downstream.
+    if not math.isfinite(amt):
         amt = 0.0
 
     data: dict = {
@@ -1868,6 +1930,12 @@ async def update_result(body: UpdateResultRequest):
             value = round(float(str(value).replace("$", "").replace(",", "")), 2)
         except ValueError:
             return JSONResponse({"ok": False, "error": "Amount must be a number"},
+                                status_code=400)
+        # "inf"/"nan" parse fine as floats but would poison every downstream
+        # total/average and produce invalid JSON (NaN) that breaks the SSE feed
+        # and the persisted state file the browser reads back.
+        if not math.isfinite(value):
+            return JSONResponse({"ok": False, "error": "Amount must be a finite number"},
                                 status_code=400)
     elif field == "category":
         if value not in ("fuel", "mats", "misc"):
@@ -2750,6 +2818,49 @@ async def ocr_test(files: list[UploadFile] = File(...)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.post("/debug/autocrop-test")
+async def autocrop_test(files: list[UploadFile] = File(...)):
+    """Preview the auto-crop on an uploaded image — before/after dims, the
+    decision (and why), and a JPEG preview of the result. Lets a user confirm
+    auto-crop behaves on their receipts without running a whole batch."""
+    if not files:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+
+    content = await files[0].read()
+    if not content:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    def _run() -> dict:
+        from PIL import Image as PILImage
+        with PILImage.open(io.BytesIO(content)) as raw:
+            if getattr(raw, "format", None) == "MPO":
+                raw.seek(0)
+            img = raw.convert("RGB")
+            ow, oh = img.size
+            info    = _pr.autocrop_analyze(img)        # what it would do + why
+            cropped = _pr.autocrop_receipt(img)         # what the pipeline does
+            cw, ch  = cropped.size
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=85, optimize=True)
+        return {
+            "ok":         True,
+            "enabled":    _pr.AUTOCROP_ENABLED,
+            "cropped":    (cw, ch) != (ow, oh),
+            "would_crop": bool(info["would_crop"]),
+            "original":   [ow, oh],
+            "result":     [cw, ch],
+            "kept_ratio": round(float(info["kept_ratio"]), 4),
+            "reason":     info["reason"],
+            "preview":    "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
+        }
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 # ── Admin / maintenance ────────────────────────────────────────────────────────

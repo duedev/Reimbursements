@@ -796,6 +796,13 @@
     .modal-review .mr-zoom-hint { font-size: 11px; color: var(--muted); margin-top: 10px; }
     .modal-review .mr-form-pane { flex: 1 1 53%; min-width: 0; display: flex; flex-direction: column; }
     .modal-review .mr-form-pane .btn-row { margin-top: auto; }
+    .mr-kbd-hint { font-size: 11px; color: var(--muted); margin: 10px 0 0; line-height: 1.7; }
+    .mr-kbd-hint kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+      padding: 1px 5px; border-radius: 5px; border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05); color: var(--text); white-space: nowrap;
+    }
+    [data-theme="light"] .mr-kbd-hint kbd { background: #eef2f9; }
     @media (max-width: 760px) {
       .modal-box.modal-review { flex-direction: column; width: 540px; }
       .modal-review .mr-image-pane .mr-img-stage { max-height: 38vh; }
@@ -1652,6 +1659,17 @@
         <input type="checkbox" id="proc-grayscale">
         Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
       </label>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label class="check-label">
+          <input type="checkbox" id="proc-autocrop">
+          Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt before OCR (conservative: skips if the crop looks unsafe)</span>
+        </label>
+        <button class="copy-btn" id="autocrop-test-btn" title="Upload a receipt image to preview what auto-crop does" style="flex-shrink:0">
+          Test Auto-crop
+        </button>
+        <input type="file" id="autocrop-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test auto-crop">
+        <span id="autocrop-test-status" style="font-size:11px;color:var(--muted)"></span>
+      </div>
       <label class="check-label">
         <input type="checkbox" id="proc-compress">
         Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
@@ -1799,6 +1817,11 @@
         <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
         <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
       </div>
+      <p class="mr-kbd-hint">
+        <kbd>&#8984;/Ctrl</kbd>+<kbd>Enter</kbd> approve &amp; next &middot;
+        <kbd>&#8984;/Ctrl</kbd>+<kbd>S</kbd> save &middot;
+        <kbd>Esc</kbd> close
+      </p>
     </div>
   </div>
 </div>
@@ -2065,7 +2088,7 @@ window.toggleStepLog = function(e, filename) {
   if (log) log.classList.toggle('open');
 };
 
-function makeCard(filename, status, data, model, errorMsg, steps) {
+function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
   const isApproved     = status === 'done' && data && data._approved;
@@ -2131,7 +2154,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
   if (stepsArr.length) {
     inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
-    inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
+    inner += `<div class="k-step-log${stepLogOpen ? ' open' : ''}">${renderSteps(stepsArr)}</div>`;
   }
 
   inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss" aria-label="Dismiss ${esc(filename)}">&#10005;</button>`;
@@ -2161,8 +2184,11 @@ function insertCardSorted(col, card) {
 function moveCard(filename, newStatus, data, model, errorMsg, steps) {
   const colMap = { queued:'col-queued', ocr:'col-processing', distilling:'col-processing', done:'col-completed', failed:'col-failed' };
   const existing = getCardEl(filename);
+  // Carry the step-log expanded state across the rebuild so a card the user
+  // opened to watch live progress doesn't snap shut on every status tick.
+  const stepLogOpen = !!(existing && existing.querySelector('.k-step-log.open'));
   if (existing) existing.remove();
-  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '', steps || (data && data._steps) || []);
+  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '', steps || (data && data._steps) || [], stepLogOpen);
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
@@ -3466,6 +3492,7 @@ async function loadProcessingSettings() {
     const d = await (await fetch('/settings/processing')).json();
     document.getElementById('proc-autorotate').checked = d.autorotate !== false;
     document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
+    document.getElementById('proc-autocrop').checked   = d.autocrop  !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
     document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
@@ -3478,6 +3505,7 @@ async function saveProcessingSettings() {
   const body = {
     autorotate:   document.getElementById('proc-autorotate').checked,
     grayscale:    document.getElementById('proc-grayscale').checked,
+    autocrop:     document.getElementById('proc-autocrop').checked,
     compress:     document.getElementById('proc-compress').checked,
     local_ocr:    document.getElementById('proc-localocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
@@ -3498,7 +3526,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autorotate', 'proc-grayscale', 'proc-compress', 'proc-localocr'].forEach(id => {
+['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
 });
 
@@ -3577,6 +3605,76 @@ document.getElementById('proc-quality').addEventListener('input', (e) => {
 document.getElementById('proc-quality').addEventListener('change', () => {
   clearTimeout(_procSaveTimer);
   _procSaveTimer = setTimeout(saveProcessingSettings, 150);
+});
+
+// ── Test Auto-crop ────────────────────────────────────────────────────────────
+// Upload a receipt photo and preview exactly what the conservative auto-crop
+// does to it (before → after, with the decision and the reason), so the user can
+// confirm it behaves on their receipts without running a whole batch.
+document.getElementById('autocrop-test-btn').addEventListener('click', () => {
+  document.getElementById('autocrop-test-input').click();
+});
+document.getElementById('autocrop-test-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('autocrop-test-status');
+  const btn = document.getElementById('autocrop-test-btn');
+  statusEl.textContent = 'Analyzing…';
+  statusEl.style.color = 'var(--muted)';
+  btn.disabled = true;
+  try {
+    const form = new FormData();
+    form.append('files', file, file.name);
+    const res = await fetch('/debug/autocrop-test', { method: 'POST', body: form });
+    const d = await res.json();
+    if (!d.ok) {
+      statusEl.textContent = `✗ ${d.error || 'failed'}`;
+      statusEl.style.color = 'var(--danger)';
+      return;
+    }
+    const [ow, oh] = d.original, [cw, ch] = d.result;
+    if (d.cropped) {
+      statusEl.textContent = `✓ ${ow}×${oh} → ${cw}×${ch}`;
+      statusEl.style.color = 'var(--success)';
+    } else {
+      statusEl.textContent = 'No crop applied';
+      statusEl.style.color = 'var(--warning)';
+    }
+    const enabledNote = d.enabled ? '' :
+      ' <span style="color:var(--warning)">(auto-crop is currently OFF — this is a preview only)</span>';
+    const imgURL = URL.createObjectURL(file);
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <strong style="font-size:14px">Auto-crop preview</strong>
+        <button class="autocrop-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px">
+        <strong>${d.cropped ? 'Cropped' : 'Left unchanged'}</strong> — ${esc(d.reason || '')} (keeps ${Math.round((d.kept_ratio || 1) * 100)}%).${enabledNote}
+      </p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 240px;min-width:200px;text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Original — ${ow}×${oh}</div>
+          <img src="${imgURL}" alt="Original receipt" style="max-width:100%;max-height:60vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        </div>
+        <div style="flex:1 1 240px;min-width:200px;text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After auto-crop — ${cw}×${ch}</div>
+          <img src="${d.preview}" alt="Auto-cropped receipt" style="max-width:100%;max-height:60vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        </div>
+      </div>
+    </div>`;
+    const closeModal = () => { URL.revokeObjectURL(imgURL); modal.remove(); };
+    modal.querySelector('.autocrop-test-close').addEventListener('click', closeModal);
+    modal.addEventListener('click', ev => { if (ev.target === modal) closeModal(); });
+    document.body.appendChild(modal);
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+    e.target.value = '';
+  }
 });
 
 // ── Email settings ────────────────────────────────────────────────────────────
@@ -3919,6 +4017,28 @@ document.addEventListener('keydown', e => {
     } else {
       closeLightbox();
     }
+  }
+});
+
+// Review-modal shortcuts so a whole batch can be swept without the mouse:
+// Ctrl/⌘+Enter runs the primary action (Approve & Next on a completed receipt,
+// otherwise Save Changes) and Ctrl/⌘+S saves. Both reuse the existing button
+// handlers, so all the approve/save/advance logic stays in one place.
+document.addEventListener('keydown', e => {
+  const modal = document.getElementById('manual-review-modal');
+  if (modal.classList.contains('hidden')) return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const approveBtn = document.getElementById('mr-approve-btn');
+    if (approveBtn && approveBtn.style.display !== 'none' && !approveBtn.disabled) {
+      approveBtn.click();
+    } else {
+      document.getElementById('mr-save-btn').click();
+    }
+  } else if (e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    document.getElementById('mr-save-btn').click();
   }
 });
 
