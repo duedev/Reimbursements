@@ -1271,7 +1271,7 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         "category":            category,
         "expense_description": None,
         "ai_summary":          vendor,
-        "flags": [{"flag": "Parsed locally without AI (LM Studio unavailable) — verify fields"}],
+        "flags": [],
         "_local_parse": True,
     }
 

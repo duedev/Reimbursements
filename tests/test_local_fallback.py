@@ -37,7 +37,7 @@ def test_local_parse_extracts_core_fields():
     assert out["category"] == "fuel"
     assert out["date"] == "2026-05-01"
     assert out["_local_parse"] is True
-    assert out["flags"] and "LM Studio unavailable" in out["flags"][0]["flag"]
+    assert out["flags"] == []
 
 
 def test_local_parse_requires_amount_and_vendor():
