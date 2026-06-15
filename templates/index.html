@@ -1313,14 +1313,8 @@
              accept="image/*,.pdf,application/pdf,.zip,application/zip,application/x-zip-compressed"
              aria-label="Choose receipt images, PDFs, or a zip archive">
     </label>
-    <!-- Add to Queue always stays at the top of the file section -->
+    <!-- Files auto-queue the moment they're selected or dropped — no extra click. -->
     <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
-      <button class="btn btn-primary btn-md" id="process-btn" disabled>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-        </svg>
-        Add to Queue
-      </button>
       <span class="status-note" id="file-count-note"></span>
       <span class="intake-note hidden" id="intake-row">
         <span><strong id="intake-count">0</strong> waiting in intake folder</span>
@@ -1343,7 +1337,6 @@
         then delete what you don't need.</p>
       <div id="rejected-list"></div>
     </div>
-    <div id="file-list"></div>
   </div>
 
   <!-- Generate spreadsheet card (shown when completed results exist) -->
@@ -1914,8 +1907,6 @@ function toggleSection(bodyId, toggleId) {
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
-const fileList     = document.getElementById('file-list');
-const processBtn   = document.getElementById('process-btn');
 const stopBtn      = document.getElementById('stop-btn');
 const statusBadge  = document.getElementById('status-badge');
 const progressCard = document.getElementById('progress-card');
@@ -1943,7 +1934,6 @@ const configCard   = document.getElementById('config-card');
 const distillSelect = document.getElementById('distill-model-select');
 const ocrSelect    = document.getElementById('ocr-model-select');
 
-let selectedFiles  = [];
 let completedCount = 0;
 let folderPaths    = {};
 
@@ -1975,42 +1965,15 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
 
+// Files queue the moment they're selected or dropped — no separate "add" click.
 function addFiles(newFiles) {
   const valid = newFiles.filter(f =>
     f.type.startsWith('image/') ||
     f.type === 'application/pdf' ||
     /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|pdf)$/i.test(f.name)
   );
-  const existing = new Set(selectedFiles.map(f => f.name + f.size));
-  valid.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
-  renderFileList();
+  if (valid.length) uploadFiles(valid);
 }
-
-function renderFileList() {
-  fileList.innerHTML = '';
-  selectedFiles.forEach((f, i) => {
-    const item = document.createElement('div');
-    item.className = 'file-item';
-    item.innerHTML = `
-      <span class="fname">${esc(f.name)}</span>
-      <span class="fsize">${(f.size/1024).toFixed(0)} KB</span>
-      <button title="Remove" aria-label="Remove ${esc(f.name)}" onclick="removeFile(${i})">×</button>`;
-    fileList.appendChild(item);
-  });
-  processBtn.disabled = selectedFiles.length === 0;
-  // Selection summary so the action button's effect is predictable
-  const note = document.getElementById('file-count-note');
-  if (note) {
-    if (selectedFiles.length === 0) {
-      note.textContent = '';
-    } else {
-      const totalKb = selectedFiles.reduce((s, f) => s + f.size, 0) / 1024;
-      const sizeTxt = totalKb >= 1024 ? `${(totalKb / 1024).toFixed(1)} MB` : `${Math.round(totalKb)} KB`;
-      note.textContent = `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} selected · ${sizeTxt}`;
-    }
-  }
-}
-window.removeFile = i => { selectedFiles.splice(i, 1); renderFileList(); };
 
 // ── Kanban state ──────────────────────────────────────────────────────────────
 const receiptCards = {};
@@ -2109,7 +2072,9 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
     if (summaryText) {
       inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
-    if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    // The offline-parser "without AI" notice is informational, not a data problem —
+    // the Needs Review badge already prompts a check, so don't show the red warning.
+    if (data._flag && !data._local_parse) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
     if (status === 'done' && data._proc_seconds) {
       const engine = data._ocr_engine ? ` &bull; ${esc(data._ocr_engine)}` : '';
       inner += `<div class="k-proc-time" title="Processing time">&#9201; ${data._proc_seconds}s${engine}</div>`;
@@ -2377,14 +2342,15 @@ function _updateApprovalGate(doneCards) {
   }
 }
 
-// ── Add to Queue (file upload) ────────────────────────────────────────────────
-processBtn.addEventListener('click', async () => {
-  if (!selectedFiles.length) return;
-  processBtn.disabled = true;
-  processBtn.innerHTML = '<span class="spinner"></span> Queuing…';
+// ── Upload to the queue ───────────────────────────────────────────────────────
+// Called automatically by addFiles() the moment files are chosen or dropped.
+async function uploadFiles(files) {
+  if (!files || !files.length) return;
+  const note = document.getElementById('file-count-note');
+  if (note) note.innerHTML = `<span class="spinner"></span> Queuing ${files.length} file${files.length === 1 ? '' : 's'}…`;
 
   const form = new FormData();
-  selectedFiles.forEach(f => form.append('files', f, f.name));
+  files.forEach(f => form.append('files', f, f.name));
   form.append('employee', document.getElementById('employee').value.trim() || 'Employee');
   form.append('job_name', document.getElementById('job-name').value.trim());
   form.append('job_number', document.getElementById('job-number').value.trim());
@@ -2397,21 +2363,15 @@ processBtn.addEventListener('click', async () => {
     _saveFields();
     const skippedMsg = d.skipped && d.skipped.length ? ` (${d.skipped.length} already in queue)` : '';
     showToast(`${d.queued.length} file(s) added to queue${skippedMsg}`, true);
-    selectedFiles = [];
-    fileInput.value = '';
-    renderFileList();
     progressCard.classList.remove('hidden');
     kanbanCard.classList.remove('hidden');
   } catch (err) {
     showToast(`Queue error: ${err.message}`, false);
   } finally {
-    processBtn.disabled = selectedFiles.length === 0;
-    processBtn.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-      </svg> Add to Queue`;
+    fileInput.value = '';
+    if (note) note.textContent = '';
   }
-});
+}
 
 // ── Intake folder file count ──────────────────────────────────────────────────
 async function loadIntakeCount() {
@@ -3893,7 +3853,7 @@ function _lbStatsHtml(data, filename) {
   if (data._proc_seconds) parts.push(row('Processing', `${data._proc_seconds}s${data._ocr_engine ? ' · ' + data._ocr_engine : ''}`));
   const summary = data.summary || data.ai_summary;
   if (summary) parts.push(`<div class="lb-stat-summary">"${esc(summary)}"</div>`);
-  if (data._flag) parts.push(`<div class="lb-stat-flag">&#9888; ${esc(data._flag)}</div>`);
+  if (data._flag && !data._local_parse) parts.push(`<div class="lb-stat-flag">&#9888; ${esc(data._flag)}</div>`);
   return parts.join('');
 }
 

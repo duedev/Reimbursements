@@ -173,6 +173,13 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-14 (UI declutter):** Removed the redundant **"Add to Queue"** button —
+  files now auto-upload to the queue the moment they're selected/dropped
+  (`addFiles` → new `uploadFiles`; dropped the `selectedFiles`/`renderFileList`/
+  `removeFile` staging + the `#file-list` preview). The offline-parser **"Parsed
+  locally without AI" red flag is no longer shown** on cards or the lightbox
+  (guarded by `_local_parse`, now whitelisted in `_safe_receipt_data`); the flag
+  still drives `_review_required`, so the amber **Needs Review** badge remains.
 - **2026-06-14 (autorotate):** **Auto-rotate to upright** (rules-based, no model) —
   `autorotate_image_file` bakes a photo's EXIF Orientation into the pixels before OCR
   (also fixes OCR-vs-browser orientation disagreement that would misalign the markup
