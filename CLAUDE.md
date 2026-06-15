@@ -138,7 +138,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **311 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **313 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -173,6 +173,21 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-15 (usability & SSE efficiency):** `tests/test_sse_stream.py` (+2 tests).
+  * **Snappier, leaner live board** — the `/events` SSE loop decoupled its poll
+    cadence from its keep-alive: `SSE_POLL_SECS` (0.25s) delivers real board/log
+    events ~4× faster while `SSE_HEARTBEAT_SECS` (15s) cuts idle keep-alive frames
+    ~15×. Previously both were a single 1s `asyncio.sleep`, so a queued event
+    could wait up to a full second. Both env-overridable.
+  * **Keyboard-driven review sweep** — in the review modal, `Ctrl/⌘+Enter` runs
+    the primary action (Approve & Next on a completed receipt, else Save) and
+    `Ctrl/⌘+S` saves, reusing the existing button handlers; a `.mr-kbd-hint`
+    line under the buttons makes them discoverable. Lets a reviewer clear a whole
+    batch without the mouse.
+  * **Step-log stays open across live ticks** — `moveCard` now carries the
+    `.k-step-log.open` state into the rebuilt card (`makeCard`'s new
+    `stepLogOpen` arg), so a card opened to watch progress no longer snaps shut
+    on every `ocr`→`distilling`→`done` status update.
 - **2026-06-15 (edge-case hardening):** Defensive safeguards so one malformed
   input can't crash the pipeline, poison totals, or leak a file —
   `tests/test_edge_hardening.py` (+30 tests). Changes:

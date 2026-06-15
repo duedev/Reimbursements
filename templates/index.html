@@ -796,6 +796,13 @@
     .modal-review .mr-zoom-hint { font-size: 11px; color: var(--muted); margin-top: 10px; }
     .modal-review .mr-form-pane { flex: 1 1 53%; min-width: 0; display: flex; flex-direction: column; }
     .modal-review .mr-form-pane .btn-row { margin-top: auto; }
+    .mr-kbd-hint { font-size: 11px; color: var(--muted); margin: 10px 0 0; line-height: 1.7; }
+    .mr-kbd-hint kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+      padding: 1px 5px; border-radius: 5px; border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05); color: var(--text); white-space: nowrap;
+    }
+    [data-theme="light"] .mr-kbd-hint kbd { background: #eef2f9; }
     @media (max-width: 760px) {
       .modal-box.modal-review { flex-direction: column; width: 540px; }
       .modal-review .mr-image-pane .mr-img-stage { max-height: 38vh; }
@@ -1799,6 +1806,11 @@
         <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
         <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
       </div>
+      <p class="mr-kbd-hint">
+        <kbd>&#8984;/Ctrl</kbd>+<kbd>Enter</kbd> approve &amp; next &middot;
+        <kbd>&#8984;/Ctrl</kbd>+<kbd>S</kbd> save &middot;
+        <kbd>Esc</kbd> close
+      </p>
     </div>
   </div>
 </div>
@@ -2065,7 +2077,7 @@ window.toggleStepLog = function(e, filename) {
   if (log) log.classList.toggle('open');
 };
 
-function makeCard(filename, status, data, model, errorMsg, steps) {
+function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
   const isApproved     = status === 'done' && data && data._approved;
@@ -2131,7 +2143,7 @@ function makeCard(filename, status, data, model, errorMsg, steps) {
   const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
   if (stepsArr.length) {
     inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
-    inner += `<div class="k-step-log">${renderSteps(stepsArr)}</div>`;
+    inner += `<div class="k-step-log${stepLogOpen ? ' open' : ''}">${renderSteps(stepsArr)}</div>`;
   }
 
   inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss" aria-label="Dismiss ${esc(filename)}">&#10005;</button>`;
@@ -2161,8 +2173,11 @@ function insertCardSorted(col, card) {
 function moveCard(filename, newStatus, data, model, errorMsg, steps) {
   const colMap = { queued:'col-queued', ocr:'col-processing', distilling:'col-processing', done:'col-completed', failed:'col-failed' };
   const existing = getCardEl(filename);
+  // Carry the step-log expanded state across the rebuild so a card the user
+  // opened to watch live progress doesn't snap shut on every status tick.
+  const stepLogOpen = !!(existing && existing.querySelector('.k-step-log.open'));
   if (existing) existing.remove();
-  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '', steps || (data && data._steps) || []);
+  const newCard = makeCard(filename, newStatus, data, model || '', errorMsg || '', steps || (data && data._steps) || [], stepLogOpen);
   const col = document.getElementById(colMap[newStatus] || 'col-queued');
   newStatus === 'done' ? insertCardSorted(col, newCard) : col.appendChild(newCard);
   setCounts();
@@ -3919,6 +3934,28 @@ document.addEventListener('keydown', e => {
     } else {
       closeLightbox();
     }
+  }
+});
+
+// Review-modal shortcuts so a whole batch can be swept without the mouse:
+// Ctrl/⌘+Enter runs the primary action (Approve & Next on a completed receipt,
+// otherwise Save Changes) and Ctrl/⌘+S saves. Both reuse the existing button
+// handlers, so all the approve/save/advance logic stays in one place.
+document.addEventListener('keydown', e => {
+  const modal = document.getElementById('manual-review-modal');
+  if (modal.classList.contains('hidden')) return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const approveBtn = document.getElementById('mr-approve-btn');
+    if (approveBtn && approveBtn.style.display !== 'none' && !approveBtn.disabled) {
+      approveBtn.click();
+    } else {
+      document.getElementById('mr-save-btn').click();
+    }
+  } else if (e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    document.getElementById('mr-save-btn').click();
   }
 });
 

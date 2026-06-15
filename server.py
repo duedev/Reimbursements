@@ -86,6 +86,13 @@ STALL_CHECK_INTERVAL = int(os.getenv("STALL_CHECK_INTERVAL", "60"))   # 1 min
 # something pathological (or a mis-targeted upload) arrives. 0 disables the cap.
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))  # 100 MiB
 
+# SSE tuning. Poll the per-client queue often so the live board/log feels
+# instant, but only emit a keep-alive comment every SSE_HEARTBEAT_SECS — the two
+# were previously coupled at 1s, which added up to a second of delivery latency
+# and sent 15× more idle traffic than a keep-alive needs.
+SSE_POLL_SECS      = float(os.getenv("SSE_POLL_SECS", "0.25"))
+SSE_HEARTBEAT_SECS = float(os.getenv("SSE_HEARTBEAT_SECS", "15"))
+
 # ── Global state ───────────────────────────────────────────────────────────────
 
 _work_queue: deque = deque()
@@ -1297,13 +1304,24 @@ async def events_global():
     async def generate():
         try:
             yield f"data: {json.dumps(full_state)}\n\n"
+            last_beat = time.monotonic()
             while True:
                 try:
                     msg = q.get_nowait()
-                    yield f"data: {json.dumps(msg)}\n\n"
                 except Empty:
-                    yield ": heartbeat\n\n"
-                    await asyncio.sleep(1)
+                    # Idle: emit a keep-alive comment only every heartbeat
+                    # interval so proxies don't drop the connection, then yield
+                    # control briefly. A short poll keeps real events snappy —
+                    # they're delivered within SSE_POLL_SECS, not up to a whole
+                    # heartbeat later.
+                    now = time.monotonic()
+                    if now - last_beat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_beat = now
+                    await asyncio.sleep(SSE_POLL_SECS)
+                    continue
+                yield f"data: {json.dumps(msg)}\n\n"
+                last_beat = time.monotonic()
         finally:
             _remove_subscriber(q)
 
