@@ -25,8 +25,9 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 - `README.md` — fuller project README.
 - `ADVISORY.md` — security/operational advisory.
 - `DESIGN_FROM_SCRATCH.md` — a design note: how the app would be rebuilt if the
-  drivers were *low cost + ease of use* instead of *privacy + local-only*
-  (hosted vision model, scale-to-zero web app). Not the current architecture.
+  only drivers were *the end result + ease of use + low cost* (privacy, local-only,
+  and even using an LLM all optional). Outcome-first and tech-agnostic — mandates
+  no language, runtime, container, or model. Not the current architecture.
 
 ## Stack
 
