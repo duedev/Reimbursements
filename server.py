@@ -2576,8 +2576,13 @@ async def set_llm_model_config(request: Request):
         "base_url":    base_url,
     }
     _save_config(cfg)
-    # Apply immediately so a restart isn't required.
-    _apply_llm_server_config(cfg)
+    # Apply the model ID immediately for the current session.
+    # URL/server-type changes (docker vs custom) are intentionally deferred to the
+    # next startup so the Configure Model dialog cannot silently overwrite the active
+    # LMSTUDIO_BASE_URL — which would break a working LM Studio connection without
+    # any visible feedback.  Use POST /settings/llm-server for immediate URL changes.
+    if model_id:
+        _pr.set_active_model(model_id)
     return JSONResponse({"ok": True,
                          "message": "Settings saved — model will load on next startup."})
 

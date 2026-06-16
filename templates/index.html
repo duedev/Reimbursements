@@ -3763,8 +3763,9 @@ async function loadLMStudioModels() {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
       _setLmChip('warn', 'No models loaded');
     } else {
-      strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable</span></div>';
-      _setLmChip('err', 'LLM server offline');
+      const urlHint = data.base_url ? ` — tried <code style="font-size:10px">${esc(data.base_url)}</code>` : '';
+      strip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable${urlHint}</span></div>`;
+      _setLmChip('err', `Offline${data.base_url ? ' · ' + esc(data.base_url) : ''}`);
     }
   } catch (_) {
     document.getElementById('model-strip').innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable</span></div>';
@@ -5128,6 +5129,7 @@ loadWatchStatus();
 loadIntakeCount();
 loadRejected();
 loadLMStudioModels();
+checkLLMStatus();
 loadModels();
 loadSettings();
 loadSavedFields();
