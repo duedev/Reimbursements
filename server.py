@@ -107,6 +107,12 @@ _results_lock = threading.Lock()
 
 _last_context: dict = {"employee": "Employee", "job_name": "", "job_number": ""}
 
+# Per-batch processing-time log, for comparing model speed across runs. Newest
+# first, capped; survives restarts via the state file.
+_benchmarks: list[dict] = []
+_bench_lock = threading.Lock()
+BENCH_MAX_ENTRIES = 100
+
 _seen_intake: set[str] = set()
 _seen_lock   = threading.Lock()
 
@@ -347,10 +353,13 @@ def _persist_state() -> None:
                 fn: dict(v) for fn, v in _kanban.items()
                 if v.get("status") in ("done", "failed")
             }
+        with _bench_lock:
+            bench_copy = list(_benchmarks)
         payload = {
             "results":      results_copy,
             "kanban":       kanban_copy,
             "last_context": context_copy,
+            "benchmarks":   bench_copy,
         }
         OUT_FOLDER.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
@@ -390,6 +399,13 @@ def _restore_state() -> None:
                 k: ctx[k] for k in ("employee", "job_name", "job_number")
                 if isinstance(ctx.get(k), str)
             })
+
+    bench = payload.get("benchmarks")
+    if isinstance(bench, list):
+        with _bench_lock:
+            _benchmarks.clear()
+            _benchmarks.extend(b for b in bench if isinstance(b, dict))
+            del _benchmarks[BENCH_MAX_ENTRIES:]
 
     with _results_lock:
         n = len(_results)
@@ -450,6 +466,7 @@ def _drain_once() -> bool:
         return False
 
     _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
+    _batch_t0 = time.perf_counter()
     client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
                     timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
 
@@ -626,9 +643,30 @@ def _drain_once() -> bool:
         n_done = len(_results)
     with _work_lock:
         n_pending = len(_work_queue)
+    bench = _record_benchmark(len(batch), time.perf_counter() - _batch_t0)
     _persist_state()
-    _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending})
+    _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending,
+                "benchmark": bench})
     return True
+
+
+def _record_benchmark(count: int, seconds: float) -> dict | None:
+    """Log this batch's wall-time + per-receipt average, tagged with the active
+    models, so a user can compare LLM speed across runs. Returns the entry."""
+    if count <= 0 or _worker_cancel.is_set():
+        return None
+    entry = {
+        "ts":            datetime.now().isoformat(timespec="seconds"),
+        "count":         count,
+        "total_seconds": round(seconds, 1),
+        "avg_seconds":   round(seconds / count, 2),
+        "distill_model": _pr._active_distill_model or "(auto)",
+        "ocr_model":     _pr._active_ocr_model or "(built-in only)",
+    }
+    with _bench_lock:
+        _benchmarks.insert(0, entry)
+        del _benchmarks[BENCH_MAX_ENTRIES:]
+    return entry
 
 
 # ── Unsupported / invalid intake files ─────────────────────────────────────────
@@ -2629,6 +2667,22 @@ async def save_audit_settings(body: AuditSettingsRequest):
         return JSONResponse({"ok": True, **applied})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/benchmarks")
+async def get_benchmarks():
+    """Per-batch processing-time history, newest first — for comparing LLMs."""
+    with _bench_lock:
+        return JSONResponse({"benchmarks": list(_benchmarks)})
+
+
+@app.post("/benchmarks/clear")
+async def clear_benchmarks():
+    with _bench_lock:
+        _benchmarks.clear()
+    _persist_state()
+    return JSONResponse({"ok": True})
+
 
 
 # ── Review / approval settings ────────────────────────────────────────────────
