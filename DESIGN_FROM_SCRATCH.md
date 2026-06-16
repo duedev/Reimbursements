@@ -328,7 +328,8 @@ regardless of the language or stack chosen:
   **vendor → category** lookup, and **duplicate detection** — all deterministic,
   all free.
 - The **review UX**: board, review modal, keyboard *Approve & Next* sweep,
-  on-image field markup.
+  on-image field markup, and the per-field **zoomed callouts** that show the
+  extracted value beside the slice of the receipt it came from.
 - **Deferred, export-time image compression** so extraction reads the sharpest
   image.
 - The **themed multi-sheet workbook** design.

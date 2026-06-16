@@ -127,7 +127,8 @@ Order matters. The canonical order is:
      A field that can't be confidently located is left un-boxed and flagged as such
      rather than mis-highlighted. Works with no model running.
 3. **Classify** — assign a category (see §7).
-4. **Validate** — confidence scoring, amount verification, threshold/date flags.
+4. **Validate** — confidence scoring, amount verification, and any **opt-in**
+   spending/date warnings (see §7; off by default).
 5. **Rename & file** — move to the completed area under a sortable name.
 6. **Accumulate** — add to the in-memory results set; run duplicate detection
    across the batch.
@@ -163,7 +164,7 @@ Order matters. The canonical order is:
   (e.g. missing vendor or amount tanks it). Below a threshold (~60), auto-mark the
   receipt as needing review. Surface the score on the card as a labeled badge
   (e.g. "82% conf") with a tooltip explaining what it means.
-- **Amount verification (two-stage mode):** independently scan the raw OCR text
+- **Amount verification (against the OCR text):** independently scan the raw OCR text
   for money values on total-like lines and compare to the extracted amount. If
   they agree, mark verified (✓ badge); if they conflict, flag for review. This is
   a cheap regex cross-check that catches model hallucinations.
@@ -175,11 +176,13 @@ Order matters. The canonical order is:
 - **Categories:** Fuel, Materials, Miscellaneous. Decide by vendor-name lookup
   against curated lists (gas stations → fuel; hardware/supply stores → materials;
   everything else → misc), refined by receipt content.
-- **Amount thresholds** (flag when exceeded): Fuel > $200, Materials > $500,
-  Misc > $300. Flagged receipts still appear in the report, visibly marked.
-- **Stale-date flag:** receipts older than ~6 months are flagged.
-- **The spreadsheet also visually highlights** any amount over its category
-  threshold, even if the model didn't flag it.
+- **Spending & date warnings are opt-in and off by default.** There are no
+  built-in dollar thresholds or date cutoffs. The user may set, in Settings,
+  per-category dollar caps and/or a maximum receipt age; receipts that exceed a
+  configured cap or age are then flagged. These checks are **deterministic**
+  (evaluated in code, never delegated to the model) so behaviour is predictable.
+- Flagged receipts still appear in the report, visibly marked (red Notes cell with
+  the reason). With no caps configured, nothing is flagged on amount or age.
 
 ---
 

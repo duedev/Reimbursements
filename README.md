@@ -28,7 +28,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Persistent autocomplete** — Employee name, job name, and job number fields remember your last 20 entries
 - **Category-prefixed filenames** — Processed images renamed to `fuel_12-30-24_shell.jpg` for instant sorting
 - **Duplicate detection** — Same vendor/date/amount flagged automatically, with an exclude-from-report dialog
-- **Amount verification** — In two-stage OCR mode, extracted amounts are cross-checked against money values printed on total-like lines of the raw OCR text; verified receipts get a ✓ badge, mismatches are flagged for review (pure regex, catches LLM hallucinations)
+- **Amount verification** — Extracted amounts are cross-checked against money values printed on total-like lines of the raw OCR text; verified receipts get a ✓ badge, mismatches are flagged for review (pure regex, catches LLM hallucinations)
 - **Insights dashboard** — Live spend analytics: total/average/flagged tiles, a category donut, an annotated spend-over-time chart (daily bars, cumulative line, average marker, peak callout), and top-vendor rankings (dependency-free SVG charts)
 - **CSV export** — One click exports all completed receipts as a spreadsheet-ready CSV
 - **Report history** — Browse and re-download every previously generated workbook
@@ -39,7 +39,11 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery & scheduling** — Watch-mode daemon and a built-in weekly scheduler can email the report over SMTP or drop it into a synced cloud folder
-- **Desktop GUI** — Standalone `customtkinter` app for users who prefer not to run a server
+- **Self-healing LLM connection** — The app auto-detects a working LLM endpoint at startup and whenever the configured one reads unreachable (LM Studio on `:1234`, the bundled Docker server on `:11434`, and the `host.docker.internal` variants), with a one-click **🔎 Auto-detect** in Settings
+- **On-image field markup** — The review modal and full-screen lightbox draw colour-coded boxes over the receipt showing exactly where the vendor, date, and amount were read, plus a zoomed callout of each so the extracted value can be checked against the print at a glance
+- **Opt-in spending & date warnings** — Off by default; set per-category dollar caps and a max receipt age in **Settings → Spending & Date Warnings** to have over-limit or stale receipts flagged
+- **Benchmarks** — Each batch's timing is logged and rolled into throughput/trend insights in the Benchmark settings card (copy-as-CSV)
+- **Finish-batch tidy-up** — After downloading a report, choose to archive the completed receipt images (kept outside the scanned folders) or delete them, then clear the board
 - **Installable PWA** — Add to home screen on mobile for a native-like experience
 
 ---
@@ -170,19 +174,6 @@ The daemon polls `WATCH_INBOX` every `WATCH_INTERVAL` seconds, moves processed i
 
 ---
 
-### Desktop GUI
-
-For a fully offline, no-server experience:
-
-```bash
-pip install -r requirements.txt customtkinter
-python receipt_gui.py
-```
-
-The GUI provides folder pickers, a live receipt thumbnail preview, extracted data display, and a progress log. It calls the same extraction pipeline as the server.
-
----
-
 ### CLI Batch Processing
 
 ```bash
@@ -221,18 +212,18 @@ All variables have sensible defaults for local development.
 | `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio server URL (use `host.docker.internal` inside Docker) |
 | `RECEIPTS_FOLDER` | `receipts` | Intake folder path |
 | `OUTPUT_FOLDER` | `output` | Output folder for Excel files and processed images |
-| `MAX_PARALLEL_REQUESTS` | `4` | Concurrent receipt processing threads |
+| `MAX_PARALLEL_REQUESTS` | `3` | Concurrent receipt processing threads (clamped 1–8; also adjustable live via the concurrency slider) |
 | `APP_AUTH_TOKEN` | *(unset)* | Shared-secret token required on every request when set. **Set this before exposing the app beyond `127.0.0.1`** (LAN, a phone, or a Cloudflare tunnel). Open the page once with `?token=<value>` — the token is then remembered and attached to image/stream/API requests, so the UI works across reloads and PWA relaunches on remote devices. |
 
 #### AI models
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMMA_SMALL_MODEL_ID` | _(empty → auto-detect)_ | Pin the distillation model; if unset the app auto-selects a loaded chat/vision model |
-| `GEMMA_LARGE_MODEL_ID` | _(empty → auto-detect)_ | Pin a larger distillation model (optional) |
-| `OLMOCR_MODEL_ID` | _(empty)_ | Pin an optional dedicated OCR model (e.g. a document-OCR model like `allenai/olmOCR-2-7B`) |
+| `GEMMA_SMALL_MODEL_ID` | _(empty → auto-detect)_ | Pin the AI model; if unset the app auto-selects a loaded chat/vision model |
+| `GEMMA_LARGE_MODEL_ID` | _(empty → auto-detect)_ | Pin a larger model (optional) |
+| `OLMOCR_MODEL_ID` | _(empty)_ | Legacy hint for a document-OCR model (e.g. `allenai/olmOCR-2-7B`). OCR and extraction now share **one** active model — flip *"Also use this model for OCR"* in Settings instead of pinning a separate OCR model |
 
-Model IDs are defaults only — use the in-app model selectors to switch without restarting.
+Model IDs are defaults only — use the in-app **AI Model** selector to switch without restarting.
 
 #### Watch mode
 
@@ -333,7 +324,8 @@ Receipt image / PDF
          ▼
   ┌─────────────┐
   │  Classify   │  Vendor-name lookup → fuel / mats / misc
-  │  & Validate │  Apply amount thresholds; check date within 6-month window
+  │  & Validate │  Confidence score + amount verification; apply any opt-in
+  │             │  spending/date warnings (off by default)
   └──────┬──────┘
          │
          ▼
@@ -363,15 +355,19 @@ Receipt image / PDF
 | **Materials** | Home Depot, Lowe's, Menards, Ace Hardware, Harbor Freight, Fastenal, Grainger, and more |
 | **Miscellaneous** | Everything else |
 
-### Threshold flags
+### Spending & date warnings (opt-in, off by default)
 
-| Category | Flag above |
+There are **no** built-in dollar thresholds or date cutoffs. To have receipts
+flagged, set them yourself in **Settings → Spending & Date Warnings**:
+
+| Setting | Effect |
 |---|---|
-| Fuel | $200 |
-| Materials | $500 |
-| Miscellaneous | $300 |
+| Per-category $ cap (fuel / materials / misc) | Flag any receipt in that category whose amount exceeds the cap |
+| Max receipt age (days) | Flag any receipt older than N days |
 
-Receipts dated more than 6 months ago are also flagged. Flagged receipts still appear in the spreadsheet — the Notes column turns red and the flag reason is shown.
+Leave a field blank to disable that rule. These checks are deterministic (applied
+in Python, not by the model). Flagged receipts still appear in the spreadsheet —
+the Notes column turns red and the flag reason is shown.
 
 ### Spreadsheet layout
 
@@ -426,6 +422,7 @@ Numbers**.
 | `POST` | `/kanban/remove` | `{"filename": "..."}` — dismiss a card |
 | `POST` | `/generate-spreadsheet` | Streams `.xlsx` binary |
 | `POST` | `/results/clear` | Clears completed results, hides generate card |
+| `POST` | `/results/finish` | `{"mode": "archive"\|"delete"}` — after download, archive or delete the completed receipt images, then clear the board |
 | `GET` | `/stats` | Spend analytics: totals, by-category, top vendors, and a timeline where each day carries its `total`, receipt `count`, and a running `cumulative` |
 | `GET` | `/export/csv` | Streams all completed results as CSV |
 | `GET` | `/reports` | Lists previously generated workbooks (name, size, date) |
@@ -435,18 +432,31 @@ Numbers**.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/models/available` | Active model IDs + full list from LM Studio |
-| `POST` | `/models/distill` | `{"model": "model-id"}` |
-| `POST` | `/models/ocr` | `{"model": ""}` to disable dedicated OCR |
+| `GET` | `/models/available` | Active model ID, `llm_ocr` toggle state + full list from LM Studio |
+| `POST` | `/models/distill` | `{"model": "model-id"}` — sets the single shared AI model (OCR + extraction) |
+| `POST` | `/models/ocr` | `{"enabled": true\|false}` — toggle the optional LLM-OCR cross-reference (reuses the active model; no separate OCR model) |
+| `POST` | `/models/thinking` | `{"enabled": true\|false}` — global reasoning toggle for the distillation/vision stages |
 | `GET` | `/models/lmstudio` | Raw list of models loaded in LM Studio |
+
+### LLM Server & Benchmarks
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET/POST` | `/settings/llm-server` | Get/set the LLM endpoint (Docker / Custom + base URL); applied immediately |
+| `GET` | `/llm-server/status` | Reachability + loaded-model status of the configured endpoint |
+| `POST` | `/llm-server/autodetect` | Probe the well-known endpoints, adopt the first that works, and persist it |
+| `POST` | `/llm-server/start\|stop\|restart\|load` | Control the bundled/local model server |
+| `GET` | `/benchmarks` | Per-batch timing log + rolled-up `insights` (throughput, trend, per-model) |
+| `POST` | `/benchmarks/clear` | Clear the benchmark history |
 
 ### Settings & Autocomplete
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
-| `GET/POST` | `/settings/processing` | `autocrop`, `grayscale`, `compress`, `local_ocr`, `jpeg_quality` |
+| `GET/POST` | `/settings/processing` | `autorotate`, `autocrop`, `autocrop_aggressiveness`, `grayscale`, `compress`, `local_ocr`, `jpeg_quality`, `max_parallel` |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
+| `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |
 | `GET/POST` | `/saved-fields` | `employees`, `job_names`, `job_numbers` lists |
@@ -495,7 +505,9 @@ All events are JSON, delivered as `data: {...}\n\n` on the `/events` stream.
 ├── process_receipts.py     # Extraction pipeline, categorization, spreadsheet
 ├── spreadsheet_theme.py    # Excel workbook builder (openpyxl)
 ├── watch_mode.py           # Continuous folder-monitoring daemon
-├── receipt_gui.py          # Desktop GUI (customtkinter)
+├── scheduler.py            # Weekly scheduled export/delivery
+├── vendor_db.py            # Curated vendor → category lookup
+├── receipt_testkit.py      # Synthetic receipt test-bench (LLM scoring)
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
@@ -532,7 +544,7 @@ intake/                     # Drop receipts here for auto-processing
 
 | Requirement | Version |
 |---|---|
-| Python | 3.12+ |
+| Python | 3.11+ (CI runs 3.11 and 3.12) |
 | Docker + Compose | Any recent version |
 | LM Studio | Latest (with Local Server enabled) |
 | Vision LLM | Any multimodal model loaded in LM Studio |
@@ -549,7 +561,9 @@ Pillow           >= 11.0.0
 PyMuPDF          >= 1.24.0
 ```
 
-`customtkinter` is only required for the desktop GUI and is **not** in `requirements.txt` — install it separately if needed.
+The built-in OCR (RapidOCR / onnxruntime) and its bundled ONNX models are pulled in
+by the Docker image; in tests the OCR stack is mocked, so `requirements-test.txt`
+stays lightweight.
 
 ---
 
@@ -574,7 +588,7 @@ CI runs the same suite on Python 3.11 and 3.12 for every push and pull request (
 No. All processing happens through LM Studio on your own machine. The only outbound network call the app makes is to the LM Studio local server (default `localhost:1234`).
 
 **Q: What models work best?**  
-Any multimodal model that can see images works. A vision-capable instruction model in the 7–12B range gives strong accuracy on a typical laptop. For 2-stage OCR mode, a dedicated document-OCR model (such as `allenai/olmOCR-2-7B`) followed by any instruction model to distill the structure produces very clean output on handwritten or low-resolution receipts.
+Any multimodal model that can see images works. A vision-capable instruction model in the 7–12B range gives strong accuracy on a typical laptop. The built-in RapidOCR always runs locally; turning on **"Also use this model for OCR"** has the AI model transcribe each receipt too and cross-references both readings — slower, but cleaner output on handwritten or low-resolution receipts. A document-OCR-strong vision model (olmOCR-class) shines in that mode.
 
 **Q: Why are some receipts ending up in Failed?**  
 The extractor flags a receipt as low-confidence when it cannot identify a vendor name or a dollar amount. This happens with blurry images, heavily stylized receipts, or models that struggle with a particular format. Click **↺ Retry** to re-queue with the same or a different model, or try enabling the optional OCR model.
