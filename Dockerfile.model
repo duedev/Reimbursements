@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1
+#
+# Bundled local LLM — an OpenAI-compatible server with the model weights baked
+# INTO the image, so the app needs no external LM Studio and the container runs
+# fully offline. The image is large (~2-3 GB for a 2B vision model) because the
+# weights ship inside it (this is the "bundle weights in the image" option).
+#
+# A *vision* model is expected (so the direct-image extraction path and the LLM
+# field-location boxes work), which is why an mmproj (vision projector) is
+# required alongside the main GGUF.
+#
+# Swap the model without editing this file via build args — point them at any
+# GGUF + mmproj download URLs (see README → "Bundled LLM" for how to find them):
+#
+#   docker build -f Dockerfile.model \
+#     --build-arg MODEL_URL="https://…/qwen3-vl-2b-instruct-q5_k_xl.gguf" \
+#     --build-arg MMPROJ_URL="https://…/mmproj-qwen3-vl-2b-f16.gguf" \
+#     -t receipts-model .
+
+# ── Stage 1: fetch the weights (baked into the final image) ───────────────────
+FROM debian:stable-slim AS fetch
+ARG MODEL_URL=""
+ARG MMPROJ_URL=""
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /models
+RUN set -eu; \
+    if [ -z "${MODEL_URL}" ] || [ -z "${MMPROJ_URL}" ]; then \
+        echo "ERROR: MODEL_URL and MMPROJ_URL build args are required."; \
+        echo "Set them to a GGUF model + its mmproj (vision) download URL."; \
+        echo "See the README 'Bundled LLM' section for the recommended Qwen3-VL-2B links."; \
+        exit 1; \
+    fi; \
+    echo "Downloading model weights (this can take a while)…"; \
+    curl -fL --retry 3 "${MODEL_URL}"  -o model.gguf; \
+    echo "Downloading vision projector (mmproj)…"; \
+    curl -fL --retry 3 "${MMPROJ_URL}" -o mmproj.gguf; \
+    ls -lh /models
+
+# ── Stage 2: the OpenAI-compatible server with the weights inside ─────────────
+FROM ghcr.io/ggml-org/llama.cpp:server
+COPY --from=fetch /models /models
+EXPOSE 1234
+# The base image's entrypoint is the llama-server binary; everything below is
+# its arguments. --alias is the model id the app sees at /v1/models (auto-picked
+# by initialize_models). -ngl 0 is CPU-only; raise it (and enable the GPU block
+# in docker-compose.yml) to offload layers to a GPU.
+CMD ["-m", "/models/model.gguf", \
+     "--mmproj", "/models/mmproj.gguf", \
+     "--host", "0.0.0.0", "--port", "1234", \
+     "-c", "8192", "-ngl", "0", \
+     "--alias", "qwen3-vl-2b-instruct"]

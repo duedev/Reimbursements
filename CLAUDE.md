@@ -176,6 +176,16 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (Docker: bundled LLM):** New `Dockerfile.model` (multi-stage:
+  curl-fetch the GGUF + mmproj, bake into `ghcr.io/ggml-org/llama.cpp:server`) +
+  a `model-server` compose service under profile `bundled-llm` serving an
+  OpenAI-compatible API on :1234. App's `LMSTUDIO_BASE_URL` is now env-overridable
+  (`${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}`) so it can point at
+  `http://model-server:1234/v1`. Weights are baked into the image (offline, but
+  ~2-3 GB); model is swappable via `MODEL_URL`/`MMPROJ_URL` build args (default
+  alias `qwen3-vl-2b-instruct`). `.env.example` + README "Bundled LLM" documented;
+  README OCR note updated for the single-model consolidation. No code/tests changed.
+
 - **2026-06-16 (synthetic receipt test-bench):** New `receipt_testkit.py` — a
   fixed suite of 9 challenge receipts (clean, rotated_90, faint_thermal,
   multi_total, us_date_ambiguous, noisy_scan, long_itemized, missing_vendor,
