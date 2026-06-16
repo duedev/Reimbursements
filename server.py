@@ -2591,9 +2591,9 @@ async def get_llm_server_settings():
     llm_srv = cfg.get("llm_server") or {}
     return JSONResponse({
         "server_type": llm_srv.get("server_type", "custom"),
-        "base_url":    llm_srv.get("base_url",
-                                   getattr(_pr, "LMSTUDIO_BASE_URL",
-                                           "http://127.0.0.1:1234/v1")),
+        # Always return the effective (normalized) URL so the UI reflects
+        # what the server is actually using, not the raw stored value.
+        "base_url":    getattr(_pr, "LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
     })
 
 

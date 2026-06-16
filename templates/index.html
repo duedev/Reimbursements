@@ -3829,6 +3829,8 @@ document.getElementById('llm-server-save-btn').addEventListener('click', async (
     if (d.ok) {
       showToast(`LLM server set to: ${d.base_url}`, true);
       loadLMStudioModels();
+      checkLLMStatus();
+      loadLLMServerSettings();
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
