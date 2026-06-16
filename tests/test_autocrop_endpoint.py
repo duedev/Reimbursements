@@ -10,11 +10,17 @@ import server
 
 
 @pytest.fixture()
-def client(monkeypatch):
+def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "initialize_models", lambda: None)
     monkeypatch.setattr(server, "_run_watcher", lambda: None)
     monkeypatch.setattr(server, "_run_stall_checker", lambda: None)
     monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
+    monkeypatch.setattr(server, "PROCESSING_FOLDER", tmp_path / "processing")
+    # Restore any process_receipts globals these tests (or /settings/processing)
+    # mutate, so module-level state doesn't leak into other tests.
+    for attr in ("AUTOCROP_AGGRESSIVENESS", "AUTOCROP_ENABLED", "AUTOROTATE_ENABLED",
+                 "GRAYSCALE_ENABLED", "COMPRESS_ENABLED", "LOCAL_OCR_ENABLED"):
+        monkeypatch.setattr(_pr, attr, getattr(_pr, attr))
     with TestClient(server.app) as c:
         yield c
 
@@ -74,3 +80,49 @@ def test_autocrop_test_handles_non_image(client):
     r = _post(client, b"this is not an image", name="notes.txt")
     assert r.status_code == 500
     assert r.json()["ok"] is False
+
+
+# ── /debug/process-test — the whole chain in series ────────────────────────────
+
+def _post_proc(client, content, name="r.jpg"):
+    return client.post("/debug/process-test",
+                       files=[("files", (name, content, "image/jpeg"))])
+
+
+def test_process_test_runs_full_chain_in_order(client):
+    d = _post_proc(client, _jpeg()).json()
+    assert d["ok"] is True
+    names = [s["step"] for s in d["steps"]]
+    assert names == ["Auto-rotate to upright", "Black & white",
+                     "Auto-crop borders", "Compress stored image"]
+    assert d["original"] == [1000, 1000]
+    # Auto-crop (default aggressiveness) trims the bordered receipt.
+    assert d["result"][0] < 1000 and d["result"][1] < 1000
+    assert d["preview"].startswith("data:image/jpeg;base64,")
+    assert 0 <= d["aggressiveness"] <= 100
+
+
+def test_process_test_marks_disabled_steps(client, monkeypatch):
+    monkeypatch.setattr(_pr, "AUTOCROP_ENABLED", False)
+    d = _post_proc(client, _jpeg()).json()
+    crop = next(s for s in d["steps"] if s["step"] == "Auto-crop borders")
+    assert crop["enabled"] is False and crop["applied"] is False
+    assert d["result"] == d["original"]          # nothing trimmed
+
+
+def test_process_test_rejects_empty(client):
+    assert _post_proc(client, b"").status_code == 400
+
+
+# ── aggressiveness persists through /settings/processing ───────────────────────
+
+def test_settings_round_trips_autocrop_aggressiveness(client):
+    r = client.post("/settings/processing", json={"autocrop_aggressiveness": 90})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert _pr.AUTOCROP_AGGRESSIVENESS == 90
+    assert client.get("/settings/processing").json()["autocrop_aggressiveness"] == 90
+
+
+def test_settings_clamps_autocrop_aggressiveness(client):
+    client.post("/settings/processing", json={"autocrop_aggressiveness": 500})
+    assert _pr.AUTOCROP_AGGRESSIVENESS == 100

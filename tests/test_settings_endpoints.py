@@ -23,7 +23,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
     # Save runtime globals so endpoint mutations don't leak into other tests
     saved = (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
-             pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled)
+             pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
+             pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS)
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
@@ -33,7 +34,8 @@ def client(tmp_path, monkeypatch):
     server._kanban.clear()
     server._item_cache.clear()
     (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
-     pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled) = saved
+     pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
+     pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS) = saved
 
 
 def test_processing_round_trip(client):
@@ -52,6 +54,16 @@ def test_processing_round_trip(client):
 def test_processing_clamps_quality(client):
     assert client.post("/settings/processing", json={"jpeg_quality": 5}).json()["jpeg_quality"] == 40
     assert client.post("/settings/processing", json={"jpeg_quality": 200}).json()["jpeg_quality"] == 95
+
+
+def test_max_parallel_round_trip_and_clamp(client):
+    r = client.post("/settings/processing", json={"max_parallel": 5})
+    assert r.status_code == 200 and r.json()["max_parallel"] == 5
+    assert pr.MAX_PARALLEL_REQUESTS == 5
+    assert client.get("/settings/processing").json()["max_parallel"] == 5
+    # clamps to 1..8
+    assert client.post("/settings/processing", json={"max_parallel": 0}).json()["max_parallel"] == 1
+    assert client.post("/settings/processing", json={"max_parallel": 99}).json()["max_parallel"] == 8
 
 
 def test_email_password_hidden_and_preserved(client):

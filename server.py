@@ -180,12 +180,14 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
 def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
-        "autorotate":   _pr.AUTOROTATE_ENABLED,
-        "autocrop":     _pr.AUTOCROP_ENABLED,
-        "grayscale":    _pr.GRAYSCALE_ENABLED,
-        "compress":     _pr.COMPRESS_ENABLED,
-        "local_ocr":    _pr.LOCAL_OCR_ENABLED,
-        "jpeg_quality": _pr.JPEG_QUALITY,
+        "autorotate":              _pr.AUTOROTATE_ENABLED,
+        "grayscale":               _pr.GRAYSCALE_ENABLED,
+        "autocrop":                _pr.AUTOCROP_ENABLED,
+        "autocrop_aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
+        "local_ocr":               _pr.LOCAL_OCR_ENABLED,
+        "compress":                _pr.COMPRESS_ENABLED,
+        "jpeg_quality":            _pr.JPEG_QUALITY,
+        "max_parallel":            _pr.MAX_PARALLEL_REQUESTS,
     }
 
 
@@ -199,6 +201,11 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
         _pr.AUTOROTATE_ENABLED = bool(proc["autorotate"])
     if "autocrop" in proc:
         _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
+    if proc.get("autocrop_aggressiveness") is not None:
+        try:
+            _pr.AUTOCROP_AGGRESSIVENESS = max(0, min(100, int(proc["autocrop_aggressiveness"])))
+        except (TypeError, ValueError):
+            pass
     if "grayscale" in proc:
         _pr.GRAYSCALE_ENABLED = bool(proc["grayscale"])
     if "compress" in proc:
@@ -214,7 +221,45 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
             _pr.JPEG_QUALITY = max(40, min(95, int(proc["jpeg_quality"])))
         except (TypeError, ValueError):
             pass
+    if proc.get("max_parallel") is not None:
+        try:
+            _pr.MAX_PARALLEL_REQUESTS = max(1, min(8, int(proc["max_parallel"])))
+        except (TypeError, ValueError):
+            pass
     return _processing_settings()
+
+
+def _audit_settings() -> dict:
+    """Current spending/date-warning thresholds as the UI sees them (None = off)."""
+    return {
+        "amount_limits": dict(_pr.AMOUNT_LIMITS),
+        "max_age_days":  _pr.MAX_RECEIPT_AGE_DAYS,
+    }
+
+
+def _coerce_pos_num(v):
+    """Parse a settings value to a positive number, or None for blank/invalid/≤0."""
+    if v is None or v == "":
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _apply_audit_config(cfg: dict | None = None) -> dict:
+    """Push persisted spending/date-warning thresholds into process_receipts."""
+    cfg = cfg if cfg is not None else _load_config()
+    audit = cfg.get("audit") or {}
+    limits = audit.get("amount_limits") or {}
+    for cat in ("fuel", "mats", "misc"):
+        if cat in limits:
+            _pr.AMOUNT_LIMITS[cat] = _coerce_pos_num(limits[cat])
+    if "max_age_days" in audit:
+        n = _coerce_pos_num(audit["max_age_days"])
+        _pr.MAX_RECEIPT_AGE_DAYS = int(n) if n is not None else None
+    return _audit_settings()
 
 
 # ── SSE broadcast helpers ──────────────────────────────────────────────────────
@@ -516,7 +561,10 @@ def _drain_once() -> bool:
             data["job_name"]   = item.get("job_name") or DEFAULT_JOB_NAME
             data["job_number"] = item.get("job_number") or DEFAULT_JOB_NUMBER
             audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
-            flags = _pr._normalize_flags(data.get("flags") or [])
+            # User-configured spending/date warnings (default none). Prepended so
+            # a warning shows up as the card's headline flag when present.
+            warn_flags = [{"flag": w} for w in _pr.audit_warning_flags(data, category)]
+            flags = warn_flags + _pr._normalize_flags(data.get("flags") or [])
             data["flags"] = flags  # ensure normalised form is stored
             if flags and not data.get("_flag"):
                 data["_flag"] = flags[0].get("flag", "")
@@ -919,6 +967,7 @@ async def lifespan(app: FastAPI):
     _schedule_wakeup = asyncio.Event()   # bind to this app's running loop
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
+    _apply_audit_config()        # restore UI-saved spending/date warning thresholds
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -2329,7 +2378,7 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
-    """Set distillation model. LM Studio JIT will load it on first use."""
+    """Set the distillation model. LM Studio loads it on first use."""
     target = body.model.strip()
     _pr._active_distill_model = target
     return JSONResponse({"ok": True, "active_distill": target})
@@ -2337,7 +2386,7 @@ async def swap_distill_model(body: ModelSwapRequest):
 
 @app.post("/models/ocr")
 async def swap_ocr_model(body: ModelSwapRequest):
-    """Set (or clear) the dedicated OCR model. LM Studio JIT loads on first use."""
+    """Set (or clear) the dedicated OCR model. LM Studio loads it on first use."""
     target = body.model.strip()
     _pr._active_ocr_model = target        # empty string = disable OCR stage
     return JSONResponse({"ok": True, "active_ocr": target})
@@ -2508,12 +2557,14 @@ async def get_version():
 # ── Image-processing settings ──────────────────────────────────────────────────
 
 class ProcessingSettingsRequest(BaseModel):
-    autorotate:   bool | None = None
-    autocrop:     bool | None = None
-    grayscale:    bool | None = None
-    compress:     bool | None = None
-    local_ocr:    bool | None = None
-    jpeg_quality: int | None = None
+    autorotate:              bool | None = None
+    autocrop:                bool | None = None
+    autocrop_aggressiveness: int | None = None
+    grayscale:               bool | None = None
+    compress:                bool | None = None
+    local_ocr:               bool | None = None
+    jpeg_quality:            int | None = None
+    max_parallel:            int | None = None
 
 
 @app.get("/settings/processing")
@@ -2528,14 +2579,53 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         proc = cfg.get("processing") or {}
         if body.autorotate is not None: proc["autorotate"] = bool(body.autorotate)
         if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
+        if body.autocrop_aggressiveness is not None:
+            proc["autocrop_aggressiveness"] = max(0, min(100, int(body.autocrop_aggressiveness)))
         if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)
         if body.local_ocr is not None: proc["local_ocr"] = bool(body.local_ocr)
         if body.jpeg_quality is not None:
             proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
+        if body.max_parallel is not None:
+            proc["max_parallel"] = max(1, min(8, int(body.max_parallel)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)
+        return JSONResponse({"ok": True, **applied})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+class AuditSettingsRequest(BaseModel):
+    # Any field may be null/"" to clear (disable) that warning.
+    fuel_limit:   float | str | None = None
+    mats_limit:   float | str | None = None
+    misc_limit:   float | str | None = None
+    max_age_days: float | str | None = None
+
+
+@app.get("/settings/audit")
+async def get_audit_settings():
+    return JSONResponse(_audit_settings())
+
+
+@app.post("/settings/audit")
+async def save_audit_settings(body: AuditSettingsRequest):
+    """Set the optional spending/date warnings. Any blank field clears (disables)
+    that warning — by default nothing is set, so no warnings fire."""
+    try:
+        cfg = _load_config()
+        audit = cfg.get("audit") or {}
+        limits = audit.get("amount_limits") or {}
+        for cat, val in (("fuel", body.fuel_limit), ("mats", body.mats_limit),
+                         ("misc", body.misc_limit)):
+            limits[cat] = _coerce_pos_num(val)
+        audit["amount_limits"] = limits
+        n = _coerce_pos_num(body.max_age_days)
+        audit["max_age_days"] = int(n) if n is not None else None
+        cfg["audit"] = audit
+        _save_config(cfg)
+        applied = _apply_audit_config(cfg)
         return JSONResponse({"ok": True, **applied})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -2855,6 +2945,85 @@ async def autocrop_test(files: list[UploadFile] = File(...)):
             "reason":     info["reason"],
             "preview":    "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
         }
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/debug/process-test")
+async def process_test(files: list[UploadFile] = File(...)):
+    """Run every enabled image-processing step on an uploaded image, in the exact
+    order the pipeline uses (auto-rotate → black&white → auto-crop → compress),
+    and return a per-step before/after report plus the final image. Confirms the
+    steps compose — e.g. a sideways photo comes out upright *and* cropped — and
+    lets a user dial in auto-crop aggressiveness against a real receipt."""
+    if not files:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+    content = await files[0].read()
+    if not content:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+    suffix = Path(files[0].filename or "test.jpg").suffix or ".jpg"
+
+    def _run() -> dict:
+        from PIL import Image as PILImage
+        PROCESSING_FOLDER.mkdir(parents=True, exist_ok=True)
+        cur = PROCESSING_FOLDER / f"_proc_test_{uuid4().hex[:8]}{suffix}"
+        cleanup = {cur}
+        try:
+            cur.write_bytes(content)
+
+            def _dims(p: Path) -> list:
+                with PILImage.open(p) as im:
+                    return list(im.size)
+
+            start_dims, start_bytes = _dims(cur), cur.stat().st_size
+            steps = []
+
+            # The image transforms, applied in series exactly as the pipeline does.
+            for label, enabled, fn in (
+                ("Auto-rotate to upright", _pr.AUTOROTATE_ENABLED, _pr.autorotate_image_file),
+                ("Black & white",          _pr.GRAYSCALE_ENABLED,  _pr.grayscale_image_file),
+                ("Auto-crop borders",      _pr.AUTOCROP_ENABLED,   _pr.autocrop_image_file),
+            ):
+                before = _dims(cur)
+                applied = bool(fn(cur))
+                steps.append({"step": label, "enabled": bool(enabled),
+                              "applied": applied, "before": before, "after": _dims(cur)})
+
+            # Compress is an export-time step that may rewrite the file to .jpg.
+            before, before_bytes = _dims(cur), cur.stat().st_size
+            new = _pr.compress_image_file(cur)
+            cleanup.add(new)
+            after, after_bytes = _dims(new), new.stat().st_size
+            steps.append({
+                "step": "Compress stored image", "enabled": bool(_pr.COMPRESS_ENABLED),
+                "applied": bool(_pr.COMPRESS_ENABLED and (str(new) != str(cur)
+                            or after_bytes < before_bytes or after != before)),
+                "before": before, "after": after,
+                "before_bytes": before_bytes, "after_bytes": after_bytes,
+            })
+            cur = new
+
+            with PILImage.open(cur) as fim:
+                buf = io.BytesIO()
+                fim.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
+            return {
+                "ok": True,
+                "aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
+                "steps": steps,
+                "original": start_dims, "original_bytes": start_bytes,
+                "result": _dims(cur), "result_bytes": cur.stat().st_size,
+                "preview": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
+            }
+        finally:
+            for p in cleanup:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _run)

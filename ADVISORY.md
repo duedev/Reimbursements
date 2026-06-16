@@ -37,7 +37,7 @@ The work is not trivial. Do not reach for Supabase until you have a concrete mul
 
 ### Model guidance
 
-The current defaults — `google/gemma-4-12b-qat` as the distillation model and `allenai/olmOCR-2-7B` as the optional OCR model — are a good starting point. The two-stage configuration (olmOCR transcribes text, Gemma distills structure) consistently outperforms a single large vision model on receipt images, particularly for blurry or low-contrast scans.
+A good starting point is a two-stage setup: a dedicated document-OCR model (such as `allenai/olmOCR-2-7B`) for the first pass, plus any 7–12B vision/instruction model to distill the structure. That two-stage configuration (the OCR model transcribes text, the instruction model distills structure) consistently outperforms a single large vision model on receipt images, particularly for blurry or low-contrast scans. The app ships no hard-coded default model — it auto-detects whatever you load in LM Studio.
 
 Model recommendations go stale fast. Rather than chasing specific names, use these selection criteria:
 

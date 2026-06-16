@@ -59,6 +59,13 @@ APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
 # (CPU) with another's LLM call without VRAM thrash. Raise only when LM Studio is
 # configured for true parallelism with VRAM headroom. 0 = no cap (legacy default).
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "3"))
+
+# Optional, user-configurable audit warnings — all OFF by default (None = no
+# warning). Set from Settings → "Spending & date warnings" and applied
+# deterministically in Python (audit_warning_flags), NOT by the LLM, so behaviour
+# is consistent and there are no warnings at all unless the user opts in.
+AMOUNT_LIMITS = {"fuel": None, "mats": None, "misc": None}   # per-category $ caps
+MAX_RECEIPT_AGE_DAYS = None                                  # flag receipts older than N days
 # Per-request timeout (seconds) for the LM Studio / OpenAI client. Without it a
 # hung model request blocks a worker thread forever; bounded retries cover
 # transient drops. Override via LLM_TIMEOUT.
@@ -192,16 +199,14 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "(labelled transcription A and B) from different engines — cross-reference "
     "them, prefer values that agree, and use the clearer reading where they differ\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
-    "- date must be YYYY-MM-DD\n"
+    "- date must be YYYY-MM-DD; ALWAYS read ambiguous numeric dates as US "
+    "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
     "- summary: one sentence, vendor and purpose only, do NOT include the dollar amount\n"
     "- Do NOT include job_name or job_number — user provides those manually\n"
-    "- flags: JSON array of flag objects for issues:\n"
-    '  * fuel > $200  → {{"flag": "Amount exceeds $200 fuel threshold"}}\n'
-    '  * mats > $500  → {{"flag": "Amount exceeds $500 mats threshold"}}\n'
-    '  * misc > $300  → {{"flag": "Amount exceeds $300 misc threshold"}}\n'
+    "- flags: JSON array of flag objects for OCR/extraction problems ONLY:\n"
     '  * amount=0, missing vendor, or garbled date → {{"flag": "OCR error: reason"}}\n'
-    "  * date outside 6-month window from {today} → "
-    '{{"flag": "Date outside 6-month window"}}\n'
+    "  * Do NOT flag amounts for being high or dates for being old — the app "
+    "handles those rules itself\n"
     "  * Return [] if no issues\n\n"
     "Return ONLY valid JSON — no markdown, no extra text.\n\n"
     "Receipt OCR text:\n{ocr_text}"
@@ -227,14 +232,13 @@ Category rules:
 - "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
 Amount: use TOTAL or GRAND TOTAL.
-Date: YYYY-MM-DD from transaction date.
+Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
 Summary: vendor and purpose only — do NOT include the dollar amount.
 Do NOT include job_name or job_number.
 
-flags:
-- fuel > $200, mats > $500, misc > $300 → {{"flag": "Amount exceeds threshold"}}
+flags (OCR/extraction problems ONLY):
 - amount=0, missing vendor, garbled date → {{"flag": "OCR error: reason"}}
-- date outside 6-month window from {today} → {{"flag": "Date outside 6-month window"}}
+- Do NOT flag amounts for being high or dates for being old — the app handles those rules itself.
 Return [] if no issues.
 
 Return ONLY valid JSON, no markdown."""
@@ -352,10 +356,29 @@ def initialize_models() -> str:
 # bug); the file the worker stores is exactly the file OCR read.
 
 AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
-AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
-AUTOCROP_MAX_RATIO = 0.95   # skip crop that trims almost nothing
-AUTOCROP_MARGIN    = 0.02   # safety margin re-added around the detected bbox
-_AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as content
+# Single user-facing dial, 0 (gentle) … 100 (very aggressive). It drives every
+# detection knob below so one slider moves the whole behaviour. The default leans
+# aggressive on purpose: phone photos carry a lot of background, and a timid crop
+# reads to the user as "it didn't do anything".
+AUTOCROP_AGGRESSIVENESS = int(os.getenv("AUTOCROP_AGGRESSIVENESS", "70"))
+
+
+def _autocrop_params(aggressiveness: float) -> dict:
+    """Map the 0..100 aggressiveness dial onto the four detection knobs.
+
+    Higher aggressiveness ⇒ trims closer (smaller re-added margin), accepts
+    tighter crops (lower min-kept floor), fires on smaller borders (higher
+    max-kept ceiling), and ignores fainter background gradients (higher content
+    threshold).  At 0 it reproduces the old conservative behaviour; at 100 it
+    will trim almost any detectable border.
+    """
+    a = max(0.0, min(1.0, aggressiveness / 100.0))
+    return {
+        "min_ratio": 0.50 - 0.47 * a,   # keep ≥50% … keep ≥3%
+        "max_ratio": 0.92 + 0.079 * a,  # trim borders down to <0.1% of the frame
+        "margin":    0.04 * (1.0 - a),  # 4% … 0% safety margin re-added
+        "threshold": 16 + 30 * a,       # 16 … 46 min grayscale delta from bg
+    }
 
 # Stored-image compression — re-encode every saved receipt to an optimized JPEG
 # so phone photos don't bloat the output folder or the embedded workbook images.
@@ -386,16 +409,22 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
-def autocrop_analyze(img: Image.Image) -> dict:
+def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -> dict:
     """Inspect what auto-crop would do to ``img`` without mutating it.
 
     Returns a diagnostics dict — ``{"bbox", "kept_ratio", "would_crop",
     "reason"}`` — that is the single source of truth for both the pipeline
-    (``autocrop_receipt``) and the Settings → "Test Auto-crop" preview.  ``bbox``
-    is the detected content box *with* the safety margin (or None), ``kept_ratio``
-    is its area as a fraction of the original, and ``reason`` is a short,
-    human-readable explanation of the decision.
+    (``autocrop_receipt``) and the Settings → "Test image processing" preview.
+    ``bbox`` is the detected content box *with* the safety margin (or None),
+    ``kept_ratio`` is its area as a fraction of the original, and ``reason`` is a
+    short, human-readable explanation of the decision.  ``aggressiveness``
+    defaults to the module-level ``AUTOCROP_AGGRESSIVENESS`` dial.
     """
+    if aggressiveness is None:
+        aggressiveness = AUTOCROP_AGGRESSIVENESS
+    p = _autocrop_params(aggressiveness)
+    min_ratio, max_ratio = p["min_ratio"], p["max_ratio"]
+    threshold = p["threshold"]
     try:
         gray = img.convert("L")
         w, h = gray.size
@@ -411,14 +440,14 @@ def autocrop_analyze(img: Image.Image) -> dict:
         bg = samples[len(samples) // 2]
 
         diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
-        mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
+        mask = diff.point(lambda v: 255 if v > threshold else 0)
         bbox = mask.getbbox()
         if not bbox:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "no content edges stand out from the background"}
 
-        mx = int(w * AUTOCROP_MARGIN)
-        my = int(h * AUTOCROP_MARGIN)
+        mx = int(w * p["margin"])
+        my = int(h * p["margin"])
         left   = max(0, bbox[0] - mx)
         top    = max(0, bbox[1] - my)
         right  = min(w, bbox[2] + mx)
@@ -426,14 +455,15 @@ def autocrop_analyze(img: Image.Image) -> dict:
         kept = ((right - left) * (bottom - top)) / float(w * h)
         margined = (left, top, right, bottom)
 
-        if kept < AUTOCROP_MIN_RATIO:
+        if kept < min_ratio:
             return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
                     "reason": f"crop looks too aggressive — would keep only "
-                              f"{kept:.0%} (min {AUTOCROP_MIN_RATIO:.0%})"}
-        if kept > AUTOCROP_MAX_RATIO:
+                              f"{kept:.0%} (min {min_ratio:.0%} at this aggressiveness; "
+                              f"raise the slider to allow it)"}
+        if kept > max_ratio:
             return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
                     "reason": f"borders are negligible — keeps {kept:.0%} "
-                              f"(max {AUTOCROP_MAX_RATIO:.0%})"}
+                              f"(needs < {max_ratio:.0%}; raise the slider to trim more)"}
         return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
                 "reason": f"trims background to {kept:.0%} of the original"}
     except Exception as exc:
@@ -806,6 +836,11 @@ def _parse_llm_record(raw: str) -> Optional[dict]:
     # normalise "summary" field name to "ai_summary" used downstream
     if "summary" in result and "ai_summary" not in result:
         result["ai_summary"] = result.pop("summary")
+    # Canonicalise the date deterministically (US month/day, 2-digit years → 20xx)
+    # rather than trusting the model to have picked the right format. Keep the raw
+    # value if it isn't parseable so nothing is silently lost.
+    if result.get("date"):
+        result["date"] = normalize_date(result["date"]) or result["date"]
     return result
 
 
@@ -1188,16 +1223,13 @@ _DATE_PATTERNS = (
 
 def _find_date_in_text(text: str) -> str:
     """Best-effort extraction of a transaction date as YYYY-MM-DD ('' if none)."""
-    def _norm_year(y: int) -> int:
-        return y + 2000 if y < 100 else y
-
     for rx, kind in _DATE_PATTERNS:
         for m in rx.finditer(text):
             try:
                 if kind == "ymd":
                     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 elif kind == "mdy":
-                    mo, d, y = int(m.group(1)), int(m.group(2)), _norm_year(int(m.group(3)))
+                    mo, d, y = int(m.group(1)), int(m.group(2)), _normalize_year(int(m.group(3)))
                 elif kind == "mname":
                     mo = MONTH_MAP.get(m.group(1).lower())
                     d, y = int(m.group(2)), int(m.group(3))
@@ -1209,6 +1241,70 @@ def _find_date_in_text(text: str) -> str:
                 return date(y, mo, d).isoformat()
             except (ValueError, TypeError):
                 continue
+    return ""
+
+
+def _normalize_year(y: int) -> int:
+    """Two-digit year → the 2000s (24 → 2024); four-digit years pass through.
+
+    Per the app's convention every ``YY`` is assumed to be 20xx — we do not try
+    to guess 19xx — so "99" becomes 2099, not 1999.
+    """
+    return 2000 + y if 0 <= y < 100 else y
+
+
+def _iso_or_blank(y: int, mo: int, d: int) -> str:
+    try:
+        return date(y, mo, d).isoformat()
+    except (ValueError, TypeError):
+        return ""
+
+
+def normalize_date(raw) -> str:
+    """Normalize a receipt date string to canonical ``YYYY-MM-DD`` — US-first.
+
+    Receipts in this app are assumed to follow the US **MM/DD/YYYY** convention,
+    so an ambiguous numeric date like ``08-15-24`` is read as month=08, day=15,
+    year=2024 — we deliberately do **not** try to infer DD/MM order (that
+    guessing is exactly what we want to take away from the LLM). Rules:
+
+      * **US month/day order** for all numeric dates.
+      * **Two-digit years → 2000s** (``24`` → ``2024``) via ``_normalize_year``.
+      * **Separators**: dashes, slashes, and dots are all accepted
+        (``08-15-24`` / ``08/15/24`` / ``08.15.24``).
+      * An already-ISO ``YYYY-MM-DD`` (or ``YYYY/MM/DD``) is trusted year-first.
+      * Common month-name forms (``May 1, 2024`` / ``1 May 2024``) are handled.
+
+    Returns ``''`` when nothing date-like (or nothing *valid*, e.g. ``13/40/24``)
+    can be found, so callers can fall back cleanly.
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+
+    # Year-first ISO (4-digit year leads) — trust it as written.
+    m = re.search(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b", s)
+    if m:
+        return _iso_or_blank(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # US numeric: MM[sep]DD[sep]YY or YYYY, with - / . separators.
+    m = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b", s)
+    if m:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             int(m.group(1)), int(m.group(2)))
+
+    # Month-name forms: "May 1, 2024" / "May. 1 24".
+    m = re.search(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{2,4})\b", s)
+    if m and m.group(1).lower() in MONTH_MAP:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             MONTH_MAP[m.group(1).lower()], int(m.group(2)))
+
+    # Day-first month-name: "1 May 2024".
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{2,4})\b", s)
+    if m and m.group(2).lower() in MONTH_MAP:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             MONTH_MAP[m.group(2).lower()], int(m.group(1)))
+
     return ""
 
 
@@ -1909,6 +2005,37 @@ def classify_category(data: dict) -> str:
         return "mats"
 
     return model_cat
+
+
+def audit_warning_flags(data: dict, category: str) -> list[str]:
+    """User-configured spending/date warnings, applied deterministically.
+
+    Returns a list of human-readable warning strings for this receipt based on
+    the current ``AMOUNT_LIMITS`` (per-category $ caps) and ``MAX_RECEIPT_AGE_DAYS``
+    settings. Returns ``[]`` when nothing is configured (the default), so a
+    receipt gets **no** warnings unless the user has opted in — replacing the old
+    hard-coded fuel>$200 / mats>$500 / misc>$300 and 6-month-window prompt rules.
+    """
+    out: list[str] = []
+    limit = AMOUNT_LIMITS.get((category or "").lower())
+    if limit is not None:
+        try:
+            amt = float(data.get("amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        if amt > limit:
+            out.append(f"Amount ${amt:,.2f} exceeds the ${limit:,.0f} {category} limit")
+
+    if MAX_RECEIPT_AGE_DAYS is not None:
+        iso = normalize_date(data.get("date") or "") or (data.get("date") or "")
+        try:
+            age = (date.today() - date.fromisoformat(iso)).days
+            if age > MAX_RECEIPT_AGE_DAYS:
+                out.append(f"Receipt is {age} days old (dated {iso}; over the "
+                           f"{MAX_RECEIPT_AGE_DAYS}-day limit)")
+        except (ValueError, TypeError):
+            pass
+    return out
 
 
 # ── Duplicate detection ────────────────────────────────────────────────────────

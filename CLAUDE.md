@@ -53,7 +53,6 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 | `watch_mode.py` | Standalone watch-mode daemon (monitor inbox, process, email on schedule). `main()` entry. |
 | `scheduler.py` | Weekly scheduled export/delivery. |
 | `app_secrets.py` | Secrets store (SMTP password etc.) kept out of the main config. |
-| `extras/receipt_gui.py` | A separate/legacy desktop GUI experiment — not the main app. |
 | `tests/` | pytest suite (see Testing). |
 
 ## Processing pipeline (per receipt) — `process_receipts._extract_receipt_with_status`
@@ -142,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **323 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **365 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -177,6 +176,52 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (customizable spending/date warnings, default off):** The old
+  hard-coded fuel>$200 / mats>$500 / misc>$300 and "6-month window" flags were
+  baked into the LLM prompts. Removed them from both templates and replaced with
+  **opt-in, deterministic** rules: `AMOUNT_LIMITS` (per-category $ caps) +
+  `MAX_RECEIPT_AGE_DAYS` in `process_receipts.py`, applied by
+  `audit_warning_flags(data, category)` in the worker (prepended so a warning is
+  the headline `_flag`). All **off by default**. New `GET/POST /settings/audit`
+  (+ `_apply_audit_config` restored on startup) and a "Spending & Date Warnings"
+  settings card (`#audit-card`, blank = off). `tests/test_audit_warnings.py` (+9).
+- **2026-06-16 (concurrency slider + OCR labels + saved agent):**
+  * **Batch concurrency** is now user-controllable: `max_parallel` added to
+    `/settings/processing` (clamped 1..8 → `_pr.MAX_PARALLEL_REQUESTS`, applied on
+    the next batch) with a compact slider at the top of the **Add Receipts** card
+    (`#conc-slider`). Test in `tests/test_settings_endpoints.py`.
+  * **OCR engine, in plain English** — `_ocrEngineInfo(engine)` maps the raw
+    `_ocr_engine` (`rapidocr` / `rapidocr+llm` / `llm-ocr`) to "Built-in OCR" /
+    "Built-in + LLM OCR" / "LLM OCR" with hover tooltips on the card and in the
+    review modal.
+  * **Persona persisted** — saved the Senior Developer agent to
+    `.claude/agents/senior-developer.md` so it travels with the repo.
+- **2026-06-16 (date normalization + cleanup):** `tests/test_date_normalize.py` (+~24).
+  * **`normalize_date(raw)`** — dedicated, deterministic, **US-first** date
+    normalizer (`process_receipts.py`): MM/DD/YYYY convention, two-digit years →
+    2000s (`24`→2024, `99`→2099), accepts `-` `/` `.` separators, ISO passthrough,
+    month-name forms; returns `''` when unparseable. Shared `_normalize_year` /
+    `_iso_or_blank`; `_find_date_in_text` reuses `_normalize_year`. Wired into
+    `_parse_llm_record` so every model date is canonicalised (raw kept if it can't
+    parse). Both prompt templates now state the US month/day rule outright so the
+    model stops guessing day/month order.
+  * **Cleanup** — dropped the "JIT" wording from the `/models/*` docstrings;
+    genericised the stale `google/gemma-4-12b-qat` default in README/TUTORIAL/
+    ADVISORY (the code default is empty → auto-detect). `GEMMA_*` env-var names and
+    the model-selection heuristic are unchanged.
+- **2026-06-16 (aggressive auto-crop + series test):** Auto-crop is now a single
+  `AUTOCROP_AGGRESSIVENESS` dial (0..100, default **70**) that `_autocrop_params`
+  maps onto the four detection knobs (min-kept floor, max-kept ceiling, re-added
+  margin, content threshold) — one slider moves the whole behaviour; the old
+  fixed `AUTOCROP_MIN_RATIO`/`MAX_RATIO`/`MARGIN`/`_AUTOCROP_THRESHOLD` constants
+  are gone. `autocrop_analyze(img, aggressiveness=None)` takes the dial.
+  * Settings → Image Processing **reordered to app-flow order** (1 auto-rotate →
+    2 b&w → 3 auto-crop + **Aggressiveness slider** → 4 OCR → 5 compress) and the
+    per-step "Test Auto-crop" replaced by one **"Test image processing →"** button
+    → `POST /debug/process-test`, which runs auto-rotate→b&w→auto-crop→compress in
+    series and shows original vs final + a per-step before/after (proves crop and
+    rotate compose). `autocrop_aggressiveness` added to `/settings/processing`.
+  * Tests: `tests/test_autocrop.py` (+4) and `tests/test_autocrop_endpoint.py` (+6).
 - **2026-06-15 (auto-crop control + preview):** Surfaced and made auto-crop
   testable — `tests/test_autocrop_endpoint.py` (+5) and analyze tests in
   `tests/test_autocrop.py` (+5).

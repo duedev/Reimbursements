@@ -82,7 +82,7 @@ python -m uvicorn server:app --reload
 ## LM Studio Setup
 
 1. Download and launch [LM Studio](https://lmstudio.ai)
-2. Load a **multimodal / vision model** — Gemma 4, LLaVA, or similar
+2. Load any **multimodal / vision model** (the app auto-detects whatever you load)
 3. Start the **Local Server** in LM Studio (default port **1234**)
 4. The app auto-detects loaded models and populates the model selectors
 
@@ -204,9 +204,9 @@ All variables have sensible defaults for local development.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMMA_SMALL_MODEL_ID` | `google/gemma-4-12b-qat` | Default distillation model (small/fast) |
-| `GEMMA_LARGE_MODEL_ID` | `google/gemma-4-26b-a4b-qat` | Large distillation model |
-| `OLMOCR_MODEL_ID` | `allenai/olmOCR-2-7B` | Optional dedicated OCR model |
+| `GEMMA_SMALL_MODEL_ID` | _(empty → auto-detect)_ | Pin the distillation model; if unset the app auto-selects a loaded chat/vision model |
+| `GEMMA_LARGE_MODEL_ID` | _(empty → auto-detect)_ | Pin a larger distillation model (optional) |
+| `OLMOCR_MODEL_ID` | _(empty)_ | Pin an optional dedicated OCR model (e.g. a document-OCR model like `allenai/olmOCR-2-7B`) |
 
 Model IDs are defaults only — use the in-app model selectors to switch without restarting.
 
@@ -511,7 +511,7 @@ intake/                     # Drop receipts here for auto-processing
 | Python | 3.12+ |
 | Docker + Compose | Any recent version |
 | LM Studio | Latest (with Local Server enabled) |
-| Vision LLM | Any multimodal model loaded in LM Studio (Gemma 4, LLaVA, etc.) |
+| Vision LLM | Any multimodal model loaded in LM Studio |
 
 Python package dependencies (installed automatically by Docker or `pip install -r requirements.txt`):
 
@@ -550,7 +550,7 @@ CI runs the same suite on Python 3.11 and 3.12 for every push and pull request (
 No. All processing happens through LM Studio on your own machine. The only outbound network call the app makes is to the LM Studio local server (default `localhost:1234`).
 
 **Q: What models work best?**  
-Any multimodal model that can see images works. Gemma 4 12B and 27B (QAT variants) give excellent accuracy. For 2-stage OCR mode, `allenai/olmOCR-2-7B` as the OCR model followed by a Gemma distillation model produces very clean output on handwritten or low-resolution receipts.
+Any multimodal model that can see images works. A vision-capable instruction model in the 7–12B range gives strong accuracy on a typical laptop. For 2-stage OCR mode, a dedicated document-OCR model (such as `allenai/olmOCR-2-7B`) followed by any instruction model to distill the structure produces very clean output on handwritten or low-resolution receipts.
 
 **Q: Why are some receipts ending up in Failed?**  
 The extractor flags a receipt as low-confidence when it cannot identify a vendor name or a dollar amount. This happens with blurry images, heavily stylized receipts, or models that struggle with a particular format. Click **↺ Retry** to re-queue with the same or a different model, or try enabling the optional OCR model.
