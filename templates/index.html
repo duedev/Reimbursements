@@ -826,6 +826,10 @@
       overflow: hidden; z-index: 3; }
     .field-box { position: absolute; border: 2px solid #3b82f6; border-radius: 3px;
       box-sizing: border-box; background: rgba(255,255,255,0.05); }
+    /* LLM-placed boxes are drawn dashed (vs the solid rules-based OCR boxes) and
+       carry the model's confidence in their tag. */
+    .field-box.llm { border-style: dashed; background: transparent; }
+    .field-box-tag.llm { top: auto; bottom: -15px; left: auto; right: -2px; opacity: 0.92; }
     .field-box-tag { position: absolute; top: -15px; left: -2px; font-size: 9px;
       font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: 3px;
       color: #fff; white-space: nowrap; letter-spacing: 0.3px; }
@@ -2902,8 +2906,10 @@ const FIELD_MARKERS = {
   amount: { hue: '#f59e0b', label: 'Amount' },
 };
 let _showFieldMarkers = true;   // toggled by the "Show field markers" checkbox
-let _mrFieldBoxes = null;       // boxes for the receipt open in the review modal
-let _lbFieldBoxes = null;       // boxes for the receipt open in the lightbox
+let _mrFieldBoxes = null;       // OCR boxes for the receipt open in the review modal
+let _lbFieldBoxes = null;       // OCR boxes for the receipt open in the lightbox
+let _mrLlmBoxes = null;         // LLM-placed boxes (with confidence) — review modal
+let _lbLlmBoxes = null;         // LLM-placed boxes (with confidence) — lightbox
 
 // The rectangle (within the element's content box) actually covered by the image
 // under object-fit: contain — accounts for the letterbox padding around tall
@@ -2917,44 +2923,60 @@ function _renderedImageRect(img) {
   return { left: (cw - w) / 2, top: (ch - h) / 2, width: w, height: h };
 }
 
-function drawFieldBoxes(boxes, img, overlay) {
+function drawFieldBoxes(boxes, img, overlay, llmBoxes) {
   if (!overlay) return;
   overlay.innerHTML = '';
-  if (!_showFieldMarkers || !boxes || !img) return;
+  if (!_showFieldMarkers || !img) return;
   const rect = _renderedImageRect(img);
   if (!rect) return;
-  for (const key of ['vendor', 'date', 'amount']) {
-    const b = boxes[key];
-    if (!b || b.length < 4) continue;
+
+  const place = (key, b, isLlm) => {
+    if (!b || b.length < 4) return;
     const meta = FIELD_MARKERS[key];
     const el = document.createElement('div');
-    el.className = 'field-box';
+    el.className = isLlm ? 'field-box llm' : 'field-box';
     el.style.left   = (rect.left + b[0] * rect.width)  + 'px';
     el.style.top    = (rect.top  + b[1] * rect.height) + 'px';
     el.style.width  = (b[2] * rect.width)  + 'px';
     el.style.height = (b[3] * rect.height) + 'px';
     el.style.borderColor = meta.hue;
-    el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.55), 0 0 10px ' + meta.hue + '88';
+    if (!isLlm) el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.55), 0 0 10px ' + meta.hue + '88';
     const tag = document.createElement('span');
-    tag.className = 'field-box-tag';
-    tag.textContent = meta.label;
+    tag.className = isLlm ? 'field-box-tag llm' : 'field-box-tag';
+    // LLM tags carry the model's confidence; b[4] is 0..100 when present.
+    tag.textContent = isLlm ? `${meta.label} ${Math.round(b[4] || 0)}%` : meta.label;
     tag.style.background = meta.hue;
     el.appendChild(tag);
     overlay.appendChild(el);
+  };
+
+  for (const key of ['vendor', 'date', 'amount']) {
+    if (boxes) place(key, boxes[key], false);          // rules-based OCR box (solid)
+    if (llmBoxes) place(key, llmBoxes[key], true);     // LLM-placed box (dashed, % conf)
   }
 }
 
 // Legend under the preview: a swatch per field, marking ones we couldn't locate.
-function _renderMarkerLegend(boxes, legendEl) {
+// A field counts as located if either the rules-based OCR box or an LLM-placed
+// box exists; LLM-located fields note the model's confidence.
+function _renderMarkerLegend(boxes, legendEl, llmBoxes) {
   if (!legendEl) return;
   const items = ['vendor', 'date', 'amount'].map(key => {
     const meta = FIELD_MARKERS[key];
-    const found = !!(boxes && boxes[key]);
+    const ocr = !!(boxes && boxes[key]);
+    const llm = !!(llmBoxes && llmBoxes[key]);
+    const found = ocr || llm;
+    let note = '';
+    if (!found) note = ' <em>(location not detected)</em>';
+    else if (llm) note = ` <em>(AI ${Math.round((llmBoxes[key][4]) || 0)}%)</em>`;
     return `<span class="mk-legend-item ${found ? '' : 'mk-missing'}">`
       + `<span class="mk-swatch" style="border-color:${meta.hue};background:${found ? meta.hue : 'transparent'}"></span>`
-      + `${meta.label}${found ? '' : ' <em>(location not detected)</em>'}</span>`;
+      + `${meta.label}${note}</span>`;
   });
-  legendEl.innerHTML = items.join('');
+  legendEl.innerHTML = items.join('')
+    + (llmBoxes && Object.keys(llmBoxes).length
+        ? '<span class="mk-legend-item" style="opacity:0.75"><span class="mk-swatch" style="border-style:dashed;background:transparent"></span>dashed = AI-placed</span>'
+        : '');
 }
 
 // Redraw whatever overlay is currently visible (image load, resize, toggle).
@@ -2962,12 +2984,12 @@ function _refreshFieldMarkers() {
   const modal = document.getElementById('manual-review-modal');
   if (modal && !modal.classList.contains('hidden')) {
     drawFieldBoxes(_mrFieldBoxes, document.getElementById('mr-preview-img'),
-                   document.getElementById('mr-box-overlay'));
+                   document.getElementById('mr-box-overlay'), _mrLlmBoxes);
   }
   const lb = document.getElementById('img-lightbox');
   if (lb && lb.style.display === 'flex') {
     drawFieldBoxes(_lbFieldBoxes, document.getElementById('lb-img'),
-                   document.getElementById('lb-box-overlay'));
+                   document.getElementById('lb-box-overlay'), _lbLlmBoxes);
   }
 }
 window.addEventListener('resize', _refreshFieldMarkers);
@@ -3071,18 +3093,20 @@ window.openManualReview = function(filename) {
   // On-image field markers (vendor/date/amount). Only show the legend/markers
   // when the app actually located at least one field on this receipt.
   _mrFieldBoxes = (data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
-  const hasMarkers = _mrFieldBoxes && Object.keys(_mrFieldBoxes).length > 0;
+  _mrLlmBoxes = (data._llm_field_boxes && typeof data._llm_field_boxes === 'object') ? data._llm_field_boxes : null;
+  const hasMarkers = (_mrFieldBoxes && Object.keys(_mrFieldBoxes).length > 0)
+                  || (_mrLlmBoxes && Object.keys(_mrLlmBoxes).length > 0);
   if (boxOverlay) boxOverlay.innerHTML = '';
   if (markerBar) markerBar.style.display = hasMarkers ? '' : 'none';
-  if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'));
+  if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'), _mrLlmBoxes);
   previewImg.src = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
-  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay); };
+  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes); };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
   previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
   // Cached images can be already-complete before onload is attached.
   if (previewImg.complete && previewImg.naturalWidth) {
     previewWrap.style.display = '';
-    drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay);
+    drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes);
   }
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
@@ -4268,10 +4292,11 @@ function openLightbox(src, filename) {
   const data = filename && receiptCards[filename] ? receiptCards[filename].data : null;
   // Field markers full-screen — reuse the same normalized boxes as the modal.
   _lbFieldBoxes = (data && data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
+  _lbLlmBoxes = (data && data._llm_field_boxes && typeof data._llm_field_boxes === 'object') ? data._llm_field_boxes : null;
   if (lbOverlay) lbOverlay.innerHTML = '';
-  lbImg.onload = () => drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
+  lbImg.onload = () => drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay, _lbLlmBoxes);
   lbImg.src = src;
-  if (lbImg.complete && lbImg.naturalWidth) drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
+  if (lbImg.complete && lbImg.naturalWidth) drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay, _lbLlmBoxes);
   if (data && data.vendor) {
     panel.innerHTML = _lbStatsHtml(data, filename);
     panel.hidden = false;

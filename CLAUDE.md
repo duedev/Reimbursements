@@ -176,6 +176,18 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (LLM spatial awareness — model-placed field boxes):** The vision
+  path now also asks the model WHERE vendor/date/amount sit on the image, with a
+  confidence. `_GEMMA_VISION_TEMPLATE` gained a `"boxes"` schema (fractional
+  x,y,w,h 0..1 + confidence 0–100); `_normalize_llm_boxes` validates/clamps it and
+  `_parse_llm_record` lifts it onto `data["_llm_field_boxes"]` (`{field:[x,y,w,h,conf]}`),
+  whitelisted in `_safe_receipt_data`. UI `drawFieldBoxes(boxes, img, overlay, llmBoxes)`
+  now draws the LLM boxes **dashed** with a `Label NN%` tag alongside the solid
+  rules-based OCR boxes; legend notes AI-placed fields + confidence.
+  `tests/test_llm_field_boxes.py` (+6). Note: only the vision/rescue path sees the
+  image, so these boxes appear when the vision model runs (not on pure OCR-text
+  distillation, which can't place coordinates).
+
 - **2026-06-16 (auto-crop rewrite — edge-energy projection):** Replaced the
   corner-background content detection (which failed on gradients/shadows/busy
   desks — the "crop never fires no matter how aggressive" bug) with an

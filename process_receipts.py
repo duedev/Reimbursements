@@ -236,7 +236,12 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
   "category": "fuel | mats | misc",
   "expense_description": null,
   "summary": "one-sentence description WITHOUT the dollar amount, e.g. 'Lunch at a restaurant' or 'Fuel at a gas station'",
-  "flags": []
+  "flags": [],
+  "boxes": {{
+    "vendor": {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}},
+    "date":   {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}},
+    "amount": {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}}
+  }}
 }}
 
 Category rules:
@@ -246,6 +251,7 @@ Category rules:
 
 Vendor: copy the store/business name exactly as printed. If no vendor name is legible, return an empty string "" — never guess, invent, or copy an example name.
 Amount: use TOTAL or GRAND TOTAL.
+boxes: for vendor, date and amount, give WHERE that text sits on the image as fractions of the image size — x,y = top-left corner, w,h = width/height, all between 0 and 1 (0,0 = top-left of the image) — plus a confidence 0–100 for that location. If you cannot locate a field, set its confidence to 0.
 Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
 Summary: vendor and purpose only — do NOT include the dollar amount.
 Do NOT include job_name or job_number.
@@ -948,6 +954,47 @@ def _strip_json(raw: str) -> str:
     return match.group(0) if match else raw
 
 
+def _normalize_llm_boxes(raw) -> dict:
+    """Normalize a vision model's optional field-location boxes.
+
+    The model may report where it sees each field on the image, as fractions of
+    image width/height: ``{field: {x, y, w, h, confidence}}`` with x,y = top-left
+    corner and confidence 0–100. We return ``{field: [x, y, w, h, confidence]}``
+    for vendor/date/amount, clamping coords to 0..1 and confidence to 0..100 and
+    dropping anything malformed or zero-sized. These are advisory UI markers
+    (drawn alongside the rules-based OCR boxes) — never load-bearing — so a bad
+    box is silently ignored rather than raised.
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    out: dict[str, list] = {}
+    for field in ("vendor", "date", "amount"):
+        b = raw.get(field)
+        if not isinstance(b, dict):
+            continue
+        try:
+            x, y = float(b.get("x")), float(b.get("y"))
+            w, h = float(b.get("w")), float(b.get("h"))
+        except (TypeError, ValueError):
+            continue
+        if not (w > 0 and h > 0):
+            continue
+        try:
+            conf = float(b.get("confidence", 0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        out[field] = [
+            round(_clamp(x, 0.0, 1.0), 4), round(_clamp(y, 0.0, 1.0), 4),
+            round(_clamp(w, 0.0, 1.0), 4), round(_clamp(h, 0.0, 1.0), 4),
+            round(_clamp(conf, 0.0, 100.0), 1),
+        ]
+    return out
+
+
 def _parse_llm_record(raw: str) -> Optional[dict]:
     """Parse a model's JSON reply into a record dict, or None if it isn't one.
 
@@ -975,6 +1022,11 @@ def _parse_llm_record(raw: str) -> Optional[dict]:
     # value if it isn't parseable so nothing is silently lost.
     if result.get("date"):
         result["date"] = normalize_date(result["date"]) or result["date"]
+    # Optional LLM-placed field boxes (vision path only). Lifted onto a private
+    # key the UI overlays; the raw "boxes" key is dropped from the record.
+    boxes = _normalize_llm_boxes(result.pop("boxes", None))
+    if boxes:
+        result["_llm_field_boxes"] = boxes
     return result
 
 

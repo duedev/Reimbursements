@@ -350,7 +350,7 @@ def _safe_receipt_data(data) -> dict:
               "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
               "_distill_seconds", "_ocr_engine", "_steps", "_field_boxes",
-              "_review_required", "_approved"):
+              "_llm_field_boxes", "_review_required", "_approved"):
         if k in data:
             out[k] = data[k]
     return out
