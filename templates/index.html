@@ -4426,6 +4426,15 @@ function renderDonut(byCat, total) {
     </div>`).join('');
 }
 
+// Inclusive day span between two ISO (YYYY-MM-DD) dates. UTC math sidesteps
+// local-timezone/DST drift; +1 so a single day reads as "1 day".
+function _daySpan(isoA, isoB) {
+  const a = isoA.split('-').map(Number), b = isoB.split('-').map(Number);
+  if (a.length !== 3 || b.length !== 3) return 1;
+  const ms = Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2]);
+  return Math.round(ms / 86400000) + 1;
+}
+
 function renderTimeline(stats) {
   const box = document.getElementById('timeline-chart');
   const timeline = (stats && stats.timeline) || [];
@@ -4481,8 +4490,14 @@ function renderTimeline(stats) {
 
   const peak = stats.timeline_peak;
   const range = n > 1 ? `${timeline[0].date.slice(5).replace('-','/')}–${timeline[n-1].date.slice(5).replace('-','/')}` : timeline[0].date.slice(5).replace('-','/');
+  // True calendar span (Y/M/D inclusive), not the count of distinct dated days —
+  // a multi-year range must report its full duration. Prefer the backend value;
+  // fall back to parsing the ISO dates locally (UTC math avoids TZ drift).
+  const spanDays = (stats.timeline_span_days != null)
+    ? stats.timeline_span_days
+    : _daySpan(timeline[0].date, timeline[n - 1].date);
   const caption = `<div class="tl-caption">
-      <span><strong>${fmtMoney(total)}</strong> over ${n} day${n === 1 ? '' : 's'} (${range})</span>
+      <span><strong>${fmtMoney(total)}</strong> over ${spanDays} day${spanDays === 1 ? '' : 's'} (${range})</span>
       ${peak ? `<span>Peak <strong>${fmtMoney(peak.total)}</strong> on ${peak.date.slice(5).replace('-','/')}</span>` : ''}
       <span class="tl-key"><i class="tl-bar"></i>daily &nbsp;<i class="tl-cum"></i>cumulative &nbsp;<i class="tl-avg"></i>avg</span>
     </div>`;

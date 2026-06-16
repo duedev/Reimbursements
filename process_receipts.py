@@ -186,7 +186,7 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     '  "amount": 0.00,\n'
     '  "category": "fuel | mats | misc",\n'
     '  "expense_description": null,\n'
-    '  "summary": "one-sentence description WITHOUT the dollar amount, e.g. Lunch at Butchs Grinders",\n'
+    '  "summary": "one-sentence description WITHOUT the dollar amount, e.g. \'Lunch at a restaurant\' or \'Fuel at a gas station\'",\n'
     '  "flags": []\n'
     "}}\n\n"
     "Category rules:\n"
@@ -198,6 +198,9 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "- You may be given more than one OCR transcription of the SAME receipt "
     "(labelled transcription A and B) from different engines — cross-reference "
     "them, prefer values that agree, and use the clearer reading where they differ\n"
+    "- vendor: copy the store/business name exactly as printed on the receipt. "
+    "If no vendor name is legible, return an empty string \"\" — NEVER guess, "
+    "invent, or copy an example name\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
     "- date must be YYYY-MM-DD; ALWAYS read ambiguous numeric dates as US "
     "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
@@ -222,7 +225,7 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
   "amount": 0.00,
   "category": "fuel | mats | misc",
   "expense_description": null,
-  "summary": "one-sentence description WITHOUT the dollar amount, e.g. Lunch at Butchs Grinders",
+  "summary": "one-sentence description WITHOUT the dollar amount, e.g. 'Lunch at a restaurant' or 'Fuel at a gas station'",
   "flags": []
 }}
 
@@ -231,6 +234,7 @@ Category rules:
 - "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
 - "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
+Vendor: copy the store/business name exactly as printed. If no vendor name is legible, return an empty string "" — never guess, invent, or copy an example name.
 Amount: use TOTAL or GRAND TOTAL.
 Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
 Summary: vendor and purpose only — do NOT include the dollar amount.

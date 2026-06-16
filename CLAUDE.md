@@ -176,6 +176,20 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (bug fixes — date span + vendor default):**
+  * **Spend-over-time duration** — the dashboard caption reported
+    `timeline.length` (count of distinct *dated days*) as the duration, so a
+    multi-year range read as "over 173 days". `_compute_stats` now also returns
+    `timeline_span_days` = inclusive calendar distance between the first/last ISO
+    date (full Y/M/D). `renderTimeline` uses it (with a local `_daySpan(isoA,isoB)`
+    UTC fallback). `tests/test_timeline_span.py` (+5).
+  * **Vendor no longer defaults to "Butchs Grinders"** — that string was a concrete
+    example vendor in the distillation/vision `summary` examples; the model echoed
+    it as the vendor when OCR couldn't read one. Both prompt templates now use
+    generic category-level examples and an explicit rule: copy the printed vendor,
+    else return `""` — never guess/invent/copy an example.
+    `tests/test_vendor_prompt_hygiene.py` (+2).
+
 - **2026-06-16 (advanced-mode toggle + LLM benchmark):**
   * **Advanced mode** — Settings has an "Advanced settings" toggle
     (`#advanced-toggle`, localStorage `advancedMode`, default OFF). When off,

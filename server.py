@@ -1867,6 +1867,17 @@ def _compute_stats(results: list[dict]) -> dict:
     dated_total = round(sum(by_day.values()), 2)
     peak = max(timeline, key=lambda t: t["total"]) if timeline else None
 
+    # Calendar span of the dated receipts (inclusive), NOT the count of distinct
+    # days that happen to have receipts. The full Y/M/D dates are used so a range
+    # spanning multiple years reports the true number of days, e.g. receipts on
+    # 173 distinct days across two years span ~730 days, not 173.
+    if timeline:
+        first_day = date.fromisoformat(timeline[0]["date"])
+        last_day = date.fromisoformat(timeline[-1]["date"])
+        span_days = (last_day - first_day).days + 1
+    else:
+        span_days = 0
+
     return {
         "count":        len(results),
         "total":        round(total, 2),
@@ -1879,6 +1890,7 @@ def _compute_stats(results: list[dict]) -> dict:
         "timeline_total":  dated_total,
         "timeline_peak":   peak,
         "timeline_days":   len(timeline),
+        "timeline_span_days": span_days,
         "proc_total_seconds": round(sum(proc_times), 1),
         "proc_avg_seconds":   round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
     }
