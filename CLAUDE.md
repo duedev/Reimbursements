@@ -141,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **365 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **370 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -176,6 +176,19 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (advanced-mode toggle + LLM benchmark):**
+  * **Advanced mode** — Settings has an "Advanced settings" toggle
+    (`#advanced-toggle`, localStorage `advancedMode`, default OFF). When off,
+    `body.hide-advanced .adv-only { display:none }` hides the deep-technical bits:
+    the **AI Models** card, the image-processing internals (aggressiveness/JPEG
+    sliders + Test OCR/Test image-processing buttons), the **Maintenance** card,
+    and the **Benchmark** card. Folders/Scheduler/Email stay visible.
+  * **Benchmark** — `_drain_once` times each batch and `_record_benchmark` logs
+    `{ts,count,total_seconds,avg_seconds,distill_model,ocr_model}` (newest-first,
+    capped `BENCH_MAX_ENTRIES=100`, persisted in `.app_state.json`). `GET
+    /benchmarks` + `POST /benchmarks/clear`; a Benchmark settings card shows the
+    table, refreshes on `batch_done`, and has Copy-as-CSV / Clear.
+    `tests/test_benchmark.py` (+5).
 - **2026-06-16 (customizable spending/date warnings, default off):** The old
   hard-coded fuel>$200 / mats>$500 / misc>$300 and "6-month window" flags were
   baked into the LLM prompts. Removed them from both templates and replaced with

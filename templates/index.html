@@ -939,6 +939,8 @@
     .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
     .section-desc strong { color: var(--text); }
+    /* Advanced-only settings — hidden unless the "Advanced settings" toggle is on. */
+    body.hide-advanced .adv-only { display: none !important; }
     .inline-code {
       font-size: 11px; font-family: ui-monospace, monospace;
       background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;
@@ -1539,8 +1541,16 @@
   <!-- ════════════════════════ Settings tab ════════════════════════ -->
   <div class="tab-panel hidden" id="tab-settings">
 
+  <!-- Advanced mode — hides deep-technical sections from everyday users -->
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+    <label class="check-label" style="margin:0">
+      <input type="checkbox" id="advanced-toggle">
+      Advanced settings <span style="color:var(--muted)">— show AI model selection, image-processing internals, and maintenance tools (hidden by default to keep things simple)</span>
+    </label>
+  </div>
+
   <!-- AI Models -->
-  <div class="card" id="config-card">
+  <div class="card adv-only" id="config-card">
     <div class="card-title">AI Models</div>
     <p class="section-desc">
       Pick which LM Studio models read your receipts. Changes apply to the next receipt — no restart needed.
@@ -1583,6 +1593,22 @@
         <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
       </div>
     </div>
+  </div>
+
+  <!-- Benchmark — per-batch processing time, for comparing LLM speed -->
+  <div class="card adv-only" id="benchmark-card">
+    <div class="card-title">Benchmark</div>
+    <p class="section-desc">
+      Each finished batch's total and per-receipt time, tagged with the model(s) used — so you can
+      load a different model in LM Studio, run the same receipts, and compare speed. Survives restarts.
+    </p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="btn btn-outline-accent btn-sm" id="bench-copy-btn"
+              title="Copy the table as CSV to paste into a spreadsheet">Copy as CSV</button>
+      <button class="btn btn-cancel btn-sm" id="bench-clear-btn"
+              title="Delete all benchmark history">Clear</button>
+    </div>
+    <div id="bench-body"><span class="status-note" style="color:var(--muted)">No runs benchmarked yet — process a batch to record one.</span></div>
   </div>
 
   <!-- Folders & scheduled export — saved together by the one button below -->
@@ -1671,7 +1697,7 @@
         <input type="checkbox" id="proc-autocrop">
         3. Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt (runs after auto-rotate, before OCR)</span>
       </label>
-      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
+      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
         <span style="min-width:96px">Aggressiveness</span>
         <input type="range" id="proc-autocrop-aggr" min="0" max="100" step="5" value="70" style="flex:1;max-width:240px" title="Higher trims closer and crops more photos; lower only trims obvious borders">
         <span id="proc-autocrop-aggr-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:88px">70 — strong</span>
@@ -1681,7 +1707,7 @@
           <input type="checkbox" id="proc-localocr">
           4. RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
         </label>
-        <button class="copy-btn" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
+        <button class="copy-btn adv-only" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
           Test OCR
         </button>
         <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the local OCR">
@@ -1691,12 +1717,12 @@
         <input type="checkbox" id="proc-compress">
         5. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs (at export time)</span>
       </label>
-      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
+      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
         <span style="min-width:96px">JPEG quality</span>
         <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
         <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
       </label>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;border-top:1px solid var(--border);padding-top:12px">
+      <div class="adv-only" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;border-top:1px solid var(--border);padding-top:12px">
         <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → auto-crop → compress in series and preview each step" style="flex-shrink:0">
           Test image processing →
         </button>
@@ -1785,7 +1811,7 @@
   </div>
 
   <!-- Maintenance — kept apart from everyday settings -->
-  <div class="card" id="admin-card">
+  <div class="card adv-only" id="admin-card">
     <div class="card-title">Maintenance</div>
     <div class="action-row" style="margin-top:0">
       <span class="status-note" style="flex:1;min-width:220px">
@@ -2330,6 +2356,7 @@ function connectSSE() {
       }
       loadIntakeCount();
       loadStats();
+      loadBenchmarks();
 
     } else if (msg.type === 'log') {
       appendLog(msg.message);
@@ -3526,6 +3553,7 @@ async function loadSettings() {
   loadAuditSettings();
   loadReviewSettings();
   loadEmailSettings();
+  loadBenchmarks();
 }
 
 // ── Spending & date warnings (all off by default) ─────────────────────────────
@@ -3571,6 +3599,72 @@ async function saveAuditSettings() {
     clearTimeout(_auditSaveTimer);
     _auditSaveTimer = setTimeout(saveAuditSettings, 200);
   });
+});
+
+// ── Advanced mode (hide deep-technical sections from everyday users) ───────────
+function _applyAdvanced(on) {
+  document.body.classList.toggle('hide-advanced', !on);
+  const t = document.getElementById('advanced-toggle');
+  if (t) t.checked = on;
+}
+_applyAdvanced(localStorage.getItem('advancedMode') === '1');   // default: off → hidden
+document.getElementById('advanced-toggle').addEventListener('change', (e) => {
+  localStorage.setItem('advancedMode', e.target.checked ? '1' : '0');
+  _applyAdvanced(e.target.checked);
+});
+
+// ── Benchmark (per-batch timing, for comparing LLMs) ──────────────────────────
+let _benchData = [];
+async function loadBenchmarks() {
+  try {
+    const d = await (await fetch('/benchmarks')).json();
+    _benchData = d.benchmarks || [];
+    _renderBenchmarks();
+  } catch (_) {}
+}
+function _renderBenchmarks() {
+  const box = document.getElementById('bench-body');
+  if (!box) return;
+  if (!_benchData.length) {
+    box.innerHTML = '<span class="status-note" style="color:var(--muted)">No runs benchmarked yet — process a batch to record one.</span>';
+    return;
+  }
+  const rows = _benchData.map(b => `
+    <tr>
+      <td style="padding:4px 10px 4px 0;white-space:nowrap">${esc((b.ts || '').replace('T', ' '))}</td>
+      <td style="padding:4px 10px;text-align:right">${b.count}</td>
+      <td style="padding:4px 10px;text-align:right">${b.total_seconds}s</td>
+      <td style="padding:4px 10px;text-align:right">${b.avg_seconds}s</td>
+      <td style="padding:4px 10px">${esc(b.distill_model || '')}</td>
+      <td style="padding:4px 0">${esc(b.ocr_model || '')}</td>
+    </tr>`).join('');
+  box.innerHTML = `<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;width:100%">
+    <thead><tr style="color:var(--muted)">
+      <th style="padding:4px 10px 4px 0;text-align:left">When</th>
+      <th style="padding:4px 10px;text-align:right">Receipts</th>
+      <th style="padding:4px 10px;text-align:right">Total</th>
+      <th style="padding:4px 10px;text-align:right">Avg/each</th>
+      <th style="padding:4px 10px;text-align:left">Distill model</th>
+      <th style="padding:4px 0;text-align:left">OCR model</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function _benchCSV() {
+  const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const head = ['timestamp', 'receipts', 'total_seconds', 'avg_seconds', 'distill_model', 'ocr_model'];
+  return [head.join(',')].concat(_benchData.map(b =>
+    [b.ts, b.count, b.total_seconds, b.avg_seconds, b.distill_model, b.ocr_model].map(q).join(','))).join('\n');
+}
+document.getElementById('bench-copy-btn').addEventListener('click', async () => {
+  if (!_benchData.length) { showToast('Nothing to copy yet', false); return; }
+  try { await navigator.clipboard.writeText(_benchCSV()); showToast('Benchmark CSV copied to clipboard', true); }
+  catch (_) { showToast('Copy failed — clipboard blocked by the browser', false); }
+});
+document.getElementById('bench-clear-btn').addEventListener('click', async () => {
+  try {
+    await fetch('/benchmarks/clear', { method: 'POST' });
+    _benchData = []; _renderBenchmarks();
+    showToast('Benchmark history cleared', true);
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
 // ── Review / approval settings ────────────────────────────────────────────────
