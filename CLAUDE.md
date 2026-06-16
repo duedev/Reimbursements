@@ -176,6 +176,24 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (single AI model + auto-load + warm-up):**
+  * **Consolidated to one model** — OCR and distillation now share a SINGLE active
+    model. `process_receipts.set_active_model(id)` sets `_active_distill_model` and
+    keeps `_active_ocr_model` in lock-step (= active model when LLM-OCR is on, else
+    `""`). `set_llm_ocr(bool)` toggles the optional LLM-OCR cross-reference (reuses
+    the one model — no separate OCR model). `_llm_ocr_enabled` global, default off.
+  * **Auto-load + warm-up** — `initialize_models(warm=True)` now also `_try_load_model`s
+    the chosen model into LM Studio memory, then `warm_up_model()` fires a tiny dummy
+    receipt (`_WARMUP_OCR_TEXT`) through `_unified_distillation` so the first real
+    batch isn't cold. Best-effort; skipped when LM Studio is unreachable.
+  * **Persistence** — selection + OCR toggle persist under `cfg["models"]`
+    (`_persist_model_config` / `_apply_model_config`, restored in lifespan BEFORE
+    `initialize_models` so a saved choice survives restart).
+  * **Endpoints** — `POST /models/distill` now sets the single model (persists);
+    `POST /models/ocr` now takes `{enabled: bool}` (was `{model}`) to toggle LLM-OCR;
+    `GET /models/available` adds `llm_ocr`. UI: one "AI Model" selector + an "Also use
+    this model for OCR" checkbox (replaces the two dropdowns). `tests/test_model_consolidation.py` (+8).
+
 - **2026-06-16 (bug fixes — date span + vendor default):**
   * **Spend-over-time duration** — the dashboard caption reported
     `timeline.length` (count of distinct *dated days*) as the duration, so a

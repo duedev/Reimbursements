@@ -96,11 +96,21 @@ IMAGE_MAX_PX         = 1568
 # via PDF_MAX_PAGES.
 PDF_MAX_PAGES        = int(os.getenv("PDF_MAX_PAGES", "50"))
 
-# Runtime state — both selectable from the UI
-# _active_ocr_model:    empty string = skip dedicated OCR step, use distill model directly
-# _active_distill_model: model used for unified extraction + audit
-_active_ocr_model:    str = ""           # no dedicated OCR model by default
-_active_distill_model: str = ""           # populated by initialize_models() at startup
+# Runtime state — a SINGLE model now drives both stages (consolidated).
+# _active_distill_model: the one active model, used for unified extraction + audit
+#                        and (when LLM OCR is enabled) transcription too.
+# _active_ocr_model:     mirrors the active model when LLM OCR is on; empty = the
+#                        dedicated LLM OCR pass is skipped (built-in RapidOCR only).
+# _llm_ocr_enabled:      when True the active model also transcribes the receipt and
+#                        its reading is cross-referenced with RapidOCR. Off by
+#                        default — it doubles the per-receipt model calls. There is
+#                        no separate OCR model: OCR and distillation share one model.
+_active_ocr_model:    str = ""           # set in lock-step with the active model
+_active_distill_model: str = ""           # the single active model — set by initialize_models()
+_llm_ocr_enabled:     bool = False        # active model also does OCR when True
+
+# Tiny throwaway "receipt" used to warm the model into memory at startup.
+_WARMUP_OCR_TEXT = "QUICK MART\n1 Main St\nCoffee 1.00\nTOTAL $1.00\n01/01/2025"
 
 # Reasoning ("thinking") mode is applied per stage, on purpose:
 #   • OCR / transcription  → reasoning is ALWAYS off. Transcribing visible text
@@ -308,14 +318,64 @@ def _looks_like_chat_model(model_id: str) -> bool:
                    ("embed", "bge-", "rerank", "whisper", "tts", "clip", "vae"))
 
 
-def initialize_models() -> str:
-    """Check LM Studio connectivity and adopt whatever model is loaded.
+def set_active_model(model_id: str) -> str:
+    """Select the single AI model used for both distillation and (optional) OCR.
 
-    If the configured distill model isn't actually loaded, fall back to a loaded
-    Gemma if present, otherwise the first loaded chat-capable model — so the app
-    works out of the box with whatever the user has running in LM Studio.
+    OCR shares the one model, so the OCR alias is kept in lock-step: it points at
+    the active model when LLM OCR is enabled, and is cleared otherwise.
     """
-    global _active_distill_model
+    global _active_distill_model, _active_ocr_model
+    _active_distill_model = (model_id or "").strip()
+    _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
+    return _active_distill_model
+
+
+def set_llm_ocr(enabled: bool) -> bool:
+    """Toggle whether the single active model also transcribes the receipt (OCR)."""
+    global _active_ocr_model, _llm_ocr_enabled
+    _llm_ocr_enabled = bool(enabled)
+    _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
+    return _llm_ocr_enabled
+
+
+def _make_client() -> OpenAI:
+    """Build an LM Studio (OpenAI-compatible) client with the standard settings."""
+    return OpenAI(
+        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
+    )
+
+
+def warm_up_model() -> bool:
+    """Prime the active model into memory with a tiny dummy distillation.
+
+    Best-effort, called once at startup after the model is selected/loaded. It
+    sends a minimal fake receipt through the real distillation path so the
+    weights are resident and the runtime is warm before the first real receipt —
+    the first user batch then doesn't pay the cold-start latency. Any failure is
+    swallowed; the app still works cold.
+    """
+    if not _active_distill_model:
+        return False
+    try:
+        _unified_distillation(_make_client(), _WARMUP_OCR_TEXT, _retry=False)
+        print(f"[warmup] Primed model into memory: {_active_distill_model}")
+        return True
+    except Exception as exc:
+        print(f"[warmup] skipped: {exc}")
+        return False
+
+
+def initialize_models(warm: bool = True) -> str:
+    """Check LM Studio connectivity, adopt a model, load it, and warm it up.
+
+    If the configured model isn't actually loaded, fall back to a loaded Gemma if
+    present, otherwise the first loaded chat-capable model — so the app works out
+    of the box with whatever the user has running in LM Studio. The chosen model
+    is then **auto-loaded** into memory and (when ``warm``) primed with a tiny
+    dummy receipt so the first real batch is fast.
+    """
+    global _active_distill_model, _active_ocr_model
     available = list_available_models()
     if available:
         print(f"[models] {len(available)} model(s) available: {available}")
@@ -327,11 +387,19 @@ def initialize_models() -> str:
             )
             _active_distill_model = chosen
             print(f"[models] Auto-selected loaded model: {chosen}")
+        # Auto-load the active model into LM Studio memory so the first real
+        # receipt doesn't pay the cold-load latency.
+        if _active_distill_model and _try_load_model(_active_distill_model):
+            print(f"[models] Auto-loaded into memory: {_active_distill_model}")
+        # OCR shares the single active model when enabled.
+        _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
     else:
         print("[models] LM Studio not reachable or no models loaded")
 
-    print(f"[models] OCR model: {_active_ocr_model or '(none — using distill model for vision)'}")
+    print(f"[models] OCR model: {_active_ocr_model or '(none — built-in OCR only)'}")
     print(f"[models] Distill model: {_active_distill_model}")
+    if warm and available:
+        warm_up_model()
     return _active_distill_model
 
 

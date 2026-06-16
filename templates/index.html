@@ -1551,38 +1551,36 @@
 
   <!-- AI Models -->
   <div class="card adv-only" id="config-card">
-    <div class="card-title">AI Models</div>
+    <div class="card-title">AI Model</div>
     <p class="section-desc">
-      Pick which LM Studio models read your receipts. Changes apply to the next receipt — no restart needed.
+      One model reads your receipts — it handles both extraction and (optionally) OCR.
+      It's auto-selected and loaded at startup; change it here and it applies to the next receipt, no restart needed.
     </p>
-    <!-- Two model dropdowns -->
-    <div class="model-grid">
+    <!-- Single consolidated model selector -->
+    <div class="model-grid" style="grid-template-columns:1fr">
       <div>
-        <div class="model-section-label">OCR Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — when set, runs LLM OCR alongside the built-in engine and cross-references both; runs without reasoning)</span></div>
-        <div class="model-select-row">
-          <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
-          <select id="ocr-model-select" title="Optional LLM OCR model. When set, both the built-in engine and this model transcribe each receipt and the distillation model cross-references them.">
-            <option value="">(none — direct vision)</option>
-          </select>
-        </div>
-      </div>
-      <div>
-        <div class="model-section-label">Distillation Model</div>
+        <div class="model-section-label">AI Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(used for extraction &amp; audit — and OCR when enabled below)</span></div>
         <div class="model-select-row">
           <div class="model-active-dot" id="distill-model-dot"></div>
-          <select id="distill-model-select" title="Select model for extraction and audit">
+          <select id="distill-model-select" title="The single model used for extraction, audit, and (optionally) OCR. Auto-selected and loaded at startup.">
             <option value="">Loading available models…</option>
           </select>
         </div>
       </div>
     </div>
-    <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="Let the distillation model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
-        <input type="checkbox" id="reasoning-toggle">
-        Distillation reasoning
+    <div style="margin-top:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <label class="check-label" id="ocr-toggle-label" style="font-size:12px;color:var(--muted);gap:7px"
+             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower). The OCR pass always runs without reasoning.">
+        <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
+        <input type="checkbox" id="ocr-toggle">
+        Also use this model for OCR <span style="font-weight:400">(cross-reference — slower)</span>
       </label>
-      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
+      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
+             title="Let the model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
+        <input type="checkbox" id="reasoning-toggle">
+        Reasoning
+      </label>
+      <button class="copy-btn" id="refresh-models-btn" style="margin-left:auto" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
       Loaded in LM Studio
@@ -2028,7 +2026,7 @@ downloadBtn.addEventListener('click', () => {
 const uploadCard   = document.getElementById('upload-card');
 const configCard   = document.getElementById('config-card');
 const distillSelect = document.getElementById('distill-model-select');
-const ocrSelect    = document.getElementById('ocr-model-select');
+const ocrToggle    = document.getElementById('ocr-toggle');
 
 let selectedFiles  = [];
 let completedCount = 0;
@@ -3326,13 +3324,14 @@ async function loadModels() {
     const res  = await fetch('/models/available');
     const data = await res.json();
     const activeDistill = data.active_distill || '';
-    const activeOcr     = data.active_ocr     || '';
+    const llmOcr        = data.llm_ocr === true;
 
     const think = document.getElementById('reasoning-toggle');
     if (think) think.checked = data.thinking === true;   // single global toggle, default off
+    if (ocrToggle) ocrToggle.checked = llmOcr;
 
     document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('ocr-model-dot').style.background     = activeOcr     ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background     = llmOcr        ? 'var(--success)' : 'var(--border)';
 
     const models = data.models || [];
     const prevDistill = distillSelect.value;
@@ -3348,16 +3347,6 @@ async function loadModels() {
       });
       if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
-
-    const prevOcr = ocrSelect.value;
-    ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
-    models.forEach(id => {
-      const opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
-      if (id === activeOcr) opt.selected = true;
-      ocrSelect.appendChild(opt);
-    });
-    if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
   } catch (_) {
     distillSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
   }
@@ -3372,7 +3361,9 @@ distillSelect.addEventListener('change', async () => {
     const data = await res.json();
     if (data.ok) {
       document.getElementById('distill-model-dot').style.background = 'var(--success)';
-      showToast(`Distillation model: ${chosen}`, true);
+      // OCR shares the one model, so its dot follows when the cross-reference is on.
+      document.getElementById('ocr-model-dot').style.background = ocrToggle.checked ? 'var(--success)' : 'var(--border)';
+      showToast(`AI model: ${chosen}`, true);
     } else {
       showToast(`Could not set model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
@@ -3380,20 +3371,21 @@ distillSelect.addEventListener('change', async () => {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
-ocrSelect.addEventListener('change', async () => {
-  const chosen = ocrSelect.value;
-  document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--warning)' : 'var(--border)';
+ocrToggle.addEventListener('change', async () => {
+  const enabled = ocrToggle.checked;
+  document.getElementById('ocr-model-dot').style.background = 'var(--warning)';
   try {
-    const res  = await fetch('/models/ocr', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
+    const res  = await fetch('/models/ocr', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
-      showToast(chosen ? `OCR model: ${chosen}` : 'OCR model cleared (direct vision)', true);
+      document.getElementById('ocr-model-dot').style.background = data.llm_ocr ? 'var(--success)' : 'var(--border)';
+      showToast(data.llm_ocr ? 'OCR cross-reference on (uses the AI model)' : 'OCR cross-reference off (built-in OCR only)', true);
     } else {
-      showToast(`Could not load OCR model: ${data.error}`, false);
+      ocrToggle.checked = !enabled;
+      showToast('Could not change OCR setting', false);
       document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
-  } catch (err) { showToast(`Error: ${err.message}`, false); }
+  } catch (err) { ocrToggle.checked = !enabled; showToast(`Error: ${err.message}`, false); }
 });
 
 document.getElementById('reasoning-toggle').addEventListener('change', async (e) => {
@@ -4696,7 +4688,7 @@ setInterval(() => {
   const settings = document.getElementById('tab-settings');
   if (!settings || settings.classList.contains('hidden')) return;
   const active = document.activeElement;
-  if (active && (active.id === 'ocr-model-select' || active.id === 'distill-model-select')) return;
+  if (active && active.id === 'distill-model-select') return;
   loadModels();
 }, 30000);
 </script>

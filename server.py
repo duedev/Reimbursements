@@ -235,6 +235,30 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     return _processing_settings()
 
 
+def _apply_model_config(cfg: dict | None = None) -> None:
+    """Restore the persisted single-model selection + LLM-OCR toggle.
+
+    Run BEFORE initialize_models so a user's saved model choice survives a
+    restart: initialize_models only overrides the model when it isn't loaded.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    models = cfg.get("models") or {}
+    if models.get("llm_ocr") is not None:
+        _pr.set_llm_ocr(bool(models["llm_ocr"]))
+    if models.get("active"):
+        _pr.set_active_model(str(models["active"]))
+
+
+def _persist_model_config() -> None:
+    """Save the current single-model selection + LLM-OCR toggle to config."""
+    cfg = _load_config()
+    cfg["models"] = {
+        "active":  _pr._active_distill_model,
+        "llm_ocr": bool(_pr._llm_ocr_enabled),
+    }
+    _save_config(cfg)
+
+
 def _audit_settings() -> dict:
     """Current spending/date-warning thresholds as the UI sees them (None = off)."""
     return {
@@ -1006,6 +1030,7 @@ async def lifespan(app: FastAPI):
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     _apply_audit_config()        # restore UI-saved spending/date warning thresholds
+    _apply_model_config()        # restore saved single-model choice before auto-select
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -2408,6 +2433,7 @@ async def get_available_models():
             "models":         models,
             "active_distill": _pr._active_distill_model,
             "active_ocr":     _pr._active_ocr_model,
+            "llm_ocr":        _pr._llm_ocr_enabled,
             "thinking":       _pr._thinking_enabled,
             "ok":             True,
         })
@@ -2416,6 +2442,7 @@ async def get_available_models():
             "models":         [],
             "active_distill": _pr._active_distill_model,
             "active_ocr":     _pr._active_ocr_model,
+            "llm_ocr":        _pr._llm_ocr_enabled,
             "thinking":       _pr._thinking_enabled,
             "ok":             False,
             "error":          str(exc),
@@ -2428,18 +2455,33 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
-    """Set the distillation model. LM Studio loads it on first use."""
-    target = body.model.strip()
-    _pr._active_distill_model = target
-    return JSONResponse({"ok": True, "active_distill": target})
+    """Set the single active AI model (used for distillation and, optionally, OCR).
+
+    OCR and distillation are consolidated onto one model, so this also re-points
+    the OCR alias when the LLM-OCR cross-reference is enabled. The choice is
+    persisted and LM Studio loads the model on first use.
+    """
+    target = _pr.set_active_model(body.model)
+    _persist_model_config()
+    return JSONResponse({"ok": True, "active_distill": target,
+                         "active_ocr": _pr._active_ocr_model})
+
+
+class LlmOcrRequest(BaseModel):
+    enabled: bool = False
 
 
 @app.post("/models/ocr")
-async def swap_ocr_model(body: ModelSwapRequest):
-    """Set (or clear) the dedicated OCR model. LM Studio loads it on first use."""
-    target = body.model.strip()
-    _pr._active_ocr_model = target        # empty string = disable OCR stage
-    return JSONResponse({"ok": True, "active_ocr": target})
+async def toggle_llm_ocr(body: LlmOcrRequest):
+    """Toggle whether the single active model also transcribes the receipt (LLM OCR).
+
+    There is no separate OCR model any more; when enabled, the active model's
+    transcription is cross-referenced against the built-in RapidOCR reading.
+    """
+    enabled = _pr.set_llm_ocr(body.enabled)
+    _persist_model_config()
+    return JSONResponse({"ok": True, "llm_ocr": enabled,
+                         "active_ocr": _pr._active_ocr_model})
 
 
 class ThinkingRequest(BaseModel):
