@@ -352,10 +352,29 @@ def initialize_models() -> str:
 # bug); the file the worker stores is exactly the file OCR read.
 
 AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
-AUTOCROP_MIN_RATIO = 0.40   # skip crop that would keep <40% of the image area
-AUTOCROP_MAX_RATIO = 0.95   # skip crop that trims almost nothing
-AUTOCROP_MARGIN    = 0.02   # safety margin re-added around the detected bbox
-_AUTOCROP_THRESHOLD = 24    # min grayscale delta from background to count as content
+# Single user-facing dial, 0 (gentle) … 100 (very aggressive). It drives every
+# detection knob below so one slider moves the whole behaviour. The default leans
+# aggressive on purpose: phone photos carry a lot of background, and a timid crop
+# reads to the user as "it didn't do anything".
+AUTOCROP_AGGRESSIVENESS = int(os.getenv("AUTOCROP_AGGRESSIVENESS", "70"))
+
+
+def _autocrop_params(aggressiveness: float) -> dict:
+    """Map the 0..100 aggressiveness dial onto the four detection knobs.
+
+    Higher aggressiveness ⇒ trims closer (smaller re-added margin), accepts
+    tighter crops (lower min-kept floor), fires on smaller borders (higher
+    max-kept ceiling), and ignores fainter background gradients (higher content
+    threshold).  At 0 it reproduces the old conservative behaviour; at 100 it
+    will trim almost any detectable border.
+    """
+    a = max(0.0, min(1.0, aggressiveness / 100.0))
+    return {
+        "min_ratio": 0.50 - 0.47 * a,   # keep ≥50% … keep ≥3%
+        "max_ratio": 0.92 + 0.079 * a,  # trim borders down to <0.1% of the frame
+        "margin":    0.04 * (1.0 - a),  # 4% … 0% safety margin re-added
+        "threshold": 16 + 30 * a,       # 16 … 46 min grayscale delta from bg
+    }
 
 # Stored-image compression — re-encode every saved receipt to an optimized JPEG
 # so phone photos don't bloat the output folder or the embedded workbook images.
@@ -386,16 +405,22 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
-def autocrop_analyze(img: Image.Image) -> dict:
+def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -> dict:
     """Inspect what auto-crop would do to ``img`` without mutating it.
 
     Returns a diagnostics dict — ``{"bbox", "kept_ratio", "would_crop",
     "reason"}`` — that is the single source of truth for both the pipeline
-    (``autocrop_receipt``) and the Settings → "Test Auto-crop" preview.  ``bbox``
-    is the detected content box *with* the safety margin (or None), ``kept_ratio``
-    is its area as a fraction of the original, and ``reason`` is a short,
-    human-readable explanation of the decision.
+    (``autocrop_receipt``) and the Settings → "Test image processing" preview.
+    ``bbox`` is the detected content box *with* the safety margin (or None),
+    ``kept_ratio`` is its area as a fraction of the original, and ``reason`` is a
+    short, human-readable explanation of the decision.  ``aggressiveness``
+    defaults to the module-level ``AUTOCROP_AGGRESSIVENESS`` dial.
     """
+    if aggressiveness is None:
+        aggressiveness = AUTOCROP_AGGRESSIVENESS
+    p = _autocrop_params(aggressiveness)
+    min_ratio, max_ratio = p["min_ratio"], p["max_ratio"]
+    threshold = p["threshold"]
     try:
         gray = img.convert("L")
         w, h = gray.size
@@ -411,14 +436,14 @@ def autocrop_analyze(img: Image.Image) -> dict:
         bg = samples[len(samples) // 2]
 
         diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
-        mask = diff.point(lambda p: 255 if p > _AUTOCROP_THRESHOLD else 0)
+        mask = diff.point(lambda v: 255 if v > threshold else 0)
         bbox = mask.getbbox()
         if not bbox:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "no content edges stand out from the background"}
 
-        mx = int(w * AUTOCROP_MARGIN)
-        my = int(h * AUTOCROP_MARGIN)
+        mx = int(w * p["margin"])
+        my = int(h * p["margin"])
         left   = max(0, bbox[0] - mx)
         top    = max(0, bbox[1] - my)
         right  = min(w, bbox[2] + mx)
@@ -426,14 +451,15 @@ def autocrop_analyze(img: Image.Image) -> dict:
         kept = ((right - left) * (bottom - top)) / float(w * h)
         margined = (left, top, right, bottom)
 
-        if kept < AUTOCROP_MIN_RATIO:
+        if kept < min_ratio:
             return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
                     "reason": f"crop looks too aggressive — would keep only "
-                              f"{kept:.0%} (min {AUTOCROP_MIN_RATIO:.0%})"}
-        if kept > AUTOCROP_MAX_RATIO:
+                              f"{kept:.0%} (min {min_ratio:.0%} at this aggressiveness; "
+                              f"raise the slider to allow it)"}
+        if kept > max_ratio:
             return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
                     "reason": f"borders are negligible — keeps {kept:.0%} "
-                              f"(max {AUTOCROP_MAX_RATIO:.0%})"}
+                              f"(needs < {max_ratio:.0%}; raise the slider to trim more)"}
         return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
                 "reason": f"trims background to {kept:.0%} of the original"}
     except Exception as exc:

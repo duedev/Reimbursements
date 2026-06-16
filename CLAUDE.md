@@ -142,7 +142,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **323 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **331 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -177,6 +177,19 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (aggressive auto-crop + series test):** Auto-crop is now a single
+  `AUTOCROP_AGGRESSIVENESS` dial (0..100, default **70**) that `_autocrop_params`
+  maps onto the four detection knobs (min-kept floor, max-kept ceiling, re-added
+  margin, content threshold) — one slider moves the whole behaviour; the old
+  fixed `AUTOCROP_MIN_RATIO`/`MAX_RATIO`/`MARGIN`/`_AUTOCROP_THRESHOLD` constants
+  are gone. `autocrop_analyze(img, aggressiveness=None)` takes the dial.
+  * Settings → Image Processing **reordered to app-flow order** (1 auto-rotate →
+    2 b&w → 3 auto-crop + **Aggressiveness slider** → 4 OCR → 5 compress) and the
+    per-step "Test Auto-crop" replaced by one **"Test image processing →"** button
+    → `POST /debug/process-test`, which runs auto-rotate→b&w→auto-crop→compress in
+    series and shows original vs final + a per-step before/after (proves crop and
+    rotate compose). `autocrop_aggressiveness` added to `/settings/processing`.
+  * Tests: `tests/test_autocrop.py` (+4) and `tests/test_autocrop_endpoint.py` (+6).
 - **2026-06-15 (auto-crop control + preview):** Surfaced and made auto-crop
   testable — `tests/test_autocrop_endpoint.py` (+5) and analyze tests in
   `tests/test_autocrop.py` (+5).

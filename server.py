@@ -180,12 +180,13 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
 def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
-        "autorotate":   _pr.AUTOROTATE_ENABLED,
-        "autocrop":     _pr.AUTOCROP_ENABLED,
-        "grayscale":    _pr.GRAYSCALE_ENABLED,
-        "compress":     _pr.COMPRESS_ENABLED,
-        "local_ocr":    _pr.LOCAL_OCR_ENABLED,
-        "jpeg_quality": _pr.JPEG_QUALITY,
+        "autorotate":              _pr.AUTOROTATE_ENABLED,
+        "grayscale":               _pr.GRAYSCALE_ENABLED,
+        "autocrop":                _pr.AUTOCROP_ENABLED,
+        "autocrop_aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
+        "local_ocr":               _pr.LOCAL_OCR_ENABLED,
+        "compress":                _pr.COMPRESS_ENABLED,
+        "jpeg_quality":            _pr.JPEG_QUALITY,
     }
 
 
@@ -199,6 +200,11 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
         _pr.AUTOROTATE_ENABLED = bool(proc["autorotate"])
     if "autocrop" in proc:
         _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
+    if proc.get("autocrop_aggressiveness") is not None:
+        try:
+            _pr.AUTOCROP_AGGRESSIVENESS = max(0, min(100, int(proc["autocrop_aggressiveness"])))
+        except (TypeError, ValueError):
+            pass
     if "grayscale" in proc:
         _pr.GRAYSCALE_ENABLED = bool(proc["grayscale"])
     if "compress" in proc:
@@ -2508,12 +2514,13 @@ async def get_version():
 # ── Image-processing settings ──────────────────────────────────────────────────
 
 class ProcessingSettingsRequest(BaseModel):
-    autorotate:   bool | None = None
-    autocrop:     bool | None = None
-    grayscale:    bool | None = None
-    compress:     bool | None = None
-    local_ocr:    bool | None = None
-    jpeg_quality: int | None = None
+    autorotate:              bool | None = None
+    autocrop:                bool | None = None
+    autocrop_aggressiveness: int | None = None
+    grayscale:               bool | None = None
+    compress:                bool | None = None
+    local_ocr:               bool | None = None
+    jpeg_quality:            int | None = None
 
 
 @app.get("/settings/processing")
@@ -2528,6 +2535,8 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         proc = cfg.get("processing") or {}
         if body.autorotate is not None: proc["autorotate"] = bool(body.autorotate)
         if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
+        if body.autocrop_aggressiveness is not None:
+            proc["autocrop_aggressiveness"] = max(0, min(100, int(body.autocrop_aggressiveness)))
         if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)
         if body.local_ocr is not None: proc["local_ocr"] = bool(body.local_ocr)
@@ -2855,6 +2864,85 @@ async def autocrop_test(files: list[UploadFile] = File(...)):
             "reason":     info["reason"],
             "preview":    "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
         }
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/debug/process-test")
+async def process_test(files: list[UploadFile] = File(...)):
+    """Run every enabled image-processing step on an uploaded image, in the exact
+    order the pipeline uses (auto-rotate → black&white → auto-crop → compress),
+    and return a per-step before/after report plus the final image. Confirms the
+    steps compose — e.g. a sideways photo comes out upright *and* cropped — and
+    lets a user dial in auto-crop aggressiveness against a real receipt."""
+    if not files:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+    content = await files[0].read()
+    if not content:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+    suffix = Path(files[0].filename or "test.jpg").suffix or ".jpg"
+
+    def _run() -> dict:
+        from PIL import Image as PILImage
+        PROCESSING_FOLDER.mkdir(parents=True, exist_ok=True)
+        cur = PROCESSING_FOLDER / f"_proc_test_{uuid4().hex[:8]}{suffix}"
+        cleanup = {cur}
+        try:
+            cur.write_bytes(content)
+
+            def _dims(p: Path) -> list:
+                with PILImage.open(p) as im:
+                    return list(im.size)
+
+            start_dims, start_bytes = _dims(cur), cur.stat().st_size
+            steps = []
+
+            # The image transforms, applied in series exactly as the pipeline does.
+            for label, enabled, fn in (
+                ("Auto-rotate to upright", _pr.AUTOROTATE_ENABLED, _pr.autorotate_image_file),
+                ("Black & white",          _pr.GRAYSCALE_ENABLED,  _pr.grayscale_image_file),
+                ("Auto-crop borders",      _pr.AUTOCROP_ENABLED,   _pr.autocrop_image_file),
+            ):
+                before = _dims(cur)
+                applied = bool(fn(cur))
+                steps.append({"step": label, "enabled": bool(enabled),
+                              "applied": applied, "before": before, "after": _dims(cur)})
+
+            # Compress is an export-time step that may rewrite the file to .jpg.
+            before, before_bytes = _dims(cur), cur.stat().st_size
+            new = _pr.compress_image_file(cur)
+            cleanup.add(new)
+            after, after_bytes = _dims(new), new.stat().st_size
+            steps.append({
+                "step": "Compress stored image", "enabled": bool(_pr.COMPRESS_ENABLED),
+                "applied": bool(_pr.COMPRESS_ENABLED and (str(new) != str(cur)
+                            or after_bytes < before_bytes or after != before)),
+                "before": before, "after": after,
+                "before_bytes": before_bytes, "after_bytes": after_bytes,
+            })
+            cur = new
+
+            with PILImage.open(cur) as fim:
+                buf = io.BytesIO()
+                fim.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
+            return {
+                "ok": True,
+                "aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
+                "steps": steps,
+                "original": start_dims, "original_bytes": start_bytes,
+                "result": _dims(cur), "result_bytes": cur.stat().st_size,
+                "preview": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
+            }
+        finally:
+            for p in cleanup:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _run)

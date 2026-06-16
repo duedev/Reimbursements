@@ -5,6 +5,7 @@ from PIL import Image
 
 from process_receipts import (
     autocrop_analyze, autocrop_receipt, autocrop_image_file, encode_image,
+    _autocrop_params,
 )
 
 
@@ -94,3 +95,25 @@ def test_analyze_and_receipt_agree():
     info = autocrop_analyze(img)
     out = autocrop_receipt(img)
     assert (out.size != img.size) == info["would_crop"]
+
+
+# ── Aggressiveness dial ────────────────────────────────────────────────────────
+
+def test_autocrop_params_monotonic_in_aggressiveness():
+    lo, hi = _autocrop_params(0), _autocrop_params(100)
+    assert hi["min_ratio"] < lo["min_ratio"]   # accepts tighter crops
+    assert hi["margin"]    < lo["margin"]       # trims closer
+    assert hi["threshold"] > lo["threshold"]    # ignores fainter gradients
+    assert hi["max_ratio"] >= lo["max_ratio"]   # fires on smaller borders
+
+
+def test_autocrop_params_clamped():
+    assert _autocrop_params(-50) == _autocrop_params(0)
+    assert _autocrop_params(999) == _autocrop_params(100)
+
+
+def test_higher_aggressiveness_unlocks_a_crop():
+    # ~30% content: too tight for the gentle floor, fine for the aggressive one.
+    img = _receipt_on_background(box=(250, 200, 750, 800))
+    assert autocrop_analyze(img, aggressiveness=0)["would_crop"] is False
+    assert autocrop_analyze(img, aggressiveness=100)["would_crop"] is True

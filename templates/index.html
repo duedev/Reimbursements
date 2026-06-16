@@ -1647,37 +1647,32 @@
   <div class="card" id="processing-card">
     <div class="card-title">Image Processing</div>
     <p class="section-desc">
-      Applied to every receipt as it's processed. Changes save automatically and take effect
-      on the next receipt — no restart needed.
+      Applied to every receipt <strong>in this order</strong>. Changes save automatically and
+      take effect on the next receipt — no restart needed. Use <em>Test image processing</em>
+      below to preview the whole chain on one photo.
     </p>
     <div style="display:flex;flex-direction:column;gap:11px">
       <label class="check-label">
         <input type="checkbox" id="proc-autorotate">
-        Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up before OCR (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
+        1. Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up <em>before</em> cropping &amp; OCR, so a cropped receipt also faces the right direction (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
       </label>
       <label class="check-label">
         <input type="checkbox" id="proc-grayscale">
-        Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
+        2. Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
       </label>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <label class="check-label">
-          <input type="checkbox" id="proc-autocrop">
-          Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt before OCR (conservative: skips if the crop looks unsafe)</span>
-        </label>
-        <button class="copy-btn" id="autocrop-test-btn" title="Upload a receipt image to preview what auto-crop does" style="flex-shrink:0">
-          Test Auto-crop
-        </button>
-        <input type="file" id="autocrop-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test auto-crop">
-        <span id="autocrop-test-status" style="font-size:11px;color:var(--muted)"></span>
-      </div>
       <label class="check-label">
-        <input type="checkbox" id="proc-compress">
-        Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs</span>
+        <input type="checkbox" id="proc-autocrop">
+        3. Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt (runs after auto-rotate, before OCR)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
+        <span style="min-width:96px">Aggressiveness</span>
+        <input type="range" id="proc-autocrop-aggr" min="0" max="100" step="5" value="70" style="flex:1;max-width:240px" title="Higher trims closer and crops more photos; lower only trims obvious borders">
+        <span id="proc-autocrop-aggr-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:88px">70 — strong</span>
       </label>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <label class="check-label">
           <input type="checkbox" id="proc-localocr">
-          RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
+          4. RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
         </label>
         <button class="copy-btn" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
           Test OCR
@@ -1685,11 +1680,22 @@
         <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the local OCR">
         <span id="ocr-test-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
-      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400">
+      <label class="check-label">
+        <input type="checkbox" id="proc-compress">
+        5. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs (at export time)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
         <span style="min-width:96px">JPEG quality</span>
         <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
         <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
       </label>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;border-top:1px solid var(--border);padding-top:12px">
+        <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → auto-crop → compress in series and preview each step" style="flex-shrink:0">
+          Test image processing →
+        </button>
+        <input type="file" id="proc-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the full image-processing chain">
+        <span id="proc-test-status" style="font-size:11px;color:var(--muted)"></span>
+      </div>
     </div>
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
   </div>
@@ -3495,9 +3501,20 @@ async function loadProcessingSettings() {
     document.getElementById('proc-autocrop').checked   = d.autocrop  !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
     document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
+    const aggr = (d.autocrop_aggressiveness ?? 70);
+    document.getElementById('proc-autocrop-aggr').value = aggr;
+    document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(aggr);
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
     document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
   } catch (_) {}
+}
+
+// Human-readable label for the auto-crop aggressiveness dial.
+function _aggrLabel(v) {
+  v = parseInt(v, 10);
+  const word = v >= 85 ? 'maximum' : v >= 65 ? 'strong' : v >= 40 ? 'moderate'
+             : v >= 15 ? 'gentle' : 'off-ish';
+  return `${v} — ${word}`;
 }
 
 let _procSaveTimer = null;
@@ -3506,6 +3523,7 @@ async function saveProcessingSettings() {
     autorotate:   document.getElementById('proc-autorotate').checked,
     grayscale:    document.getElementById('proc-grayscale').checked,
     autocrop:     document.getElementById('proc-autocrop').checked,
+    autocrop_aggressiveness: parseInt(document.getElementById('proc-autocrop-aggr').value, 10),
     compress:     document.getElementById('proc-compress').checked,
     local_ocr:    document.getElementById('proc-localocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
@@ -3528,6 +3546,15 @@ async function saveProcessingSettings() {
 
 ['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
+});
+
+// Auto-crop aggressiveness slider — live label on drag, debounced save on release.
+document.getElementById('proc-autocrop-aggr').addEventListener('input', (e) => {
+  document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(e.target.value);
+});
+document.getElementById('proc-autocrop-aggr').addEventListener('change', () => {
+  clearTimeout(_procSaveTimer);
+  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
 });
 
 // ── Local OCR (RapidOCR) test ──────────────────────────────────────────────────
@@ -3607,65 +3634,79 @@ document.getElementById('proc-quality').addEventListener('change', () => {
   _procSaveTimer = setTimeout(saveProcessingSettings, 150);
 });
 
-// ── Test Auto-crop ────────────────────────────────────────────────────────────
-// Upload a receipt photo and preview exactly what the conservative auto-crop
-// does to it (before → after, with the decision and the reason), so the user can
-// confirm it behaves on their receipts without running a whole batch.
-document.getElementById('autocrop-test-btn').addEventListener('click', () => {
-  document.getElementById('autocrop-test-input').click();
+// ── Test image processing (whole chain, in series) ─────────────────────────────
+// Upload one receipt photo and run every enabled step in the pipeline's order —
+// auto-rotate → black&white → auto-crop → compress — then show the original next
+// to the final result plus a per-step before/after. Confirms the steps compose
+// (a sideways photo comes out upright AND cropped) and lets the user dial in
+// auto-crop aggressiveness against a real receipt.
+document.getElementById('proc-test-btn').addEventListener('click', () => {
+  document.getElementById('proc-test-input').click();
 });
-document.getElementById('autocrop-test-input').addEventListener('change', async (e) => {
+document.getElementById('proc-test-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const statusEl = document.getElementById('autocrop-test-status');
-  const btn = document.getElementById('autocrop-test-btn');
-  statusEl.textContent = 'Analyzing…';
+  const statusEl = document.getElementById('proc-test-status');
+  const btn = document.getElementById('proc-test-btn');
+  statusEl.textContent = 'Processing…';
   statusEl.style.color = 'var(--muted)';
   btn.disabled = true;
   try {
     const form = new FormData();
     form.append('files', file, file.name);
-    const res = await fetch('/debug/autocrop-test', { method: 'POST', body: form });
+    const res = await fetch('/debug/process-test', { method: 'POST', body: form });
     const d = await res.json();
     if (!d.ok) {
       statusEl.textContent = `✗ ${d.error || 'failed'}`;
       statusEl.style.color = 'var(--danger)';
       return;
     }
-    const [ow, oh] = d.original, [cw, ch] = d.result;
-    if (d.cropped) {
-      statusEl.textContent = `✓ ${ow}×${oh} → ${cw}×${ch}`;
-      statusEl.style.color = 'var(--success)';
-    } else {
-      statusEl.textContent = 'No crop applied';
-      statusEl.style.color = 'var(--warning)';
-    }
-    const enabledNote = d.enabled ? '' :
-      ' <span style="color:var(--warning)">(auto-crop is currently OFF — this is a preview only)</span>';
+    const [ow, oh] = d.original, [rw, rh] = d.result;
+    const kb = n => `${Math.round((n || 0) / 1024)} KB`;
+    statusEl.textContent = `✓ ${ow}×${oh} → ${rw}×${rh}`;
+    statusEl.style.color = 'var(--success)';
+
+    const rows = (d.steps || []).map(s => {
+      const changed = JSON.stringify(s.before) !== JSON.stringify(s.after);
+      const mark = !s.enabled ? '<span style="color:var(--muted)">— off</span>'
+                 : s.applied ? '<span style="color:var(--success)">✓ applied</span>'
+                 : '<span style="color:var(--muted)">no change</span>';
+      const dims = changed ? `${s.before.join('×')} → <strong>${s.after.join('×')}</strong>` : `${s.after.join('×')}`;
+      return `<tr>
+        <td style="padding:4px 10px 4px 0">${esc(s.step)}</td>
+        <td style="padding:4px 10px;color:var(--muted)">${dims}</td>
+        <td style="padding:4px 0">${mark}</td>
+      </tr>`;
+    }).join('');
+
     const imgURL = URL.createObjectURL(file);
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
     modal.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <strong style="font-size:14px">Auto-crop preview</strong>
-        <button class="autocrop-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <strong style="font-size:14px">Image processing — original vs. final</strong>
+        <button class="proc-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
       </div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:14px">
-        <strong>${d.cropped ? 'Cropped' : 'Left unchanged'}</strong> — ${esc(d.reason || '')} (keeps ${Math.round((d.kept_ratio || 1) * 100)}%).${enabledNote}
+        ${ow}×${oh} (${kb(d.original_bytes)}) → <strong>${rw}×${rh}</strong> (${kb(d.result_bytes)}). Auto-crop aggressiveness: <strong>${d.aggressiveness}</strong>.
       </p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
-        <div style="flex:1 1 240px;min-width:200px;text-align:center">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Original — ${ow}×${oh}</div>
-          <img src="${imgURL}" alt="Original receipt" style="max-width:100%;max-height:60vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        <div style="flex:1 1 220px;min-width:180px;text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Original</div>
+          <img src="${imgURL}" alt="Original receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
         </div>
-        <div style="flex:1 1 240px;min-width:200px;text-align:center">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After auto-crop — ${cw}×${ch}</div>
-          <img src="${d.preview}" alt="Auto-cropped receipt" style="max-width:100%;max-height:60vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        <div style="flex:1 1 220px;min-width:180px;text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After processing (upright + cropped)</div>
+          <img src="${d.preview}" alt="Processed receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        </div>
+        <div style="flex:1 1 240px;min-width:220px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Steps, in order</div>
+          <table style="font-size:12px;border-collapse:collapse;width:100%">${rows}</table>
         </div>
       </div>
     </div>`;
     const closeModal = () => { URL.revokeObjectURL(imgURL); modal.remove(); };
-    modal.querySelector('.autocrop-test-close').addEventListener('click', closeModal);
+    modal.querySelector('.proc-test-close').addEventListener('click', closeModal);
     modal.addEventListener('click', ev => { if (ev.target === modal) closeModal(); });
     document.body.appendChild(modal);
   } catch (err) {
