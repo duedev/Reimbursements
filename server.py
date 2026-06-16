@@ -249,6 +249,14 @@ def _apply_model_config(cfg: dict | None = None) -> None:
         _pr.set_active_model(str(models["active"]))
 
 
+def _normalize_llm_url(url: str) -> str:
+    """Ensure the URL ends with /v1 (OpenAI-compatible path)."""
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    return url
+
+
 def _apply_llm_server_config(cfg: dict | None = None) -> None:
     """Restore the persisted LLM server URL into process_receipts.LMSTUDIO_BASE_URL.
 
@@ -267,14 +275,14 @@ def _apply_llm_server_config(cfg: dict | None = None) -> None:
     if llm_model_cfg.get("server_type") == "docker":
         _legacy_url = "http://model-server:11434/v1"
     elif llm_model_cfg.get("base_url"):
-        _legacy_url = str(llm_model_cfg["base_url"])
+        _legacy_url = _normalize_llm_url(str(llm_model_cfg["base_url"]))
 
     # Canonical key written by POST /settings/llm-server (overrides legacy)
     llm_srv = cfg.get("llm_server") or {}
     if llm_srv.get("server_type") == "docker":
         _pr.LMSTUDIO_BASE_URL = "http://model-server:11434/v1"
     elif llm_srv.get("base_url"):
-        _pr.LMSTUDIO_BASE_URL = str(llm_srv["base_url"])
+        _pr.LMSTUDIO_BASE_URL = _normalize_llm_url(str(llm_srv["base_url"]))
     elif _legacy_url:
         _pr.LMSTUDIO_BASE_URL = _legacy_url
 
@@ -2599,7 +2607,7 @@ async def set_llm_server(request: Request):
     if server_type == "docker":
         effective_url = "http://model-server:11434/v1"
     elif base_url:
-        effective_url = base_url
+        effective_url = _normalize_llm_url(base_url)
     else:
         effective_url = "http://127.0.0.1:1234/v1"
 
