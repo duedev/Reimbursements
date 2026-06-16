@@ -1305,6 +1305,13 @@
   <!-- Upload card (compact) -->
   <div class="card" id="upload-card">
     <div class="card-title">Add Receipts</div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <span style="font-size:12px;color:var(--muted)">Process</span>
+      <input type="range" id="conc-slider" min="1" max="8" step="1" value="3" style="flex:0 1 150px"
+             title="How many receipts the worker reads in parallel. The local model is the bottleneck — more isn't always faster, and too many can time out and fall back to the offline parser. Takes effect on the next batch.">
+      <span id="conc-val" style="font-variant-numeric:tabular-nums;font-weight:600;min-width:72px">3 at a time</span>
+      <span style="font-size:11px;color:var(--muted)">— higher works your model harder; applies to the next batch</span>
+    </div>
     <label id="drop-zone" for="file-input">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round"
@@ -2094,6 +2101,21 @@ window.toggleStepLog = function(e, filename) {
   if (log) log.classList.toggle('open');
 };
 
+// Friendly label + tooltip distinguishing the app's built-in OCR from an LLM OCR
+// pass, so a card's "read by…" is clear at a glance.
+function _ocrEngineInfo(engine) {
+  switch ((engine || '').toLowerCase()) {
+    case 'rapidocr':
+      return { label: 'Built-in OCR', title: "Read by the app's built-in OCR engine (RapidOCR) — runs locally, no LLM." };
+    case 'rapidocr+llm':
+      return { label: 'Built-in + LLM OCR', title: 'Read by the built-in OCR and an LLM OCR/vision model, then cross-checked for accuracy.' };
+    case 'llm-ocr':
+      return { label: 'LLM OCR', title: 'Read by an LLM OCR/vision model (the built-in OCR returned nothing usable).' };
+    default:
+      return engine ? { label: engine, title: 'OCR engine used for this receipt.' } : null;
+  }
+}
+
 function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   const div = document.createElement('div');
   div.dataset.kf = filename;
@@ -2131,8 +2153,11 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
     if (status === 'done' && data._proc_seconds) {
-      const engine = data._ocr_engine ? ` &bull; ${esc(data._ocr_engine)}` : '';
-      inner += `<div class="k-proc-time" title="Processing time">&#9201; ${data._proc_seconds}s${engine}</div>`;
+      const oi = _ocrEngineInfo(data._ocr_engine);
+      const engine = oi
+        ? ` &bull; <span title="${esc(oi.title)}" style="border-bottom:1px dotted var(--muted);cursor:help">${esc(oi.label)}</span>`
+        : '';
+      inner += `<div class="k-proc-time"><span title="Total processing time">&#9201; ${data._proc_seconds}s</span>${engine}</div>`;
     }
   }
 
@@ -3557,6 +3582,32 @@ document.getElementById('proc-autocrop-aggr').addEventListener('change', () => {
   _procSaveTimer = setTimeout(saveProcessingSettings, 150);
 });
 
+// ── Batch concurrency slider (top of "Add Receipts") ──────────────────────────
+function _setConcLabel(v) {
+  document.getElementById('conc-val').textContent = `${v} at a time`;
+}
+(async function loadConcurrency() {
+  try {
+    const d = await (await fetch('/settings/processing')).json();
+    const v = d.max_parallel || 3;
+    document.getElementById('conc-slider').value = v;
+    _setConcLabel(v);
+  } catch (_) {}
+})();
+document.getElementById('conc-slider').addEventListener('input', e => _setConcLabel(e.target.value));
+let _concSaveTimer = null;
+document.getElementById('conc-slider').addEventListener('change', () => {
+  clearTimeout(_concSaveTimer);
+  _concSaveTimer = setTimeout(async () => {
+    const v = parseInt(document.getElementById('conc-slider').value, 10);
+    try {
+      await fetch('/settings/processing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_parallel: v }) });
+      showToast(`Processing ${v} receipt${v === 1 ? '' : 's'} at a time (next batch)`, true);
+    } catch (err) { showToast(`Error: ${err.message}`, false); }
+  }, 150);
+});
+
 // ── Local OCR (RapidOCR) test ──────────────────────────────────────────────────
 document.getElementById('ocr-test-btn').addEventListener('click', () => {
   document.getElementById('ocr-test-input').click();
@@ -4015,7 +4066,10 @@ function _lbStatsHtml(data, filename) {
   parts.push(row('Category', { fuel: 'Fuel', mats: 'Materials', misc: 'Misc' }[cat] || cat));
   parts.push(row('Job Name', data.job_name));
   parts.push(row('Job #', data.job_number));
-  if (data._proc_seconds) parts.push(row('Processing', `${data._proc_seconds}s${data._ocr_engine ? ' · ' + data._ocr_engine : ''}`));
+  if (data._proc_seconds) {
+    const oi = _ocrEngineInfo(data._ocr_engine);
+    parts.push(row('Processing', `${data._proc_seconds}s${oi ? ' · ' + oi.label : ''}`));
+  }
   const summary = data.summary || data.ai_summary;
   if (summary) parts.push(`<div class="lb-stat-summary">"${esc(summary)}"</div>`);
   if (data._flag) parts.push(`<div class="lb-stat-flag">&#9888; ${esc(data._flag)}</div>`);

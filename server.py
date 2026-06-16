@@ -187,6 +187,7 @@ def _processing_settings() -> dict:
         "local_ocr":               _pr.LOCAL_OCR_ENABLED,
         "compress":                _pr.COMPRESS_ENABLED,
         "jpeg_quality":            _pr.JPEG_QUALITY,
+        "max_parallel":            _pr.MAX_PARALLEL_REQUESTS,
     }
 
 
@@ -218,6 +219,11 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     if proc.get("jpeg_quality") is not None:
         try:
             _pr.JPEG_QUALITY = max(40, min(95, int(proc["jpeg_quality"])))
+        except (TypeError, ValueError):
+            pass
+    if proc.get("max_parallel") is not None:
+        try:
+            _pr.MAX_PARALLEL_REQUESTS = max(1, min(8, int(proc["max_parallel"])))
         except (TypeError, ValueError):
             pass
     return _processing_settings()
@@ -2521,6 +2527,7 @@ class ProcessingSettingsRequest(BaseModel):
     compress:                bool | None = None
     local_ocr:               bool | None = None
     jpeg_quality:            int | None = None
+    max_parallel:            int | None = None
 
 
 @app.get("/settings/processing")
@@ -2542,6 +2549,8 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         if body.local_ocr is not None: proc["local_ocr"] = bool(body.local_ocr)
         if body.jpeg_quality is not None:
             proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
+        if body.max_parallel is not None:
+            proc["max_parallel"] = max(1, min(8, int(body.max_parallel)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)

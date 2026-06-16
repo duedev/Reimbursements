@@ -141,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **355 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **356 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -176,6 +176,17 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (concurrency slider + OCR labels + saved agent):**
+  * **Batch concurrency** is now user-controllable: `max_parallel` added to
+    `/settings/processing` (clamped 1..8 → `_pr.MAX_PARALLEL_REQUESTS`, applied on
+    the next batch) with a compact slider at the top of the **Add Receipts** card
+    (`#conc-slider`). Test in `tests/test_settings_endpoints.py`.
+  * **OCR engine, in plain English** — `_ocrEngineInfo(engine)` maps the raw
+    `_ocr_engine` (`rapidocr` / `rapidocr+llm` / `llm-ocr`) to "Built-in OCR" /
+    "Built-in + LLM OCR" / "LLM OCR" with hover tooltips on the card and in the
+    review modal.
+  * **Persona persisted** — saved the Senior Developer agent to
+    `.claude/agents/senior-developer.md` so it travels with the repo.
 - **2026-06-16 (date normalization + cleanup):** `tests/test_date_normalize.py` (+~24).
   * **`normalize_date(raw)`** — dedicated, deterministic, **US-first** date
     normalizer (`process_receipts.py`): MM/DD/YYYY convention, two-digit years →
