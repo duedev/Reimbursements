@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
@@ -273,6 +274,101 @@ def _docker_llm_url() -> str:
     """
     host = "model-server" if _in_docker() else "127.0.0.1"
     return f"http://{host}:11434/v1"
+
+
+def _probe_llm_url(base_url: str, timeout: float = 1.5) -> tuple[bool, int]:
+    """Quick reachability check for an OpenAI-compatible LLM server.
+
+    Returns ``(reachable, model_count)``. A GET ``{base_url}/models`` that
+    answers HTTP 200 with a JSON ``data`` list counts as reachable; the count is
+    how many models that server currently reports loaded.
+    """
+    if not base_url:
+        return (False, 0)
+    url = base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer lmstudio"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return (False, 0)
+            data = json.loads(resp.read() or b"{}")
+            return (True, len(data.get("data") or []))
+    except Exception:
+        return (False, 0)
+
+
+def _candidate_llm_urls() -> list[str]:
+    """Ordered, de-duplicated LLM endpoints to try when auto-detecting.
+
+    The currently-configured URL is tried first (so a working setup is never
+    disturbed), then the well-known endpoints for the common deployments: a host
+    LM Studio on :1234, the bundled Docker ``model-server`` on :11434, and the
+    ``host.docker.internal`` variants used when the app itself runs in Docker.
+    """
+    cands = [
+        getattr(_pr, "LMSTUDIO_BASE_URL", "") or "",
+        "http://127.0.0.1:1234/v1",
+        "http://localhost:1234/v1",
+        "http://host.docker.internal:1234/v1",
+        _docker_llm_url(),                       # runtime-aware bundled server
+        "http://127.0.0.1:11434/v1",
+        "http://host.docker.internal:11434/v1",
+    ]
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in cands:
+        u = (u or "").strip()
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _autodetect_llm_url(timeout: float = 1.5) -> str | None:
+    """Probe candidate endpoints; return the best reachable one (or None).
+
+    Prefers an endpoint that already has a model loaded; otherwise falls back to
+    any endpoint that merely answers.
+    """
+    reachable_no_model: str | None = None
+    for url in _candidate_llm_urls():
+        ok, n = _probe_llm_url(url, timeout=timeout)
+        if ok and n > 0:
+            return url
+        if ok and reachable_no_model is None:
+            reachable_no_model = url
+    return reachable_no_model
+
+
+def _ensure_llm_reachable() -> None:
+    """Safety net: if the configured endpoint is dead, adopt a working one.
+
+    Stops a stale saved choice (e.g. a "docker" server-type pinned to :11434
+    while LM Studio is actually on :1234) from permanently stranding the
+    connection. Non-destructive — it only changes the in-memory URL for this
+    process, leaving the persisted preference intact so a corrected setup still
+    wins on a clean start. ``POST /llm-server/autodetect`` persists when the user
+    asks for it explicitly.
+    """
+    current = getattr(_pr, "LMSTUDIO_BASE_URL", "") or ""
+    if current and _probe_llm_url(current)[0]:
+        return
+    found = _autodetect_llm_url()
+    if found and found != current:
+        _pr.LMSTUDIO_BASE_URL = found
+        print(f"[models] configured LLM endpoint {current or '(none)'} unreachable; "
+              f"auto-switched to {found}")
+    elif not found:
+        print(f"[models] no LLM endpoint reachable (tried: {_candidate_llm_urls()})")
+
+
+def _startup_models() -> None:
+    """Background-thread startup: auto-recover the endpoint, then init models."""
+    try:
+        _ensure_llm_reachable()
+    except Exception as exc:
+        print(f"[models] auto-detect skipped: {exc}")
+    initialize_models()
 
 
 def _apply_llm_server_config(cfg: dict | None = None) -> None:
@@ -1097,7 +1193,7 @@ async def lifespan(app: FastAPI):
             print(f"[startup] cleaned {len(removed)} empty orphaned folder(s)")
     except Exception as exc:
         print(f"[startup] empty-folder cleanup skipped: {exc}")
-    threading.Thread(target=initialize_models,  daemon=True).start()
+    threading.Thread(target=_startup_models,    daemon=True).start()
     _ensure_worker_alive()       # start the self-healing worker thread
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
@@ -2668,6 +2764,33 @@ async def llm_server_status():
     })
 
 
+@app.post("/llm-server/autodetect")
+async def llm_server_autodetect():
+    """Probe well-known endpoints and adopt the first reachable LLM server.
+
+    Recovers automatically from a stale or incorrect saved server choice (e.g. a
+    "docker" selection pinned to :11434 while LM Studio is on :1234). On success
+    the detected URL is applied immediately AND persisted (as a custom server),
+    so the fix sticks across restarts and overrides any bad saved preference.
+    """
+    loop  = asyncio.get_event_loop()
+    found = await loop.run_in_executor(None, _autodetect_llm_url)
+    if not found:
+        return JSONResponse({
+            "ok":       False,
+            "base_url": getattr(_pr, "LMSTUDIO_BASE_URL", ""),
+            "tried":    _candidate_llm_urls(),
+        })
+    _pr.LMSTUDIO_BASE_URL = found
+    cfg = _load_config()
+    cfg["llm_server"] = {"server_type": "custom", "base_url": found}
+    _save_config(cfg)
+    # Re-adopt a model now that we have a live endpoint (best-effort, off-thread).
+    # run_in_executor returns a Future (not a coroutine) — schedule and don't await.
+    loop.run_in_executor(None, _pr.initialize_models)
+    return JSONResponse({"ok": True, "base_url": found})
+
+
 @app.post("/llm-server/start")
 async def llm_server_start():
     """Start the bundled Docker LLM server (best-effort)."""
@@ -2713,9 +2836,10 @@ async def llm_server_restart():
 @app.post("/llm-server/load")
 async def llm_server_load():
     """Trigger model warm-up / load into LLM server memory."""
-    asyncio.create_task(
-        asyncio.get_event_loop().run_in_executor(None, _pr.warm_up_model)
-    )
+    # run_in_executor returns a Future (not a coroutine), so it must NOT be
+    # wrapped in asyncio.create_task (which raises TypeError and 500s the call).
+    # Scheduling it is fire-and-forget; we don't await the warm-up.
+    asyncio.get_event_loop().run_in_executor(None, _pr.warm_up_model)
     return JSONResponse({"ok": True, "message": "Model warm-up started"})
 
 

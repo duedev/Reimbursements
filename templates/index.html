@@ -1643,6 +1643,7 @@
         <button class="btn btn-cancel btn-sm" id="llm-stop-btn">Stop</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-restart-btn">Restart</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-load-btn">Load Model</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-autodetect-btn" title="Probe known endpoints (LM Studio :1234, bundled server :11434, host.docker.internal) and connect to whichever answers">🔎 Auto-detect</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-status-refresh-btn">↻ Refresh</button>
       </div>
     </div>
@@ -3749,6 +3750,20 @@ function _setLmChip(state, text) {
   chip.title = `LLM Server: ${text} — click to open model settings`;
 }
 
+// Throttle the silent auto-recovery probe so a genuinely-offline server isn't
+// hammered on every 30s poll, while still re-trying periodically so the app
+// reconnects on its own once LM Studio (or the bundled server) comes online.
+let _lastLlmAutodetect = 0;
+async function _tryLlmAutodetect() {
+  const now = Date.now();
+  if (now - _lastLlmAutodetect < 15000) return false;
+  _lastLlmAutodetect = now;
+  try {
+    const ad = await (await fetch('/llm-server/autodetect', {method:'POST'})).json();
+    return !!ad.ok;
+  } catch (_) { return false; }
+}
+
 async function loadLMStudioModels() {
   try {
     const res  = await fetch('/models/lmstudio');
@@ -3763,6 +3778,13 @@ async function loadLMStudioModels() {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
       _setLmChip('warn', 'No models loaded');
     } else {
+      // Unreachable at the configured URL — silently try to auto-recover by
+      // probing the other well-known endpoints, then re-render if it worked.
+      if (await _tryLlmAutodetect()) {
+        checkLLMStatus();
+        loadLLMServerSettings();
+        return loadLMStudioModels();
+      }
       const urlHint = data.base_url ? ` — tried <code style="font-size:10px">${esc(data.base_url)}</code>` : '';
       strip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable${urlHint}</span></div>`;
       _setLmChip('err', `Offline${data.base_url ? ' · ' + esc(data.base_url) : ''}`);
@@ -3849,6 +3871,22 @@ document.getElementById('llm-restart-btn').addEventListener('click', async () =>
 });
 document.getElementById('llm-load-btn').addEventListener('click', async () => {
   try { const r = await fetch('/llm-server/load',{method:'POST'}); const d=await r.json(); showToast(d.ok?'Model load started…':'Load failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
+});
+document.getElementById('llm-autodetect-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('llm-autodetect-btn');
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Detecting…';
+  try {
+    _lastLlmAutodetect = 0;   // bypass the throttle for an explicit click
+    const d = await (await fetch('/llm-server/autodetect', {method:'POST'})).json();
+    if (d.ok) {
+      showToast(`Connected to LLM server at ${d.base_url}`, true);
+    } else {
+      showToast('No LLM server found. Is LM Studio running with a model loaded?', false);
+    }
+    loadLMStudioModels(); checkLLMStatus(); loadLLMServerSettings();
+  } catch (e) { showToast('Auto-detect failed: ' + e.message, false); }
+  finally { btn.disabled = false; btn.textContent = prev; }
 });
 document.getElementById('llm-status-refresh-btn').addEventListener('click', checkLLMStatus);
 

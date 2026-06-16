@@ -580,7 +580,9 @@ Any multimodal model that can see images works. A vision-capable instruction mod
 The extractor flags a receipt as low-confidence when it cannot identify a vendor name or a dollar amount. This happens with blurry images, heavily stylized receipts, or models that struggle with a particular format. Click **↺ Retry** to re-queue with the same or a different model, or try enabling the optional OCR model.
 
 **Q: The app says "LM Studio unreachable" — what do I do?**  
-Make sure the LM Studio Local Server is running and a model is loaded. If you're running the app inside Docker, verify `LMSTUDIO_BASE_URL` is set to `http://host.docker.internal:1234/v1` (not `localhost`) so the container can reach the host network.
+Make sure the LM Studio Local Server is running and a model is loaded. The app will **auto-detect** a working endpoint on its own: at startup, and whenever the status reads unreachable, it probes the well-known addresses (LM Studio on `:1234`, the bundled Docker server on `:11434`, and the `host.docker.internal` variants) and connects to whichever answers. You can also force a re-scan with the **🔎 Auto-detect** button in Settings → AI Models → *LLM Server Controls* — handy if a previously-saved "Docker bundled server" choice left the app pointed at the wrong port. If you're running the app inside Docker, `LMSTUDIO_BASE_URL` defaults to `http://host.docker.internal:1234/v1` (not `localhost`) so the container can reach the host network.
+
+> Note: the in-app LLM Server setting is saved and **overrides the `LMSTUDIO_BASE_URL` env var** on subsequent startups. To change the server permanently from the command line you may need to re-run `docker compose up -d` (a bare `restart` does not reload env vars) — or just use the Auto-detect button / LLM Server card in the UI, which apply immediately without a restart.
 
 **Q: Can I process receipts while the previous batch is still running?**  
 Yes. "Add to Queue" and "Queue Intake Files" can be clicked at any time. Files are added to a persistent queue that the background worker drains continuously.
