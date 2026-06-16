@@ -192,7 +192,8 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "(labelled transcription A and B) from different engines — cross-reference "
     "them, prefer values that agree, and use the clearer reading where they differ\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
-    "- date must be YYYY-MM-DD\n"
+    "- date must be YYYY-MM-DD; ALWAYS read ambiguous numeric dates as US "
+    "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
     "- summary: one sentence, vendor and purpose only, do NOT include the dollar amount\n"
     "- Do NOT include job_name or job_number — user provides those manually\n"
     "- flags: JSON array of flag objects for issues:\n"
@@ -227,7 +228,7 @@ Category rules:
 - "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
 Amount: use TOTAL or GRAND TOTAL.
-Date: YYYY-MM-DD from transaction date.
+Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
 Summary: vendor and purpose only — do NOT include the dollar amount.
 Do NOT include job_name or job_number.
 
@@ -832,6 +833,11 @@ def _parse_llm_record(raw: str) -> Optional[dict]:
     # normalise "summary" field name to "ai_summary" used downstream
     if "summary" in result and "ai_summary" not in result:
         result["ai_summary"] = result.pop("summary")
+    # Canonicalise the date deterministically (US month/day, 2-digit years → 20xx)
+    # rather than trusting the model to have picked the right format. Keep the raw
+    # value if it isn't parseable so nothing is silently lost.
+    if result.get("date"):
+        result["date"] = normalize_date(result["date"]) or result["date"]
     return result
 
 
@@ -1214,16 +1220,13 @@ _DATE_PATTERNS = (
 
 def _find_date_in_text(text: str) -> str:
     """Best-effort extraction of a transaction date as YYYY-MM-DD ('' if none)."""
-    def _norm_year(y: int) -> int:
-        return y + 2000 if y < 100 else y
-
     for rx, kind in _DATE_PATTERNS:
         for m in rx.finditer(text):
             try:
                 if kind == "ymd":
                     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 elif kind == "mdy":
-                    mo, d, y = int(m.group(1)), int(m.group(2)), _norm_year(int(m.group(3)))
+                    mo, d, y = int(m.group(1)), int(m.group(2)), _normalize_year(int(m.group(3)))
                 elif kind == "mname":
                     mo = MONTH_MAP.get(m.group(1).lower())
                     d, y = int(m.group(2)), int(m.group(3))
@@ -1235,6 +1238,70 @@ def _find_date_in_text(text: str) -> str:
                 return date(y, mo, d).isoformat()
             except (ValueError, TypeError):
                 continue
+    return ""
+
+
+def _normalize_year(y: int) -> int:
+    """Two-digit year → the 2000s (24 → 2024); four-digit years pass through.
+
+    Per the app's convention every ``YY`` is assumed to be 20xx — we do not try
+    to guess 19xx — so "99" becomes 2099, not 1999.
+    """
+    return 2000 + y if 0 <= y < 100 else y
+
+
+def _iso_or_blank(y: int, mo: int, d: int) -> str:
+    try:
+        return date(y, mo, d).isoformat()
+    except (ValueError, TypeError):
+        return ""
+
+
+def normalize_date(raw) -> str:
+    """Normalize a receipt date string to canonical ``YYYY-MM-DD`` — US-first.
+
+    Receipts in this app are assumed to follow the US **MM/DD/YYYY** convention,
+    so an ambiguous numeric date like ``08-15-24`` is read as month=08, day=15,
+    year=2024 — we deliberately do **not** try to infer DD/MM order (that
+    guessing is exactly what we want to take away from the LLM). Rules:
+
+      * **US month/day order** for all numeric dates.
+      * **Two-digit years → 2000s** (``24`` → ``2024``) via ``_normalize_year``.
+      * **Separators**: dashes, slashes, and dots are all accepted
+        (``08-15-24`` / ``08/15/24`` / ``08.15.24``).
+      * An already-ISO ``YYYY-MM-DD`` (or ``YYYY/MM/DD``) is trusted year-first.
+      * Common month-name forms (``May 1, 2024`` / ``1 May 2024``) are handled.
+
+    Returns ``''`` when nothing date-like (or nothing *valid*, e.g. ``13/40/24``)
+    can be found, so callers can fall back cleanly.
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+
+    # Year-first ISO (4-digit year leads) — trust it as written.
+    m = re.search(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b", s)
+    if m:
+        return _iso_or_blank(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # US numeric: MM[sep]DD[sep]YY or YYYY, with - / . separators.
+    m = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b", s)
+    if m:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             int(m.group(1)), int(m.group(2)))
+
+    # Month-name forms: "May 1, 2024" / "May. 1 24".
+    m = re.search(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{2,4})\b", s)
+    if m and m.group(1).lower() in MONTH_MAP:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             MONTH_MAP[m.group(1).lower()], int(m.group(2)))
+
+    # Day-first month-name: "1 May 2024".
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{2,4})\b", s)
+    if m and m.group(2).lower() in MONTH_MAP:
+        return _iso_or_blank(_normalize_year(int(m.group(3))),
+                             MONTH_MAP[m.group(2).lower()], int(m.group(1)))
+
     return ""
 
 

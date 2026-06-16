@@ -142,7 +142,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **331 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **355 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -177,6 +177,19 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (date normalization + cleanup):** `tests/test_date_normalize.py` (+~24).
+  * **`normalize_date(raw)`** — dedicated, deterministic, **US-first** date
+    normalizer (`process_receipts.py`): MM/DD/YYYY convention, two-digit years →
+    2000s (`24`→2024, `99`→2099), accepts `-` `/` `.` separators, ISO passthrough,
+    month-name forms; returns `''` when unparseable. Shared `_normalize_year` /
+    `_iso_or_blank`; `_find_date_in_text` reuses `_normalize_year`. Wired into
+    `_parse_llm_record` so every model date is canonicalised (raw kept if it can't
+    parse). Both prompt templates now state the US month/day rule outright so the
+    model stops guessing day/month order.
+  * **Cleanup** — dropped the "JIT" wording from the `/models/*` docstrings;
+    genericised the stale `google/gemma-4-12b-qat` default in README/TUTORIAL/
+    ADVISORY (the code default is empty → auto-detect). `GEMMA_*` env-var names and
+    the model-selection heuristic are unchanged.
 - **2026-06-16 (aggressive auto-crop + series test):** Auto-crop is now a single
   `AUTOCROP_AGGRESSIVENESS` dial (0..100, default **70**) that `_autocrop_params`
   maps onto the four detection knobs (min-kept floor, max-kept ceiling, re-added

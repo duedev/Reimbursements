@@ -33,7 +33,7 @@ LM Studio runs the AI that reads your receipts. Everything stays on your compute
 2. Open the installer and follow the prompts (Windows: Next → Next → Install; Mac: drag to Applications).
 3. Open LM Studio.
 4. In the left sidebar, click the **Search** icon (magnifying glass).
-5. In the search box, type `gemma-4-12b-qat`. When the result appears, click the **Download** button next to it. The download is a few gigabytes — let it finish.
+5. In the search box, look for a **vision / multimodal** model that fits your computer — its model card will be tagged *Vision*, and a 7–12B size suits most laptops. Click **Download** next to it. The download is a few gigabytes — let it finish. (The exact model doesn't matter: the app auto-detects whatever vision model you load.)
 6. Optional but recommended for difficult receipts: also search `olmOCR-2-7B` and download it the same way. This model handles blurry or handwritten receipts much better. Once it's loaded, you can pick it as the **OCR Model** in the app's Settings tab — the app then reads each receipt with *both* its built-in reader and this model and cross-checks the two for accuracy. (The model list in Settings refreshes itself, so whatever you load in LM Studio shows up automatically.)
 7. Click the **Developer** tab in the left sidebar (looks like `</>` or says "Local Server").
 8. Click **Start Server**. The status should turn green and show port **1234**.
@@ -166,6 +166,6 @@ If you want to test the email before the scheduled day, look for a **Send Report
 | **"LM Studio unreachable" message** | Open LM Studio, click the Developer tab, and make sure the server shows **Running** on port 1234. Also make sure at least one model is loaded. If you closed LM Studio, open it again. |
 | **Port 8000 already in use** | Another program on your computer is using port 8000. The quickest fix: open Docker Desktop, find the `receipt-processor` container, stop it, then restart via launch.bat / launch.sh. If the conflict persists, restart your computer. |
 | **Receipt is stuck in Processing** | The AI model may have crashed or timed out. Refresh the browser page. If the card reappears in Failed, click the **Retry** button. If LM Studio shows no model loaded, reload the model there first. |
-| **The app says "Failed" for all receipts** | Make sure a vision-capable model is loaded in LM Studio (not a text-only model). The model name should contain words like "vision", "4b", "12b", or it should be the Gemma model you downloaded in Step 2. |
+| **The app says "Failed" for all receipts** | Make sure a vision-capable model is loaded in LM Studio (not a text-only model) — its model card should be tagged *Vision*. This is the model you downloaded in Step 2. |
 | **Browser shows "This site can't be reached"** | The app container may not have finished starting. Wait 30 seconds and refresh. If it still does not work, check that Docker Desktop is running and open a new launch.bat / launch.sh window. |
 | **Spreadsheet has no data** | Only receipts in the **Completed** column are included. If all your receipts are in Failed, fix them first using Retry, then click Generate Spreadsheet again. |

@@ -2335,7 +2335,7 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
-    """Set distillation model. LM Studio JIT will load it on first use."""
+    """Set the distillation model. LM Studio loads it on first use."""
     target = body.model.strip()
     _pr._active_distill_model = target
     return JSONResponse({"ok": True, "active_distill": target})
@@ -2343,7 +2343,7 @@ async def swap_distill_model(body: ModelSwapRequest):
 
 @app.post("/models/ocr")
 async def swap_ocr_model(body: ModelSwapRequest):
-    """Set (or clear) the dedicated OCR model. LM Studio JIT loads on first use."""
+    """Set (or clear) the dedicated OCR model. LM Studio loads it on first use."""
     target = body.model.strip()
     _pr._active_ocr_model = target        # empty string = disable OCR stage
     return JSONResponse({"ok": True, "active_ocr": target})
