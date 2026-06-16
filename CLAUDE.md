@@ -141,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **370 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **422 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -175,6 +175,33 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-16 (LLM connection — auto-detect / self-healing endpoint):** The
+  durable fix for the recurring "app won't connect to LM Studio" report. Even
+  after the docker-hostname fix, a stale saved choice (e.g. the **"Docker bundled
+  server"** radio pinning the URL to `:11434` while LM Studio runs on `:1234`)
+  was re-applied on every startup and could never self-recover. New seam in
+  `server.py`:
+  * `_probe_llm_url(url)` (urllib GET `{url}/models` → `(reachable, model_count)`),
+    `_candidate_llm_urls()` (ordered/deduped: current URL first, then `127.0.0.1:1234`,
+    `localhost:1234`, `host.docker.internal:1234`, the runtime-aware bundled
+    `:11434`, and `host.docker.internal:11434`), `_autodetect_llm_url()` (first
+    reachable, preferring one with a model loaded).
+  * `_ensure_llm_reachable()` — startup safety net: if the configured endpoint is
+    dead, adopt a working candidate **for the session only** (non-destructive; the
+    persisted preference is left intact). Runs in a new `_startup_models()` wrapper
+    that the lifespan thread calls before `initialize_models`.
+  * `POST /llm-server/autodetect` — explicit recovery: probes, adopts, **and
+    persists** the found URL as `llm_server={server_type:"custom",base_url:…}`,
+    overwriting a bad saved choice so the fix sticks. UI: new **🔎 Auto-detect**
+    button in the LLM Server card; `loadLMStudioModels()` also calls it silently
+    (15s-throttled) whenever the configured URL reads unreachable, so the board
+    reconnects on its own once LM Studio comes online.
+  * **Bug fix:** `POST /llm-server/load` (and the new autodetect) wrapped
+    `loop.run_in_executor(...)` (a Future) in `asyncio.create_task(...)`, which
+    raises `TypeError` and 500s the call — the "Load Model" button never worked.
+    Now scheduled fire-and-forget without `create_task`.
+  * `tests/test_llm_autodetect.py` (+10). Suite now **422** green.
 
 - **2026-06-16 (LLM connection fix — "docker" server-type stranding):** Root-caused
   the persistent "LM Studio won't connect" report. Selecting **"Docker bundled
