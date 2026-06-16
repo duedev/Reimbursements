@@ -176,6 +176,43 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (review/export/benchmark UX batch — 7 changes):**
+  * **Confetti gated on a finished workload** — `batch_done` only fires `celebrate()`
+    when nothing is left (`pending === 0` **and** no card is `queued`/`ocr`/`distilling`),
+    so a batch that completes mid-run with more queued no longer triggers it early.
+  * **Per-field magnified callouts in review** — the review modal now shows a zoomed
+    slice of the receipt under each of vendor/date/amount (`.mr-callout` +
+    `_renderFieldCallouts()`), built from `_field_boxes` (rules-based) and falling
+    back to `_llm_field_boxes` (tagged `AI NN%`). The crop is uniformly scaled
+    (no distortion) so the extracted value can be checked against the printed text
+    at a glance. (LLM spatial boxes still draw dashed on the image when the vision
+    path runs; the callout is the always-available aid since `_field_boxes` is set
+    on every successful distill.)
+  * **Benchmark insights** — new `_benchmark_insights(entries)` (server.py) rolls the
+    per-batch log into totals, weighted avg/receipt, throughput (receipts/min), a
+    recent-vs-overall trend, fastest/slowest batch, and a per-distill-model
+    comparison; returned under `insights` by `GET /benchmarks` and rendered as stat
+    tiles + bars above the table (`_renderBenchInsights`).
+  * **Generate ⇄ Download swap** — the green "Generate Spreadsheet" button is replaced
+    in-place by a "Download Spreadsheet" link once the workbook is built
+    (`_swapToDownload`/`_swapToGenerate`; the old separate `#download-row` is gone,
+    `#download-btn` now lives in `.gen-actions`). Any board change reverts to Generate
+    (the prepared download is stale).
+  * **Finish-batch tidy-up** — after a download, a dialog (`#finish-modal`) offers
+    **Clear files** (delete) or **Keep in archive**. New `POST /results/finish`
+    `{mode}` moves the completed receipt images into `ARCHIVE_FOLDER`
+    (`output/archive`, **outside** the scanned working folders → never reported as
+    orphaned) or deletes them, then clears the board. `_collect_orphans` also skips
+    the archive defensively. `tests/test_finish_batch.py` (+5).
+  * **Live concurrency slider** — the "process N at a time" slider now applies
+    mid-batch. New `_ConcurrencyGate` (server.py) re-reads `MAX_PARALLEL_REQUESTS`
+    on every acquire; the worker pool is sized to a fixed `CONCURRENCY_CEILING` (8)
+    and each task is gated. `_apply_processing_config` calls `gate.bump()` so a raised
+    cap wakes blocked workers immediately. `tests/test_concurrency_gate.py` (+3).
+  * **Cards show old → new filename** — `makeCard` renders `original → renamed`
+    (`.k-renamed`/`.k-fn-old`/`.k-fn-new`) when the pipeline renamed the file.
+  * Tests: `tests/test_benchmark.py` (+4 insights). Suite now **434** green.
+
 - **2026-06-16 (LLM connection — auto-detect / self-healing endpoint):** The
   durable fix for the recurring "app won't connect to LM Studio" report. Even
   after the docker-hostname fix, a stale saved choice (e.g. the **"Docker bundled
