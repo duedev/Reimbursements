@@ -487,12 +487,6 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
         # Summary row reference (None if pre-calc wasn't provided)
         sr = summary_data_rows[i] if summary_data_rows and i < len(summary_data_rows) else None
 
-        # Anchor the Summary hyperlink to this receipt's header row, so clicking
-        # the link lands with the receipt IMAGE (rendered directly below the
-        # header) in view — rather than scrolling to the data with the image
-        # below the fold.
-        anchors.append(f"A{current_row}")
-
         # Colored receipt header row — visually separates each receipt
         _flood(ws, current_row, _fill(header_fill_color), cols=range(1, LAST_COL + 1))
         ws.merge_cells(f"A{current_row}:H{current_row}")
@@ -506,6 +500,15 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
             left=header_sep, right=header_sep,
         )
         ws.row_dimensions[current_row].height = 16
+        current_row += 1
+
+        # Thin link-target row — the Summary hyperlink lands here (between
+        # the header label and the receipt image).
+        anchors.append(f"A{current_row}")
+        ws.cell(row=current_row, column=1, value="")
+        _flood(ws, current_row, _fill(header_fill_color), cols=range(1, LAST_COL + 1))
+        ws.merge_cells(f"A{current_row}:H{current_row}")
+        ws.row_dimensions[current_row].height = 4
         current_row += 1
 
         # Embed the image FIRST — above the metadata — so the link target shows
