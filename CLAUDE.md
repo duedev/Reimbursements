@@ -141,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **356 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **365 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -176,6 +176,15 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (customizable spending/date warnings, default off):** The old
+  hard-coded fuel>$200 / mats>$500 / misc>$300 and "6-month window" flags were
+  baked into the LLM prompts. Removed them from both templates and replaced with
+  **opt-in, deterministic** rules: `AMOUNT_LIMITS` (per-category $ caps) +
+  `MAX_RECEIPT_AGE_DAYS` in `process_receipts.py`, applied by
+  `audit_warning_flags(data, category)` in the worker (prepended so a warning is
+  the headline `_flag`). All **off by default**. New `GET/POST /settings/audit`
+  (+ `_apply_audit_config` restored on startup) and a "Spending & Date Warnings"
+  settings card (`#audit-card`, blank = off). `tests/test_audit_warnings.py` (+9).
 - **2026-06-16 (concurrency slider + OCR labels + saved agent):**
   * **Batch concurrency** is now user-controllable: `max_parallel` added to
     `/settings/processing` (clamped 1..8 → `_pr.MAX_PARALLEL_REQUESTS`, applied on

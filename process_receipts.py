@@ -59,6 +59,13 @@ APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
 # (CPU) with another's LLM call without VRAM thrash. Raise only when LM Studio is
 # configured for true parallelism with VRAM headroom. 0 = no cap (legacy default).
 MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "3"))
+
+# Optional, user-configurable audit warnings — all OFF by default (None = no
+# warning). Set from Settings → "Spending & date warnings" and applied
+# deterministically in Python (audit_warning_flags), NOT by the LLM, so behaviour
+# is consistent and there are no warnings at all unless the user opts in.
+AMOUNT_LIMITS = {"fuel": None, "mats": None, "misc": None}   # per-category $ caps
+MAX_RECEIPT_AGE_DAYS = None                                  # flag receipts older than N days
 # Per-request timeout (seconds) for the LM Studio / OpenAI client. Without it a
 # hung model request blocks a worker thread forever; bounded retries cover
 # transient drops. Override via LLM_TIMEOUT.
@@ -196,13 +203,10 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
     "- summary: one sentence, vendor and purpose only, do NOT include the dollar amount\n"
     "- Do NOT include job_name or job_number — user provides those manually\n"
-    "- flags: JSON array of flag objects for issues:\n"
-    '  * fuel > $200  → {{"flag": "Amount exceeds $200 fuel threshold"}}\n'
-    '  * mats > $500  → {{"flag": "Amount exceeds $500 mats threshold"}}\n'
-    '  * misc > $300  → {{"flag": "Amount exceeds $300 misc threshold"}}\n'
+    "- flags: JSON array of flag objects for OCR/extraction problems ONLY:\n"
     '  * amount=0, missing vendor, or garbled date → {{"flag": "OCR error: reason"}}\n'
-    "  * date outside 6-month window from {today} → "
-    '{{"flag": "Date outside 6-month window"}}\n'
+    "  * Do NOT flag amounts for being high or dates for being old — the app "
+    "handles those rules itself\n"
     "  * Return [] if no issues\n\n"
     "Return ONLY valid JSON — no markdown, no extra text.\n\n"
     "Receipt OCR text:\n{ocr_text}"
@@ -232,10 +236,9 @@ Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as U
 Summary: vendor and purpose only — do NOT include the dollar amount.
 Do NOT include job_name or job_number.
 
-flags:
-- fuel > $200, mats > $500, misc > $300 → {{"flag": "Amount exceeds threshold"}}
+flags (OCR/extraction problems ONLY):
 - amount=0, missing vendor, garbled date → {{"flag": "OCR error: reason"}}
-- date outside 6-month window from {today} → {{"flag": "Date outside 6-month window"}}
+- Do NOT flag amounts for being high or dates for being old — the app handles those rules itself.
 Return [] if no issues.
 
 Return ONLY valid JSON, no markdown."""
@@ -2002,6 +2005,37 @@ def classify_category(data: dict) -> str:
         return "mats"
 
     return model_cat
+
+
+def audit_warning_flags(data: dict, category: str) -> list[str]:
+    """User-configured spending/date warnings, applied deterministically.
+
+    Returns a list of human-readable warning strings for this receipt based on
+    the current ``AMOUNT_LIMITS`` (per-category $ caps) and ``MAX_RECEIPT_AGE_DAYS``
+    settings. Returns ``[]`` when nothing is configured (the default), so a
+    receipt gets **no** warnings unless the user has opted in — replacing the old
+    hard-coded fuel>$200 / mats>$500 / misc>$300 and 6-month-window prompt rules.
+    """
+    out: list[str] = []
+    limit = AMOUNT_LIMITS.get((category or "").lower())
+    if limit is not None:
+        try:
+            amt = float(data.get("amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        if amt > limit:
+            out.append(f"Amount ${amt:,.2f} exceeds the ${limit:,.0f} {category} limit")
+
+    if MAX_RECEIPT_AGE_DAYS is not None:
+        iso = normalize_date(data.get("date") or "") or (data.get("date") or "")
+        try:
+            age = (date.today() - date.fromisoformat(iso)).days
+            if age > MAX_RECEIPT_AGE_DAYS:
+                out.append(f"Receipt is {age} days old (dated {iso}; over the "
+                           f"{MAX_RECEIPT_AGE_DAYS}-day limit)")
+        except (ValueError, TypeError):
+            pass
+    return out
 
 
 # ── Duplicate detection ────────────────────────────────────────────────────────

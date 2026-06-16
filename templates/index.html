@@ -1707,6 +1707,39 @@
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
   </div>
 
+  <!-- Spending & date warnings — optional, all off by default -->
+  <div class="card" id="audit-card">
+    <div class="card-title">Spending &amp; Date Warnings</div>
+    <p class="section-desc">
+      Optional checks that flag a receipt for review. <strong>All off by default</strong> —
+      leave a field blank for no warning. Applied by the app itself (not the AI), so they're
+      consistent every time.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <label style="display:flex;align-items:center;gap:12px;font-weight:400;flex-wrap:wrap">
+        <span style="min-width:150px">Fuel over</span>
+        <span style="color:var(--muted)">$</span>
+        <input type="number" id="audit-fuel" min="0" step="1" placeholder="no limit" style="width:120px">
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;font-weight:400;flex-wrap:wrap">
+        <span style="min-width:150px">Materials over</span>
+        <span style="color:var(--muted)">$</span>
+        <input type="number" id="audit-mats" min="0" step="1" placeholder="no limit" style="width:120px">
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;font-weight:400;flex-wrap:wrap">
+        <span style="min-width:150px">Misc over</span>
+        <span style="color:var(--muted)">$</span>
+        <input type="number" id="audit-misc" min="0" step="1" placeholder="no limit" style="width:120px">
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;font-weight:400;flex-wrap:wrap">
+        <span style="min-width:150px">Receipt older than</span>
+        <input type="number" id="audit-age" min="1" step="1" placeholder="no limit" style="width:120px">
+        <span style="color:var(--muted)">days</span>
+      </label>
+    </div>
+    <div style="margin-top:8px"><span id="audit-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
+  </div>
+
   <!-- Email delivery — has its own save button -->
   <div class="card" id="email-card">
     <div class="card-title">Email Delivery</div>
@@ -3490,9 +3523,55 @@ async function loadSettings() {
   } catch (_) {}
   loadSchedule();
   loadProcessingSettings();
+  loadAuditSettings();
   loadReviewSettings();
   loadEmailSettings();
 }
+
+// ── Spending & date warnings (all off by default) ─────────────────────────────
+async function loadAuditSettings() {
+  try {
+    const d = await (await fetch('/settings/audit')).json();
+    const lim = d.amount_limits || {};
+    document.getElementById('audit-fuel').value = lim.fuel ?? '';
+    document.getElementById('audit-mats').value = lim.mats ?? '';
+    document.getElementById('audit-misc').value = lim.misc ?? '';
+    document.getElementById('audit-age').value  = d.max_age_days ?? '';
+  } catch (_) {}
+}
+
+let _auditSaveTimer = null;
+async function saveAuditSettings() {
+  const numOrNull = id => {
+    const v = document.getElementById(id).value.trim();
+    return v === '' ? null : parseFloat(v);
+  };
+  try {
+    const res = await fetch('/settings/audit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fuel_limit:   numOrNull('audit-fuel'),
+        mats_limit:   numOrNull('audit-mats'),
+        misc_limit:   numOrNull('audit-misc'),
+        max_age_days: numOrNull('audit-age'),
+      }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      const msg = document.getElementById('audit-saved-msg');
+      msg.style.opacity = '1';
+      setTimeout(() => { msg.style.opacity = '0'; }, 1800);
+    } else {
+      showToast(`Could not save: ${d.error}`, false);
+    }
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+}
+['audit-fuel', 'audit-mats', 'audit-misc', 'audit-age'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    clearTimeout(_auditSaveTimer);
+    _auditSaveTimer = setTimeout(saveAuditSettings, 200);
+  });
+});
 
 // ── Review / approval settings ────────────────────────────────────────────────
 async function loadReviewSettings() {

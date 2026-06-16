@@ -229,6 +229,39 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     return _processing_settings()
 
 
+def _audit_settings() -> dict:
+    """Current spending/date-warning thresholds as the UI sees them (None = off)."""
+    return {
+        "amount_limits": dict(_pr.AMOUNT_LIMITS),
+        "max_age_days":  _pr.MAX_RECEIPT_AGE_DAYS,
+    }
+
+
+def _coerce_pos_num(v):
+    """Parse a settings value to a positive number, or None for blank/invalid/≤0."""
+    if v is None or v == "":
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _apply_audit_config(cfg: dict | None = None) -> dict:
+    """Push persisted spending/date-warning thresholds into process_receipts."""
+    cfg = cfg if cfg is not None else _load_config()
+    audit = cfg.get("audit") or {}
+    limits = audit.get("amount_limits") or {}
+    for cat in ("fuel", "mats", "misc"):
+        if cat in limits:
+            _pr.AMOUNT_LIMITS[cat] = _coerce_pos_num(limits[cat])
+    if "max_age_days" in audit:
+        n = _coerce_pos_num(audit["max_age_days"])
+        _pr.MAX_RECEIPT_AGE_DAYS = int(n) if n is not None else None
+    return _audit_settings()
+
+
 # ── SSE broadcast helpers ──────────────────────────────────────────────────────
 
 def _broadcast(event: dict) -> None:
@@ -528,7 +561,10 @@ def _drain_once() -> bool:
             data["job_name"]   = item.get("job_name") or DEFAULT_JOB_NAME
             data["job_number"] = item.get("job_number") or DEFAULT_JOB_NUMBER
             audit_flag = audit_amount(data, data.get("_raw_ocr") or "")
-            flags = _pr._normalize_flags(data.get("flags") or [])
+            # User-configured spending/date warnings (default none). Prepended so
+            # a warning shows up as the card's headline flag when present.
+            warn_flags = [{"flag": w} for w in _pr.audit_warning_flags(data, category)]
+            flags = warn_flags + _pr._normalize_flags(data.get("flags") or [])
             data["flags"] = flags  # ensure normalised form is stored
             if flags and not data.get("_flag"):
                 data["_flag"] = flags[0].get("flag", "")
@@ -931,6 +967,7 @@ async def lifespan(app: FastAPI):
     _schedule_wakeup = asyncio.Event()   # bind to this app's running loop
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
+    _apply_audit_config()        # restore UI-saved spending/date warning thresholds
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -2554,6 +2591,41 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)
+        return JSONResponse({"ok": True, **applied})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+class AuditSettingsRequest(BaseModel):
+    # Any field may be null/"" to clear (disable) that warning.
+    fuel_limit:   float | str | None = None
+    mats_limit:   float | str | None = None
+    misc_limit:   float | str | None = None
+    max_age_days: float | str | None = None
+
+
+@app.get("/settings/audit")
+async def get_audit_settings():
+    return JSONResponse(_audit_settings())
+
+
+@app.post("/settings/audit")
+async def save_audit_settings(body: AuditSettingsRequest):
+    """Set the optional spending/date warnings. Any blank field clears (disables)
+    that warning — by default nothing is set, so no warnings fire."""
+    try:
+        cfg = _load_config()
+        audit = cfg.get("audit") or {}
+        limits = audit.get("amount_limits") or {}
+        for cat, val in (("fuel", body.fuel_limit), ("mats", body.mats_limit),
+                         ("misc", body.misc_limit)):
+            limits[cat] = _coerce_pos_num(val)
+        audit["amount_limits"] = limits
+        n = _coerce_pos_num(body.max_age_days)
+        audit["max_age_days"] = int(n) if n is not None else None
+        cfg["audit"] = audit
+        _save_config(cfg)
+        applied = _apply_audit_config(cfg)
         return JSONResponse({"ok": True, **applied})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
