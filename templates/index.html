@@ -11,22 +11,24 @@
   <meta name="apple-mobile-web-app-title" content="Receipts">
   <style>
     :root {
-      --bg:       #0b1120;
-      --surface:  #131c30;
-      --surface2: #1b2740;
-      --border:   #2a3a55;
-      --accent:   #4f8ef7;
-      --accent-h: #2563eb;
-      --accent-2: #8b5cf6;
+      /* Gunmetal dark theme — neutral graphite/charcoal surfaces with a muted
+         steel accent. Deliberately off the old blue/purple "AI default" hue. */
+      --bg:       #16191c;
+      --surface:  #1f2329;
+      --surface2: #2a3037;
+      --border:   #3b434c;
+      --accent:   #6f8fa6;
+      --accent-h: #58758a;
+      --accent-2: #9aa6b1;
       --success:  #2dd482;
       --danger:   #f4566a;
       --warning:  #f5a623;
-      --text:     #e6edf7;
-      --muted:    #8da2bd;
+      --text:     #e7eaee;
+      --muted:    #97a1ac;
       --amber:    #d97706;
-      --shadow:   0 4px 24px rgba(0,0,0,0.35);
-      --shadow-sm:0 2px 8px rgba(0,0,0,0.25);
-      --ring:     0 0 0 3px rgba(79,142,247,0.25);
+      --shadow:   0 4px 24px rgba(0,0,0,0.40);
+      --shadow-sm:0 2px 8px rgba(0,0,0,0.28);
+      --ring:     0 0 0 3px rgba(111,143,166,0.28);
     }
     [data-theme="light"] {
       --bg:       #dde4ee;
@@ -78,8 +80,8 @@
       z-index: -1;
       pointer-events: none;
       background:
-        radial-gradient(1200px 500px at 80% -10%, rgba(79,142,247,0.10), transparent 60%),
-        radial-gradient(900px 400px at 0% 0%, rgba(139,92,246,0.08), transparent 55%),
+        radial-gradient(1200px 500px at 80% -10%, rgba(124,143,160,0.09), transparent 60%),
+        radial-gradient(900px 400px at 0% 0%, rgba(90,100,112,0.07), transparent 55%),
         var(--bg);
     }
     /* Light mode gets a soft, warm wash — gentle teal + amber over a warm
@@ -113,7 +115,7 @@
       width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 2px 10px rgba(79,142,247,0.35);
+      box-shadow: 0 2px 10px rgba(111,143,166,0.35);
     }
     .logo-mark svg { width: 17px; height: 17px; color: #fff; }
     header h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; flex: 1; }
@@ -199,7 +201,7 @@
       cursor: pointer; transition: border-color 0.15s, background 0.15s;
       display: flex; align-items: center; gap: 14px;
     }
-    #drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    #drop-zone.drag-over { border-color: var(--accent); background: rgba(111,143,166,0.06); }
     #drop-zone:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
     #drop-zone svg { width: 28px; height: 28px; color: var(--muted); flex-shrink: 0; }
     #drop-zone .dz-text { display: flex; flex-direction: column; gap: 2px; }
@@ -285,9 +287,9 @@
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn-primary {
       background: linear-gradient(135deg, var(--accent), var(--accent-h));
-      color: #fff; box-shadow: 0 2px 12px rgba(79,142,247,0.3);
+      color: #fff; box-shadow: 0 2px 12px rgba(111,143,166,0.3);
     }
-    .btn-primary:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 4px 16px rgba(79,142,247,0.45); }
+    .btn-primary:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 4px 16px rgba(111,143,166,0.45); }
     .btn-success {
       background: linear-gradient(135deg, var(--success), #16a34a);
       color: #fff; box-shadow: 0 2px 12px rgba(45,212,130,0.25);
@@ -301,9 +303,9 @@
 
     /* Quiet outline variants for secondary / contextual actions */
     .btn-outline-accent {
-      background: rgba(79,142,247,0.12); border: 1px solid var(--accent); color: var(--accent);
+      background: rgba(111,143,166,0.12); border: 1px solid var(--accent); color: var(--accent);
     }
-    .btn-outline-accent:not(:disabled):hover { background: rgba(79,142,247,0.22); }
+    .btn-outline-accent:not(:disabled):hover { background: rgba(111,143,166,0.22); }
     .btn-outline-amber {
       background: rgba(217,119,6,0.12); border: 1px solid var(--amber); color: var(--amber);
     }
@@ -344,7 +346,7 @@
       display: inline-block; padding: 3px 10px; border-radius: 99px;
       font-size: 12px; font-weight: 600;
     }
-    .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge-running { background: rgba(111,143,166,0.15); color: var(--accent); }
     .badge-done    { background: rgba(34,197,94,0.15);  color: var(--success); }
     .badge-error   { background: rgba(239,68,68,0.15);  color: var(--danger); }
 
@@ -450,7 +452,7 @@
 
     /* Inline editing */
     .k-edit { cursor: pointer; border-bottom: 1px dashed transparent; border-radius: 3px; transition: border-color 0.15s, background 0.15s; }
-    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(79,142,247,0.08); }
+    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(111,143,166,0.08); }
     .k-edit-input {
       background: var(--surface); border: 1px solid var(--accent); border-radius: 5px;
       color: var(--text); font-size: 12px; padding: 2px 6px; outline: none;
@@ -476,7 +478,7 @@
       color: var(--text); font-size: 11px; cursor: pointer;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-review-btn:hover { background: rgba(79,142,247,0.12); border-color: var(--accent); }
+    .k-review-btn:hover { background: rgba(111,143,166,0.12); border-color: var(--accent); }
     .k-review-btn.is-approved { border-color: rgba(45,212,130,0.45); color: var(--success); }
     .k-card.status-done.needs-review { border-left-color: var(--warning); }
     .k-card.status-done.is-approved  { border-left-color: var(--success); }
@@ -510,7 +512,7 @@
       font-weight: 600;
     }
     .k-status-badge.s-queued    { background: rgba(148,163,184,0.15); color: var(--muted); }
-    .k-status-badge.s-ocr       { background: rgba(59,130,246,0.2);   color: var(--accent); }
+    .k-status-badge.s-ocr       { background: rgba(111,143,166,0.2);   color: var(--accent); }
     .k-status-badge.s-distilling{ background: rgba(245,158,11,0.2);   color: var(--warning); }
     .k-status-badge.s-done      { background: rgba(34,197,94,0.2);    color: var(--success); }
     .k-status-badge.s-failed    { background: rgba(239,68,68,0.2);    color: var(--danger); }
@@ -545,7 +547,7 @@
     }
     .k-cat-fuel { background: rgba(245,158,11,0.2); color: #fbbf24; }
     .k-cat-mats { background: rgba(16,185,129,0.2); color: #34d399; }
-    .k-cat-misc { background: rgba(139,92,246,0.2); color: #a78bfa; }
+    .k-cat-misc { background: rgba(138,147,160,0.22); color: #b8c2cf; }
 
     .k-retry-btn {
       display: inline-flex; align-items: center; gap: 4px;
@@ -698,21 +700,21 @@
 
     /* Image view button on kanban cards */
     .k-img-btn {
-      background: rgba(79,142,247,0.08); border: 1px solid rgba(79,142,247,0.35);
+      background: rgba(111,143,166,0.08); border: 1px solid rgba(111,143,166,0.35);
       color: var(--accent); border-radius: 4px; padding: 3px 9px; font-size: 11px;
       cursor: pointer; margin-top: 5px; display: inline-block;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-img-btn:hover { background: rgba(79,142,247,0.18); border-color: var(--accent); }
+    .k-img-btn:hover { background: rgba(111,143,166,0.18); border-color: var(--accent); }
 
     /* Create (manual entry) button */
     .k-create-btn {
       display: inline-flex; align-items: center; gap: 4px;
       margin-top: 6px; margin-left: 6px; padding: 4px 10px; border-radius: 6px;
-      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
+      background: rgba(111,143,166,0.12); border: 1px solid rgba(111,143,166,0.3);
       color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
     }
-    .k-create-btn:hover { background: rgba(59,130,246,0.22); }
+    .k-create-btn:hover { background: rgba(111,143,166,0.22); }
 
     /* Modals */
     .modal-overlay {
@@ -729,6 +731,17 @@
     .modal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
     .modal-fields label, .modal-full-row { display: flex; flex-direction: column; gap: 5px;
       font-size: 12px; color: var(--muted); font-weight: 500; }
+    /* Field-coded inputs — the vendor/date/amount fields are tinted to match the
+       colour-coded boxes drawn on the receipt image (FIELD_MARKERS), so the form
+       field and its on-image location read as the same thing. */
+    .mr-fdot { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+      margin-right: 5px; vertical-align: baseline; }
+    #mr-vendor { border-left: 3px solid #3b82f6; }
+    #mr-date   { border-left: 3px solid #22c55e; }
+    #mr-amount { border-left: 3px solid #f59e0b; }
+    #mr-vendor:focus { box-shadow: 0 0 0 3px rgba(59,130,246,0.22); border-color: #3b82f6; }
+    #mr-date:focus   { box-shadow: 0 0 0 3px rgba(34,197,94,0.22);  border-color: #22c55e; }
+    #mr-amount:focus { box-shadow: 0 0 0 3px rgba(245,158,11,0.22); border-color: #f59e0b; }
     .modal-full-row { margin-bottom: 16px; }
     .dup-group { background: rgba(255,255,255,0.04); border: 1px solid var(--border);
       border-radius: 8px; padding: 12px; margin-bottom: 12px; }
@@ -908,7 +921,7 @@
       font-size: 13px; transition: color 0.15s, border-color 0.15s, background 0.15s;
       display: flex; align-items: center; gap: 5px; flex-shrink: 0;
     }
-    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
+    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(111,143,166,0.07); }
     .theme-toggle svg { width: 14px; height: 14px; }
     .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; transition: color 0.15s; }
     .gh-link:hover { color: var(--text); }
@@ -939,8 +952,11 @@
     .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
     .section-desc strong { color: var(--text); }
-    /* Advanced-only settings — hidden unless the "Advanced settings" toggle is on. */
-    body.hide-advanced .adv-only { display: none !important; }
+    /* Developer-mode bits — hidden unless the "Developer mode" toggle is on.
+       Gates both the deep-technical settings (.adv-only) and the enhanced
+       workspace stats (.dev-only) off the same body.hide-advanced class. */
+    body.hide-advanced .adv-only,
+    body.hide-advanced .dev-only { display: none !important; }
     .inline-code {
       font-size: 11px; font-family: ui-monospace, monospace;
       background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;
@@ -1246,7 +1262,10 @@
         <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
         <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
+        <div class="stat-tile dev-only" title="Receipts whose amount was cross-checked against the OCR text"><div class="stat-value" id="st-verified">0</div><div class="stat-label">Verified</div></div>
+        <div class="stat-tile dev-only" title="Total model + OCR time across all processed receipts this session"><div class="stat-value" id="st-proc-total">&mdash;</div><div class="stat-label">Total Proc Time</div></div>
       </div>
+      <div class="dev-only" id="dev-engine-line" style="font-size:11px;color:var(--muted);margin:2px 2px 10px;display:flex;gap:14px;flex-wrap:wrap"></div>
       <div class="charts-row">
         <div class="chart-box">
           <h4>By Category</h4>
@@ -1400,7 +1419,7 @@
       </a>
       <div class="hidden" id="copy-images-reminder"
            style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;
-                  border-left:3px solid var(--accent);background:rgba(79,142,247,0.10);color:var(--text)">
+                  border-left:3px solid var(--accent);background:rgba(111,143,166,0.10);color:var(--text)">
         <strong>&#128247; Don't forget your receipt images.</strong>
         The workbook embeds them, but the original files live in the output
         <code class="inline-code">receipts</code> folder. Copy them alongside the report if you
@@ -1541,11 +1560,11 @@
   <!-- ════════════════════════ Settings tab ════════════════════════ -->
   <div class="tab-panel hidden" id="tab-settings">
 
-  <!-- Advanced mode — hides deep-technical sections from everyday users -->
+  <!-- Developer mode — reveals deep-technical sections + enhanced workspace stats -->
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
     <label class="check-label" style="margin:0">
       <input type="checkbox" id="advanced-toggle">
-      Advanced settings <span style="color:var(--muted)">— show AI model selection, image-processing internals, and maintenance tools (hidden by default to keep things simple)</span>
+      Developer mode <span style="color:var(--muted)">— show AI model selection, image-processing internals, maintenance tools, and enhanced stats on the workspace (hidden by default to keep things simple)</span>
     </label>
   </div>
 
@@ -1865,9 +1884,9 @@
         &#10003; This receipt is approved
       </div>
       <div class="modal-fields">
-        <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
-        <label>Date <input type="date" id="mr-date"></label>
-        <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
+        <label><span class="mr-fdot" style="background:#3b82f6"></span>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
+        <label><span class="mr-fdot" style="background:#22c55e"></span>Date <input type="date" id="mr-date"></label>
+        <label><span class="mr-fdot" style="background:#f59e0b"></span>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
         <label>Category
           <select id="mr-category">
             <option value="fuel">Fuel</option>
@@ -3593,7 +3612,7 @@ async function saveAuditSettings() {
   });
 });
 
-// ── Advanced mode (hide deep-technical sections from everyday users) ───────────
+// ── Developer mode (reveal deep-technical settings + enhanced workspace stats) ─
 function _applyAdvanced(on) {
   document.body.classList.toggle('hide-advanced', !on);
   const t = document.getElementById('advanced-toggle');
@@ -4354,7 +4373,7 @@ window.removeSavedItem = async function(listKey, value, panelId) {
 };
 
 // ── Insights dashboard ────────────────────────────────────────────────────────
-const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8b5cf6' };
+const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8a93a0' };
 const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let _statsTimer = null;
@@ -4378,6 +4397,23 @@ async function loadStats() {
     document.getElementById('st-flagged').textContent = s.flagged;
     document.getElementById('st-proc').textContent =
       s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
+
+    // Developer-mode enhanced stats (hidden unless Developer mode is on)
+    const vEl = document.getElementById('st-verified');
+    if (vEl) vEl.textContent = s.verified ?? 0;
+    const ptEl = document.getElementById('st-proc-total');
+    if (ptEl) ptEl.textContent = s.proc_total_seconds ? s.proc_total_seconds + 's' : '—';
+    const engEl = document.getElementById('dev-engine-line');
+    if (engEl) {
+      const spanTxt = (s.timeline_span_days != null)
+        ? `${s.timeline_span_days} day${s.timeline_span_days === 1 ? '' : 's'} spanned` : '';
+      engEl.innerHTML = [
+        `<span><strong>${s.verified ?? 0}</strong>/${s.count} amount-verified</span>`,
+        `<span><strong>${s.timeline_days ?? 0}</strong> dated days</span>`,
+        spanTxt ? `<span>${spanTxt}</span>` : '',
+        `<span>avg <strong>${s.proc_avg_seconds || 0}s</strong> · total <strong>${s.proc_total_seconds || 0}s</strong></span>`,
+      ].filter(Boolean).join('');
+    }
 
     renderDonut(s.by_category, s.total);
     renderTimeline(s);
@@ -4643,7 +4679,7 @@ function playCelebrationTone() {
 
 function celebrate() {
   playCelebrationTone();
-  const colors = ['#4f8ef7', '#8b5cf6', '#2dd482', '#f5a623', '#f4566a'];
+  const colors = ['#6f8fa6', '#8a93a0', '#2dd482', '#f5a623', '#f4566a'];
   // Fall just past the bottom of the *actual* visible viewport. window.innerHeight
   // tracks mobile chrome, so the confetti reaches the bottom of the screen instead
   // of stopping where `vh` mis-measures (the old "covers only 2/3" bug).

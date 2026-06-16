@@ -176,6 +176,23 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (Developer mode + gunmetal theme + review colour-coding):**
+  * **Developer mode** — the old "Advanced settings" toggle is now "Developer mode"
+    (same `#advanced-toggle` / localStorage `advancedMode` / `body.hide-advanced`
+    mechanism). The CSS gate now also hides `.dev-only` elements, used for **enhanced
+    workspace stats**: two dev-only insight tiles (Verified, Total Proc Time) + a
+    `#dev-engine-line` technical summary (amount-verified ratio, dated-days, span,
+    avg/total proc seconds), all driven from `/stats` in `updateStats`.
+  * **Gunmetal dark theme** — retoned the default (`:root`) palette off the blue/
+    purple hue to neutral graphite surfaces + a muted steel accent (`--accent
+    #6f8fa6`). Swapped the accent-tinted `rgba(79,142,247…)`/`rgba(59,130,246…)`
+    backgrounds to steel `rgba(111,143,166…)`, re-washed `body::before`, and moved
+    the misc category / confetti colours off purple. Light theme untouched.
+  * **Review-window colour coding** — the Vendor/Date/Amount inputs in the review
+    modal are tinted to match their on-image `FIELD_MARKERS` boxes (vendor=blue,
+    date=green, amount=amber): left-border + focus ring + a leading `.mr-fdot`
+    swatch per label.
+
 - **2026-06-16 (single AI model + auto-load + warm-up):**
   * **Consolidated to one model** — OCR and distillation now share a SINGLE active
     model. `process_receipts.set_active_model(id)` sets `_active_distill_model` and
