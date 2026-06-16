@@ -1243,6 +1243,8 @@
           data-tab="workspace" onclick="switchTab('workspace')">Workspace</button>
   <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-settings"
           data-tab="settings" onclick="switchTab('settings')">Settings</button>
+  <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-info"
+          data-tab="info" onclick="switchTab('info')">Info</button>
 </nav>
 
 <main>
@@ -1406,6 +1408,12 @@
       </button>
     </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn btn-outline-accent btn-md" id="review-all-btn" style="display:none" title="Open the review window for the first receipt still needing approval, then step through them all">
+          &#9998; Review All
+        </button>
+        <span id="pending-review-count" style="font-size:12px;color:var(--warning);display:none"></span>
+      </div>
       <label class="check-label" style="font-size:12px">
         <input type="checkbox" id="require-approval" checked>
         Require review &amp; approval
@@ -1859,6 +1867,73 @@
   </div>
 
   </div><!-- /tab-settings -->
+
+  <!-- ════════════════════════ Info tab ════════════════════════ -->
+  <div class="tab-panel hidden" id="tab-info">
+
+  <div class="card">
+    <div class="card-title">About</div>
+    <p style="font-size:14px;line-height:1.65;color:var(--text)">This app processes receipt photos locally on your machine, extracts vendor, date, and amount using OCR and a local AI model, and generates a polished Excel reimbursement report. No receipt data ever leaves your machine.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Getting Started</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Upload receipts using the "Add Receipts" card or drag and drop</li>
+      <li>Wait for AI extraction to complete (watch the board update live)</li>
+      <li>Review results — click any card to correct vendor, date, amount, or category</li>
+      <li>Click "Generate Report" to export a polished Excel workbook</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Docker Commands</div>
+    <div id="info-docker-cmds" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Keyboard Shortcuts</div>
+    <table style="font-size:13px;border-collapse:collapse;width:100%">
+      <tbody>
+        <tr>
+          <td style="padding:7px 16px 7px 0;white-space:nowrap"><kbd style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-size:12px;font-family:ui-monospace,monospace">Ctrl/&#8984;+Enter</kbd></td>
+          <td style="padding:7px 0;color:var(--text)">Approve &amp; Next (or Save) in review window</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 16px 7px 0;white-space:nowrap"><kbd style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-size:12px;font-family:ui-monospace,monospace">Ctrl/&#8984;+S</kbd></td>
+          <td style="padding:7px 0;color:var(--text)">Save in review window</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 16px 7px 0;white-space:nowrap"><kbd style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-size:12px;font-family:ui-monospace,monospace">Esc</kbd></td>
+          <td style="padding:7px 0;color:var(--text)">Close review window</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Pipeline Overview</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li><strong>Auto-rotate</strong> — corrects photo orientation</li>
+      <li><strong>Grayscale + crop</strong> — cleans up and trims background</li>
+      <li><strong>OCR</strong> — built-in text recognition (RapidOCR)</li>
+      <li><strong>AI distillation</strong> — local LLM extracts vendor, date, amount</li>
+      <li><strong>Review</strong> — you verify and correct</li>
+      <li><strong>Export</strong> — polished Excel workbook with charts</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Tips</div>
+    <ul style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Good lighting and a flat surface give better OCR results</li>
+      <li>You can edit any field in the review window before approving</li>
+      <li>The report includes charts and a category breakdown</li>
+      <li>All processing happens locally — nothing is sent to the cloud</li>
+    </ul>
+  </div>
+
+  </div><!-- /tab-info -->
 </main>
 
 <footer style="text-align:center; padding: 18px 0 28px; color: var(--muted); font-size: 12px;">
@@ -1905,9 +1980,16 @@
         Summary
         <input type="text" id="mr-summary" placeholder="Brief description of purchase">
       </div>
+      <div class="modal-full-row">
+        Notes
+        <textarea id="mr-notes" rows="2" placeholder="Optional notes (max 500 chars)" maxlength="500"
+          style="resize:vertical;font-family:inherit;font-size:13px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);width:100%"></textarea>
+      </div>
       <div class="btn-row" style="flex-wrap:wrap;gap:8px">
         <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
         <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
+        <button class="btn btn-neutral btn-md" id="mr-next-btn" style="display:none" title="Open the next completed receipt without approving this one">Next &#8594;</button>
+        <button class="btn btn-outline-amber btn-md" id="mr-retry-btn" style="display:none" title="Re-queue this receipt for reprocessing">&#8635; Retry</button>
         <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
       </div>
       <p class="mr-kbd-hint">
@@ -2211,7 +2293,7 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
 
   inner += `<div class="k-status-row">`;
   inner += `<span class="k-status-badge s-${status}">${spinning ? '<span class="spinner"></span>' : ''}${statusLabel}</span>`;
-  if (data && data._confidence != null) inner += confBadge(data._confidence);
+  if (data && data._confidence != null) inner += '<span class="dev-only">' + confBadge(data._confidence) + '</span>';
   if (data && data._amount_verified === true)
     inner += `<span class="k-verified" title="Amount cross-checked against OCR text">&#10003; verified</span>`;
   if (isApproved)
@@ -2237,7 +2319,7 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
       const engine = oi
         ? ` &bull; <span title="${esc(oi.title)}" style="border-bottom:1px dotted var(--muted);cursor:help">${esc(oi.label)}</span>`
         : '';
-      inner += `<div class="k-proc-time"><span title="Total processing time">&#9201; ${data._proc_seconds}s</span>${engine}</div>`;
+      inner += `<div class="k-proc-time dev-only"><span title="Total processing time">&#9201; ${data._proc_seconds}s</span>${engine}</div>`;
     }
   }
 
@@ -2255,22 +2337,21 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
     inner += `</div>`;
   }
 
-  if (status === 'done') {
-    inner += `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">`;
-    inner += `<button class="k-review-btn${isApproved ? ' is-approved' : ''}" onclick="openManualReview('${escJs(filename)}')" title="${isApproved ? 'Approved — click to review or remove approval' : 'Review and approve this receipt'}">&#9998; ${isApproved ? 'Approved &#10003;' : 'Review &amp; Approve'}</button>`;
-    inner += `</div>`;
-  }
-
   // Step log toggle — shown whenever there are recorded processing steps
   const stepsArr = (steps && steps.length) ? steps : ((data && data._steps && data._steps.length) ? data._steps : []);
   if (stepsArr.length) {
-    inner += `<button class="k-steps-toggle" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
-    inner += `<div class="k-step-log${stepLogOpen ? ' open' : ''}">${renderSteps(stepsArr)}</div>`;
+    inner += `<button class="k-steps-toggle dev-only" onclick="toggleStepLog(event,'${escJs(filename)}')">&#9776; ${stepsArr.length} step${stepsArr.length === 1 ? '' : 's'}</button>`;
+    inner += `<div class="k-step-log dev-only${stepLogOpen ? ' open' : ''}">${renderSteps(stepsArr)}</div>`;
   }
 
   inner += `<button class="k-dismiss-btn" onclick="dismissCard('${escJs(filename)}')" title="Dismiss" aria-label="Dismiss ${esc(filename)}">&#10005;</button>`;
 
   div.innerHTML = inner;
+  // Clicking the card body (not a button/input) opens the review modal
+  div.addEventListener('click', (e) => {
+    if (e.target.closest('button') || e.target.closest('input')) return;
+    openManualReview(filename);
+  });
   return div;
 }
 
@@ -2502,6 +2583,21 @@ function _updateApprovalGate(doneCards) {
       toApproveBadge.style.display = '';
     } else {
       toApproveBadge.style.display = 'none';
+    }
+  }
+  // Review All button + pending count in the export card
+  const reviewAllBtn = document.getElementById('review-all-btn');
+  const pendingReviewCount = document.getElementById('pending-review-count');
+  if (reviewAllBtn) {
+    if (unapproved > 0 && done.length > 0) {
+      reviewAllBtn.style.display = '';
+      if (pendingReviewCount) {
+        pendingReviewCount.textContent = `${unapproved} receipt${unapproved === 1 ? '' : 's'} pending review`;
+        pendingReviewCount.style.display = '';
+      }
+    } else {
+      reviewAllBtn.style.display = 'none';
+      if (pendingReviewCount) pendingReviewCount.style.display = 'none';
     }
   }
 }
@@ -3049,6 +3145,7 @@ window.openManualReview = function(filename) {
   document.getElementById('mr-job-name').value   = data.job_name   || '';
   document.getElementById('mr-job-number').value = data.job_number || '';
   document.getElementById('mr-summary').value    = data.ai_summary || data.summary || '';
+  document.getElementById('mr-notes').value      = data.notes || '';
   // Approval state
   const approveBtn   = document.getElementById('mr-approve-btn');
   const approvalBanner = document.getElementById('mr-approval-banner');
@@ -3079,6 +3176,17 @@ window.openManualReview = function(filename) {
     approveBtn.style.display = 'none';
     approvalBanner.style.display = 'none';
     reviewProgress.style.display = 'none';
+  }
+  // Next button: show when there are other completed receipts to navigate to
+  const nextBtn = document.getElementById('mr-next-btn');
+  if (nextBtn) {
+    const allDone = Object.keys(receiptCards).filter(fn => receiptCards[fn] && receiptCards[fn].status === 'done' && fn !== filename);
+    nextBtn.style.display = allDone.length > 0 ? '' : 'none';
+  }
+  // Retry button: show for failed receipts or any done receipt that can be re-queued
+  const retryBtn = document.getElementById('mr-retry-btn');
+  if (retryBtn) {
+    retryBtn.style.display = (isDone || isFailed) ? '' : 'none';
   }
 
   // Save button label
@@ -3111,6 +3219,57 @@ window.openManualReview = function(filename) {
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
 };
+
+document.getElementById('review-all-btn').addEventListener('click', () => {
+  const queue = _unapprovedCompleted();
+  if (queue.length) openManualReview(queue[0]);
+});
+
+// Next: navigate to next completed receipt (any approval state) without approving
+function _loadNextAny(currentFilename) {
+  const allDone = Object.keys(receiptCards)
+    .filter(fn => receiptCards[fn] && receiptCards[fn].status === 'done' && fn !== currentFilename)
+    .sort((a, b) => {
+      const da = (receiptCards[a].data && receiptCards[a].data.date) || 'zzzz';
+      const db = (receiptCards[b].data && receiptCards[b].data.date) || 'zzzz';
+      if (da !== db) return da < db ? -1 : 1;
+      return a < b ? -1 : 1;
+    });
+  if (allDone.length) { openManualReview(allDone[0]); return true; }
+  return false;
+}
+
+document.getElementById('mr-next-btn').addEventListener('click', () => {
+  const cur = _mrFilename;
+  if (!_loadNextAny(cur)) {
+    _closeReviewModal();
+    showToast('No more receipts to review', true);
+  }
+});
+
+document.getElementById('mr-retry-btn').addEventListener('click', async () => {
+  const fn = _mrFilename;
+  const btn = document.getElementById('mr-retry-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/retry-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: fn }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(`Retry failed: ${d.error || res.status}`, false);
+    } else {
+      showToast(`${fn} re-queued`, true);
+      _closeReviewModal();
+    }
+  } catch (err) {
+    showToast(`Retry error: ${err.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById('mr-cancel-btn').addEventListener('click', () => {
   _closeReviewModal();
@@ -3635,6 +3794,45 @@ async function saveAuditSettings() {
     _auditSaveTimer = setTimeout(saveAuditSettings, 200);
   });
 });
+
+// ── Info tab — Docker commands ─────────────────────────────────────────────────
+(function() {
+  const cmds = [
+    { cmd: 'docker compose up -d',                                   desc: 'Start app' },
+    { cmd: 'docker compose --profile bundled-llm up -d',             desc: 'Start with bundled LLM' },
+    { cmd: 'docker compose down',                                     desc: 'Stop' },
+    { cmd: 'docker compose logs -f app',                              desc: 'View app logs' },
+    { cmd: 'docker compose logs -f model-server',                     desc: 'View LLM logs' },
+    { cmd: 'docker compose build && docker compose up -d',            desc: 'Rebuild' },
+    { cmd: 'docker compose down -v',                                  desc: 'Reset all data' },
+  ];
+  const box = document.getElementById('info-docker-cmds');
+  if (!box) return;
+  cmds.forEach(({ cmd, desc }) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border)';
+    const codeEl = document.createElement('code');
+    codeEl.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:13px;color:var(--text);word-break:break-all';
+    codeEl.textContent = cmd;
+    const descEl = document.createElement('span');
+    descEl.style.cssText = 'flex-shrink:0;font-size:12px;color:var(--muted);min-width:140px;text-align:right';
+    descEl.textContent = desc;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-outline-accent btn-sm';
+    btn.style.flexShrink = '0';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(cmd).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      });
+    });
+    row.appendChild(codeEl);
+    row.appendChild(descEl);
+    row.appendChild(btn);
+    box.appendChild(row);
+  });
+})();
 
 // ── Developer mode (reveal deep-technical settings + enhanced workspace stats) ─
 function _applyAdvanced(on) {
@@ -4704,7 +4902,7 @@ function playCelebrationTone() {
 
 function celebrate() {
   playCelebrationTone();
-  const colors = ['#6f8fa6', '#8a93a0', '#2dd482', '#f5a623', '#f4566a'];
+  const colors = ['#f4566a', '#f5a623', '#2dd482', '#60a5fa', '#a78bfa', '#fb923c', '#34d399', '#f87171'];
   // Fall just past the bottom of the *actual* visible viewport. window.innerHeight
   // tracks mobile chrome, so the confetti reaches the bottom of the screen instead
   // of stopping where `vh` mis-measures (the old "covers only 2/3" bug).
