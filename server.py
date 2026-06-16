@@ -73,6 +73,10 @@ OUT_FOLDER         = Path(OUTPUT_FOLDER)
 IMAGES_FOLDER      = OUT_FOLDER / "receipts"    # completed receipt images land here
 PROCESSING_FOLDER  = OUT_FOLDER / "processing"  # in-flight and failed images live here
 REJECTED_FOLDER    = OUT_FOLDER / "unsupported" # files dropped in intake we can't read
+# Receipts the user chose to keep (not delete) after exporting land here. It sits
+# OUTSIDE the scanned working folders, so archived receipts never resurface as
+# "orphaned" files in the maintenance scan.
+ARCHIVE_FOLDER     = OUT_FOLDER / "archive"
 # CONFIG_FILE is the single authoritative app-config path, defined once in
 # process_receipts and imported here so the server, watcher, and scheduler all
 # read/write the same file (see process_receipts.CONFIG_FILE).
@@ -124,6 +128,54 @@ _rejected_reasons: dict[str, str] = {}
 _rejected_lock    = threading.Lock()
 
 _worker_cancel = threading.Event()
+
+
+class _ConcurrencyGate:
+    """A live-resizable concurrency limiter for the worker pool.
+
+    Unlike ``threading.Semaphore`` (whose size is fixed at construction), the
+    cap is re-read from ``_pr.MAX_PARALLEL_REQUESTS`` on every acquire, so moving
+    the "process N at a time" slider takes effect *within the running batch*:
+    lowering it lets in-flight receipts drain without admitting new ones until
+    the active count drops; raising it wakes blocked workers immediately
+    (``bump()`` is called by the settings endpoint). The executor itself is
+    sized to a fixed ceiling; this gate decides how many of those threads may do
+    real work at once.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._active = 0
+
+    @staticmethod
+    def _limit() -> int:
+        try:
+            return max(1, int(_pr.MAX_PARALLEL_REQUESTS or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def acquire(self) -> None:
+        with self._cond:
+            while self._active >= self._limit():
+                # Time-boxed so a raised cap is honoured even if bump() is missed.
+                self._cond.wait(timeout=0.5)
+            self._active += 1
+
+    def release(self) -> None:
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            self._cond.notify_all()
+
+    def bump(self) -> None:
+        """Wake blocked workers — call after the limit is raised."""
+        with self._cond:
+            self._cond.notify_all()
+
+
+# Worker threads spin up to this ceiling; the live gate above caps how many run
+# real work concurrently, so the slider can move mid-batch.
+CONCURRENCY_CEILING = 8
+_concurrency_gate = _ConcurrencyGate()
 
 # Reference to the background worker thread + a guard so a crashed worker can be
 # revived (by the stall checker, the lifespan startup, or a manual queue nudge).
@@ -231,6 +283,9 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     if proc.get("max_parallel") is not None:
         try:
             _pr.MAX_PARALLEL_REQUESTS = max(1, min(8, int(proc["max_parallel"])))
+            # Wake any workers blocked on the old (lower) limit so a raised
+            # "process N at a time" slider takes effect on the running batch.
+            _concurrency_gate.bump()
         except (TypeError, ValueError):
             pass
     return _processing_settings()
@@ -646,8 +701,18 @@ def _drain_once() -> bool:
     client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
                     timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
 
+    def _gated_extract(*args):
+        # The pool is sized to a fixed ceiling; this gate enforces the live
+        # "process N at a time" limit so the slider takes effect mid-batch.
+        _concurrency_gate.acquire()
+        try:
+            return _extract_receipt_with_status(*args)
+        finally:
+            _concurrency_gate.release()
+
     futures_map: dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_pr.MAX_PARALLEL_REQUESTS or None) as ex:
+    ceiling = max(CONCURRENCY_CEILING, int(_pr.MAX_PARALLEL_REQUESTS or 0))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=ceiling) as ex:
         for item in batch:
             if _worker_cancel.is_set():
                 break
@@ -700,7 +765,7 @@ def _drain_once() -> bool:
                 return cb
 
             future = ex.submit(
-                _extract_receipt_with_status, client, path, make_cb(fname, step_log), step_log,
+                _gated_extract, client, path, make_cb(fname, step_log), step_log,
             )
             futures_map[future] = item
 
@@ -843,6 +908,62 @@ def _record_benchmark(count: int, seconds: float) -> dict | None:
         _benchmarks.insert(0, entry)
         del _benchmarks[BENCH_MAX_ENTRIES:]
     return entry
+
+
+def _benchmark_insights(entries: list[dict]) -> dict | None:
+    """Aggregate the per-batch benchmark log into headline insights.
+
+    Returns ``None`` when there's nothing recorded yet. Otherwise: totals,
+    the weighted average seconds per receipt, throughput (receipts/min), the
+    fastest/slowest per-receipt batch, a recent-vs-overall trend, and a
+    per-distill-model comparison so a user can see which LLM is quicker as
+    runs accumulate.
+    """
+    rows = [e for e in entries if isinstance(e, dict) and (e.get("count") or 0) > 0]
+    if not rows:
+        return None
+
+    total_receipts = sum(int(e.get("count") or 0) for e in rows)
+    total_seconds = round(sum(float(e.get("total_seconds") or 0) for e in rows), 1)
+    avg_per_receipt = round(total_seconds / total_receipts, 2) if total_receipts else 0.0
+    throughput = round(total_receipts * 60.0 / total_seconds, 1) if total_seconds else 0.0
+    avgs = [float(e.get("avg_seconds") or 0) for e in rows if e.get("avg_seconds") is not None]
+    fastest = round(min(avgs), 2) if avgs else 0.0
+    slowest = round(max(avgs), 2) if avgs else 0.0
+
+    # Recent (newest entry) vs overall, to surface whether things are speeding up.
+    recent_avg = round(float(rows[0].get("avg_seconds") or 0), 2)
+    trend = round(recent_avg - avg_per_receipt, 2)
+
+    # Per-distill-model rollup (entries are newest-first; keep that order of first
+    # appearance for stable display).
+    per_model: dict[str, dict] = {}
+    for e in rows:
+        key = e.get("distill_model") or "(auto)"
+        m = per_model.setdefault(key, {"model": key, "batches": 0, "receipts": 0, "_secs": 0.0})
+        m["batches"] += 1
+        m["receipts"] += int(e.get("count") or 0)
+        m["_secs"] += float(e.get("total_seconds") or 0)
+    models = []
+    for m in per_model.values():
+        m["avg_seconds"] = round(m["_secs"] / m["receipts"], 2) if m["receipts"] else 0.0
+        m.pop("_secs", None)
+        models.append(m)
+    fastest_model = min(models, key=lambda m: m["avg_seconds"])["model"] if len(models) > 1 else ""
+
+    return {
+        "batches":          len(rows),
+        "receipts":         total_receipts,
+        "total_seconds":    total_seconds,
+        "avg_per_receipt":  avg_per_receipt,
+        "throughput_per_min": throughput,
+        "fastest_batch_avg": fastest,
+        "slowest_batch_avg": slowest,
+        "recent_avg":       recent_avg,
+        "trend":            trend,
+        "models":           models,
+        "fastest_model":    fastest_model,
+    }
 
 
 # ── Unsupported / invalid intake files ─────────────────────────────────────────
@@ -2342,6 +2463,75 @@ async def clear_results():
     return JSONResponse({"ok": True})
 
 
+class FinishBatchRequest(BaseModel):
+    mode: str = "archive"   # "archive" → move kept files aside; "delete" → remove
+
+
+@app.post("/results/finish")
+async def finish_batch(body: FinishBatchRequest):
+    """Wrap up a batch after its report was downloaded.
+
+    The workbook already embeds the receipt images, so the originals in the
+    working folders are now temporary. This either deletes them
+    (``mode="delete"``) or moves them into ARCHIVE_FOLDER (``mode="archive"``)
+    so they're preserved but no longer flagged as orphaned. Either way the
+    completed results are cleared off the board, finishing the batch.
+    """
+    mode = (body.mode or "archive").lower()
+    if mode not in ("archive", "delete"):
+        return JSONResponse({"error": "mode must be 'archive' or 'delete'"}, status_code=400)
+
+    # Snapshot the image files referenced by the current completed results.
+    with _results_lock:
+        paths: list[Path] = []
+        for r in _results:
+            ip = r.get("_image_path")
+            cand = Path(ip) if ip else None
+            if not cand or not cand.exists():
+                # Fall back to locating by name under the completed-receipts folder.
+                name = r.get("_new_filename") or r.get("_file") or ""
+                for base in (IMAGES_FOLDER, PROCESSING_FOLDER):
+                    hit = next(base.rglob(name), None) if name else None
+                    if hit and hit.is_file():
+                        cand = hit
+                        break
+            if cand and cand.exists() and cand.is_file():
+                paths.append(cand)
+
+    moved = 0
+    removed = 0
+    errors: list[str] = []
+    dest_dir = ARCHIVE_FOLDER / f"Archived_{date.today().isoformat()}"
+    for p in paths:
+        try:
+            if mode == "delete":
+                p.unlink()
+                removed += 1
+            else:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                target = dest_dir / p.name
+                if target.exists():
+                    target = dest_dir / f"{p.stem}_{uuid4().hex[:6]}{p.suffix}"
+                shutil.move(str(p), str(target))
+                moved += 1
+        except OSError as exc:
+            errors.append(f"{p.name}: {exc}")
+
+    # Clear the completed results + done/failed board cards (the report is done).
+    with _results_lock:
+        _results.clear()
+    with _kanban_lock:
+        for fn in [fn for fn, v in _kanban.items() if v["status"] in ("done", "failed")]:
+            del _kanban[fn]
+    _persist_state()
+    _broadcast({"type": "results_cleared"})
+    return JSONResponse({
+        "ok": True, "mode": mode, "archived": moved, "deleted": removed,
+        "archive_dir": str(dest_dir) if mode == "archive" and moved else "",
+        "errors": errors,
+    })
+
+
 # ── Retry endpoint ─────────────────────────────────────────────────────────────
 
 class RetryRequest(BaseModel):
@@ -3056,7 +3246,8 @@ async def save_audit_settings(body: AuditSettingsRequest):
 async def get_benchmarks():
     """Per-batch processing-time history, newest first — for comparing LLMs."""
     with _bench_lock:
-        return JSONResponse({"benchmarks": list(_benchmarks)})
+        entries = list(_benchmarks)
+    return JSONResponse({"benchmarks": entries, "insights": _benchmark_insights(entries)})
 
 
 @app.post("/benchmarks/clear")
@@ -3540,11 +3731,19 @@ def _collect_orphans() -> tuple[list[dict], list[str], int]:
     empty_dirs: list[str] = []
     scanned = 0
 
+    archive_root = ARCHIVE_FOLDER.resolve()
+
     def _scan(folder: Path, label: str) -> None:
         nonlocal scanned
         if not folder.exists():
             return
         for p in sorted(folder.rglob("*")):
+            # Archived receipts the user chose to keep are intentional, not orphans.
+            try:
+                if p.resolve() == archive_root or archive_root in p.resolve().parents:
+                    continue
+            except OSError:
+                pass
             if p.is_dir():
                 # Stale temp dirs (_pdf_* page folders, _upload_* staging,
                 # _zip_* archive extractions) with nothing left inside are clutter

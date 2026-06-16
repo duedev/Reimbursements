@@ -224,7 +224,8 @@
       display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px;
     }
     #generate-card .gen-actions .btn { width: 100%; justify-content: center; }
-    #generate-card .gen-actions #generate-btn { grid-column: 1 / -1; }
+    #generate-card .gen-actions #generate-btn,
+    #generate-card .gen-actions #download-btn { grid-column: 1 / -1; }
     #generate-card .gen-approval { margin-top: auto; }
     @media (max-width: 900px) {
       .upload-generate-row { flex-direction: column; }
@@ -497,6 +498,16 @@
       text-overflow: ellipsis;
       margin-bottom: 4px;
     }
+    /* Renamed receipts show old → new on the card. The two names share the row
+       and each ellipsizes so a long original can't push the new name off-card. */
+    .k-card .k-filename.k-renamed {
+      display: flex; align-items: center; gap: 5px; white-space: nowrap;
+    }
+    .k-card .k-fn-old { color: var(--muted); opacity: 0.7; text-decoration: line-through;
+      overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+    .k-card .k-fn-arrow { color: var(--accent); flex: 0 0 auto; }
+    .k-card .k-fn-new { color: var(--text); font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
     .k-card .k-status-row {
       display: flex;
       align-items: center;
@@ -742,6 +753,19 @@
     #mr-vendor:focus { box-shadow: 0 0 0 3px rgba(59,130,246,0.22); border-color: #3b82f6; }
     #mr-date:focus   { box-shadow: 0 0 0 3px rgba(34,197,94,0.22);  border-color: #22c55e; }
     #mr-amount:focus { box-shadow: 0 0 0 3px rgba(245,158,11,0.22); border-color: #f59e0b; }
+    /* Magnified "callout" crops — a zoomed slice of the receipt right under each
+       field input, so the extracted value can be checked against the printed
+       text without hunting for it on the full image. */
+    .mr-callout { position: relative; overflow: hidden; height: 46px; margin-top: 5px;
+      border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,0.28); }
+    .mr-callout-img { position: absolute; max-width: none; image-rendering: auto;
+      pointer-events: none; }
+    .mr-callout-cap { position: absolute; right: 5px; bottom: 3px; font-size: 9px;
+      font-weight: 700; letter-spacing: 0.3px; color: #fff; padding: 1px 5px;
+      border-radius: 4px; background: rgba(0,0,0,0.6); pointer-events: none; }
+    #mr-callout-vendor { border-left: 3px solid #3b82f6; }
+    #mr-callout-date   { border-left: 3px solid #22c55e; }
+    #mr-callout-amount { border-left: 3px solid #f59e0b; }
     .modal-full-row { margin-bottom: 16px; }
     .dup-group { background: rgba(255,255,255,0.04); border: 1px solid var(--border);
       border-radius: 8px; padding: 12px; margin-bottom: 12px; }
@@ -1072,6 +1096,30 @@
       font-size: 12px; flex-shrink: 0; }
     .report-row a:hover { text-decoration: underline; }
 
+    /* Benchmark insights — summary tiles, trend note, and per-model bars */
+    .bench-insights { margin-bottom: 14px; }
+    .bench-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px; margin-bottom: 10px; }
+    .bench-tile { background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; text-align: center; }
+    .bench-tile-val { font-size: 18px; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; }
+    .bench-tile-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.04em; margin-top: 2px; }
+    .bench-trend { font-size: 12px; margin-bottom: 10px; }
+    .bench-trend.good { color: var(--success); }
+    .bench-trend.bad  { color: var(--warning); }
+    .bench-models { margin-bottom: 6px; }
+    .bench-models-title { font-size: 11px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.04em; margin-bottom: 6px; }
+    .bench-model-row { display: grid; grid-template-columns: minmax(80px, 1.3fr) 2fr auto;
+      align-items: center; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+    .bench-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-family: ui-monospace, monospace; font-size: 11px; }
+    .bench-model-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+    .bench-model-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+    .bench-model-val { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
     /* Confetti */
     /* Fall distance comes from --confetti-fall (set in JS from the real visible
        window height) so bits sweep the whole screen on mobile, where `vh` units
@@ -1335,9 +1383,9 @@
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       <span style="font-size:12px;color:var(--muted)">Process</span>
       <input type="range" id="conc-slider" min="1" max="8" step="1" value="3" style="flex:0 1 150px"
-             title="How many receipts the worker reads in parallel. The local model is the bottleneck — more isn't always faster, and too many can time out and fall back to the offline parser. Takes effect on the next batch.">
+             title="How many receipts the worker reads in parallel. The local model is the bottleneck — more isn't always faster, and too many can time out and fall back to the offline parser. Takes effect live, even mid-batch.">
       <span id="conc-val" style="font-variant-numeric:tabular-nums;font-weight:600;min-width:72px">3 at a time</span>
-      <span style="font-size:11px;color:var(--muted)">— higher works your model harder; applies to the next batch</span>
+      <span style="font-size:11px;color:var(--muted)">— higher works your model harder; applies live, even mid-batch</span>
     </div>
     <label id="drop-zone" for="file-input">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -1392,6 +1440,15 @@
         </svg>
         Generate Spreadsheet
       </button>
+      <!-- Once the workbook is built, the Generate button is swapped for this
+           Download link in the same slot (see _swapToDownload). -->
+      <a class="btn btn-success" id="download-btn" href="#" download style="display:none">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Download Spreadsheet
+      </a>
       <button class="btn btn-outline-accent btn-md" id="export-csv-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round"
@@ -1420,25 +1477,6 @@
         <span style="color:var(--muted)">— block generation until every completed receipt is approved</span>
       </label>
       <div id="approval-gate-status" style="display:none;margin-top:8px;font-size:12px;color:var(--warning)"></div>
-    </div>
-    <div class="hidden" id="download-row" style="margin-top:14px">
-      <a class="btn btn-success" id="download-btn" href="#" download>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
-        </svg>
-        Download Spreadsheet
-      </a>
-      <div class="hidden" id="copy-images-reminder"
-           style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;
-                  border-left:3px solid var(--accent);background:rgba(111,143,166,0.10);color:var(--text)">
-        <strong>&#128247; Don't forget your receipt images.</strong>
-        The workbook embeds them, but the original files live in the output
-        <code class="inline-code">receipts</code> folder. Copy them alongside the report if you
-        need the standalone photos.
-        <button class="btn btn-outline-accent btn-sm" style="margin-top:8px"
-                onclick="openKanbanFolder('output')">Open output folder</button>
-      </div>
     </div>
   </div>
 
@@ -2013,9 +2051,12 @@
         &#10003; This receipt is approved
       </div>
       <div class="modal-fields">
-        <label><span class="mr-fdot" style="background:#3b82f6"></span>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
-        <label><span class="mr-fdot" style="background:#22c55e"></span>Date <input type="date" id="mr-date"></label>
-        <label><span class="mr-fdot" style="background:#f59e0b"></span>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
+        <label><span class="mr-fdot" style="background:#3b82f6"></span>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell">
+          <div class="mr-callout" id="mr-callout-vendor" style="display:none" title="Magnified slice of the receipt this value was read from"><img class="mr-callout-img" alt=""><span class="mr-callout-cap"></span></div></label>
+        <label><span class="mr-fdot" style="background:#22c55e"></span>Date <input type="date" id="mr-date">
+          <div class="mr-callout" id="mr-callout-date" style="display:none" title="Magnified slice of the receipt this value was read from"><img class="mr-callout-img" alt=""><span class="mr-callout-cap"></span></div></label>
+        <label><span class="mr-fdot" style="background:#f59e0b"></span>Amount <input type="text" id="mr-amount" placeholder="0.00">
+          <div class="mr-callout" id="mr-callout-amount" style="display:none" title="Magnified slice of the receipt this value was read from"><img class="mr-callout-img" alt=""><span class="mr-callout-cap"></span></div></label>
         <label>Category
           <select id="mr-category">
             <option value="fuel">Fuel</option>
@@ -2061,6 +2102,25 @@
     <div class="btn-row" style="margin-top:16px">
       <button class="btn btn-success" id="dup-generate-btn">Generate Spreadsheet</button>
       <button class="btn btn-cancel" id="dup-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Finish-batch (tidy temp files) dialog — shown after a report downloads ── -->
+<div class="modal-overlay hidden" id="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-modal-title">
+  <div class="modal-box" style="width:520px">
+    <h3 id="finish-modal-title">&#129529; Clear temporary receipt files?</h3>
+    <p class="modal-sub">Your report already embeds the receipt images, so the
+      originals in the working folder are now just temporary. You can clear them
+      to free space, or keep a copy in an <strong>archive</strong> folder — archived
+      receipts are preserved and won't be flagged as orphaned. Either choice
+      finishes this batch and clears the board.</p>
+    <div class="btn-row" style="margin-top:16px;flex-wrap:wrap;gap:8px">
+      <button class="btn btn-outline-danger btn-md" id="finish-delete-btn"
+              title="Delete the receipt image files for this batch">&#128465; Clear files</button>
+      <button class="btn btn-success" id="finish-archive-btn"
+              title="Move the receipt files into the archive folder (kept, not orphaned)">&#128230; Keep in archive</button>
+      <button class="btn btn-cancel" id="finish-cancel-btn">Cancel</button>
     </div>
   </div>
 </div>
@@ -2205,17 +2265,71 @@ const kanbanCard   = document.getElementById('kanban-card');
 const generateCard = document.getElementById('generate-card');
 const generateBtn  = document.getElementById('generate-btn');
 const genSummary   = document.getElementById('gen-summary');
-const downloadRow  = document.getElementById('download-row');
 const downloadBtn  = document.getElementById('download-btn');
 const resetBtn     = document.getElementById('reset-btn');
 
-// Once the workbook is downloaded, remind the user the original receipt images
-// live in the output folder so they can be copied alongside the report.
+// Swap the green "Generate Spreadsheet" button for the "Download Spreadsheet"
+// link (same slot) once a workbook is ready, and swap back when the board
+// changes (any edit/new batch makes the prepared download stale).
+function _swapToDownload(fname, url) {
+  if (url) downloadBtn.href = url;
+  if (fname) downloadBtn.download = fname;
+  downloadBtn.style.display = '';
+  generateBtn.style.display = 'none';
+}
+function _swapToGenerate() {
+  if (downloadBtn) {
+    downloadBtn.style.display = 'none';
+    if (downloadBtn.dataset.objUrl) {
+      try { URL.revokeObjectURL(downloadBtn.dataset.objUrl); } catch (_) {}
+      downloadBtn.dataset.objUrl = '';
+    }
+  }
+  if (generateBtn) generateBtn.style.display = '';
+}
+
+// Downloading the workbook is the end of the batch — the report embeds the
+// images, so prompt the user to tidy up the now-temporary receipt files.
 downloadBtn.addEventListener('click', () => {
-  const reminder = document.getElementById('copy-images-reminder');
-  if (reminder) reminder.classList.remove('hidden');
-  showToast('Spreadsheet downloaded — remember to copy the receipt images from the output folder too', true);
+  showToast('Spreadsheet downloaded', true);
+  // Let the browser kick off the download before the dialog steals focus.
+  setTimeout(_openFinishBatchDialog, 400);
 });
+
+// ── Finish-batch: tidy the now-temporary receipt files after a download ───────
+function _openFinishBatchDialog() {
+  const m = document.getElementById('finish-modal');
+  if (!m) return;
+  // Nothing to tidy if there are no completed receipts on the board.
+  if (!Object.values(receiptCards).some(c => c.status === 'done')) return;
+  m.classList.remove('hidden');
+}
+function _closeFinishDialog() {
+  document.getElementById('finish-modal').classList.add('hidden');
+}
+async function _finishBatch(mode) {
+  try {
+    const res = await fetch('/results/finish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      showToast(mode === 'archive'
+        ? `Archived ${d.archived} receipt file${d.archived === 1 ? '' : 's'} — board cleared`
+        : `Cleared ${d.deleted} temporary file${d.deleted === 1 ? '' : 's'} — board cleared`, true);
+    } else {
+      showToast(d.error || 'Could not finish batch', false);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, false);
+  }
+  _closeFinishDialog();
+  // The server broadcasts results_cleared, which resets the board + buttons.
+}
+document.getElementById('finish-archive-btn').addEventListener('click', () => _finishBatch('archive'));
+document.getElementById('finish-delete-btn').addEventListener('click', () => _finishBatch('delete'));
+document.getElementById('finish-cancel-btn').addEventListener('click', _closeFinishDialog);
 const uploadCard   = document.getElementById('upload-card');
 const configCard   = document.getElementById('config-card');
 const distillSelect = document.getElementById('distill-model-select');
@@ -2375,7 +2489,18 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   if (data && data.date) div.dataset.date = data.date;
   div.dataset.approved = isApproved ? '1' : '0';
 
-  let inner = `<div class="k-filename">${esc(filename)}</div>`;
+  // Show the rename as old → new when the pipeline renamed the file, so the
+  // card documents how the original drop maps to the tidy output name.
+  const newName = data && data._new_filename;
+  let inner;
+  if (newName && newName !== filename) {
+    inner = `<div class="k-filename k-renamed" title="${esc(filename)} → ${esc(newName)}">`
+          + `<span class="k-fn-old">${esc(filename)}</span>`
+          + `<span class="k-fn-arrow">&#8594;</span>`
+          + `<span class="k-fn-new">${esc(newName)}</span></div>`;
+  } else {
+    inner = `<div class="k-filename">${esc(filename)}</div>`;
+  }
   const spinning = (status === 'ocr' || status === 'distilling');
   const statusLabel = { queued:'Queued', ocr:'OCR', distilling:'Distilling', done:'Done', failed:'Failed' }[status] || status;
 
@@ -2538,12 +2663,19 @@ function connectSSE() {
     } else if (msg.type === 'batch_done') {
       const prevCompleted = completedCount;
       completedCount = msg.completed || 0;
-      _updateQueueBadge(msg.pending || 0);
+      const pending = msg.pending || 0;
+      _updateQueueBadge(pending);
       _updateGenerateCard();
       const newlyDone = completedCount - prevCompleted;
       if (newlyDone > 0) {
         showToast(`Batch complete — ${completedCount} receipt(s) ready`, true);
-        celebrate();
+        // Only celebrate when the whole workload is finished — a batch can
+        // complete with more still queued or in flight (the worker drains in
+        // chunks). Hold the confetti until the queue AND the processing column
+        // are both empty.
+        const stillWorking = pending > 0 || Object.values(receiptCards)
+          .some(c => ['queued', 'ocr', 'distilling'].includes(c.status));
+        if (!stillWorking) celebrate();
       }
       loadIntakeCount();
       loadStats();
@@ -2561,7 +2693,7 @@ function connectSSE() {
     } else if (msg.type === 'results_cleared') {
       completedCount = 0;
       _updateGenerateCard();
-      downloadRow.classList.add('hidden');
+      _swapToGenerate();
       ['col-completed', 'col-failed'].forEach(id => {
         document.getElementById(id).innerHTML = '';
       });
@@ -2582,7 +2714,7 @@ function connectSSE() {
     } else if (msg.type === 'kanban_cleared') {
       completedCount = 0;
       _updateGenerateCard();
-      downloadRow.classList.add('hidden');
+      _swapToGenerate();
       generateCard.classList.add('hidden');
       ['col-queued', 'col-processing', 'col-completed', 'col-failed'].forEach(id => {
         document.getElementById(id).innerHTML = '';
@@ -2627,6 +2759,9 @@ function _updateQueueBadge(pending) {
 }
 
 function _updateGenerateCard() {
+  // Any board change invalidates a prepared download (the data behind it may
+  // have shifted), so revert the button to "Generate" until it's rebuilt.
+  _swapToGenerate();
   // Derive counts from the board so manual saves, approvals, and dismissals
   // update the card immediately (completedCount only refreshes on batch_done).
   const done = Object.values(receiptCards).filter(c => c.status === 'done');
@@ -2897,10 +3032,8 @@ async function _doGenerate(excludeFilenames = []) {
     const cd   = res.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="?([^"]+)"?/);
     const fname = match ? match[1] : 'Reimbursements.xlsx';
-    downloadBtn.href = url;
-    downloadBtn.download = fname;
-    downloadRow.classList.remove('hidden');
-    document.getElementById('copy-images-reminder')?.classList.add('hidden');
+    downloadBtn.dataset.objUrl = url;
+    _swapToDownload(fname, url);
     showToast('Spreadsheet ready — click Download', true);
     loadReports();
   } catch (err) {
@@ -2944,7 +3077,7 @@ resetBtn.addEventListener('click', async () => {
   // Destructive — same confirmation courtesy as Clear Board
   if (!confirm('Start a new batch? This clears all completed receipts from the board.')) return;
   await fetch('/results/clear', { method: 'POST' });
-  downloadRow.classList.add('hidden');
+  _swapToGenerate();
   // SSE results_cleared event handles kanban cleanup
 });
 
@@ -3141,6 +3274,42 @@ function drawFieldBoxes(boxes, img, overlay, llmBoxes) {
   }
 }
 
+// Render the magnified per-field callout crops in the review modal. For each of
+// vendor/date/amount we take the located box (rules-based OCR first, else the
+// LLM-placed box) and show that slice of the receipt — uniformly scaled so the
+// region fills the callout width without distortion — directly under the input.
+function _renderFieldCallouts() {
+  const img = document.getElementById('mr-preview-img');
+  const nw = img ? img.naturalWidth : 0, nh = img ? img.naturalHeight : 0;
+  for (const key of ['vendor', 'date', 'amount']) {
+    const wrap = document.getElementById('mr-callout-' + key);
+    if (!wrap) continue;
+    const ocrBox = _mrFieldBoxes && _mrFieldBoxes[key];
+    const llmBox = _mrLlmBoxes && _mrLlmBoxes[key];
+    const box = ocrBox || llmBox;
+    if (!box || box.length < 4 || !nw || !nh || !img.src) { wrap.style.display = 'none'; continue; }
+    let [x, y, w, h] = box;
+    if (!(w > 0) || !(h > 0)) { wrap.style.display = 'none'; continue; }
+    // Pad a little so glyphs at the edges of the box aren't clipped.
+    const padX = w * 0.06, padY = h * 0.4;
+    x = Math.max(0, x - padX); y = Math.max(0, y - padY);
+    w = Math.min(1 - x, w + padX * 2); h = Math.min(1 - y, h + padY * 2);
+    wrap.style.display = '';   // must be laid out to measure width
+    const cw = wrap.clientWidth || 220;
+    const dispW = cw / w;                 // scale so the box width fills the callout
+    const dispH = dispW * (nh / nw);      // uniform scale → no stretch
+    const ch = wrap.clientHeight || 46;
+    const cropEl = wrap.querySelector('.mr-callout-img');
+    cropEl.src = img.src;
+    cropEl.style.width = dispW + 'px';
+    cropEl.style.height = dispH + 'px';
+    cropEl.style.left = (-(x * dispW)) + 'px';
+    cropEl.style.top = (-(y * dispH) + (ch - h * dispH) / 2) + 'px';  // centre the band
+    const cap = wrap.querySelector('.mr-callout-cap');
+    if (cap) cap.textContent = (!ocrBox && llmBox) ? `AI ${Math.round(box[4] || 0)}%` : 'on receipt';
+  }
+}
+
 // Legend under the preview: a swatch per field, marking ones we couldn't locate.
 // A field counts as located if either the rules-based OCR box or an LLM-placed
 // box exists; LLM-located fields note the model's confidence.
@@ -3170,6 +3339,7 @@ function _refreshFieldMarkers() {
   if (modal && !modal.classList.contains('hidden')) {
     drawFieldBoxes(_mrFieldBoxes, document.getElementById('mr-preview-img'),
                    document.getElementById('mr-box-overlay'), _mrLlmBoxes);
+    _renderFieldCallouts();
   }
   const lb = document.getElementById('img-lightbox');
   if (lb && lb.style.display === 'flex') {
@@ -3296,8 +3466,13 @@ window.openManualReview = function(filename) {
   if (boxOverlay) boxOverlay.innerHTML = '';
   if (markerBar) markerBar.style.display = hasMarkers ? '' : 'none';
   if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'), _mrLlmBoxes);
+  // Hide any stale callouts until the new image is measured.
+  ['vendor', 'date', 'amount'].forEach(k => {
+    const c = document.getElementById('mr-callout-' + k);
+    if (c) c.style.display = 'none';
+  });
   previewImg.src = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
-  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes); };
+  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes); _renderFieldCallouts(); };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
   previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
   // Cached images can be already-complete before onload is attached.
@@ -3307,6 +3482,11 @@ window.openManualReview = function(filename) {
   }
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
+  // Callout crops need the modal laid out to measure their width; render on the
+  // next frame (and again on load for not-yet-cached images, above).
+  requestAnimationFrame(() => {
+    if (previewImg.complete && previewImg.naturalWidth) _renderFieldCallouts();
+  });
 };
 
 document.getElementById('review-all-btn').addEventListener('click', () => {
@@ -4083,12 +4263,55 @@ document.getElementById('advanced-toggle').addEventListener('change', (e) => {
 
 // ── Benchmark (per-batch timing, for comparing LLMs) ──────────────────────────
 let _benchData = [];
+let _benchInsights = null;
 async function loadBenchmarks() {
   try {
     const d = await (await fetch('/benchmarks')).json();
     _benchData = d.benchmarks || [];
+    _benchInsights = d.insights || null;
     _renderBenchmarks();
   } catch (_) {}
+}
+// Headline insights that grow more useful as runs accumulate — totals, the
+// weighted average per receipt, throughput, a recent-vs-overall trend, and a
+// per-model speed comparison.
+function _renderBenchInsights(ins) {
+  if (!ins) return '';
+  const tile = (label, val) =>
+    `<div class="bench-tile"><div class="bench-tile-val">${val}</div>`
+    + `<div class="bench-tile-lbl">${label}</div></div>`;
+  const tiles = [
+    tile('Batches', ins.batches),
+    tile('Receipts', ins.receipts),
+    tile('Avg / receipt', `${ins.avg_per_receipt}s`),
+    tile('Throughput', `${ins.throughput_per_min}/min`),
+  ].join('');
+
+  let trend = '';
+  if (ins.batches > 1 && Math.abs(ins.trend) >= 0.01) {
+    const faster = ins.trend < 0;
+    trend = `<div class="bench-trend ${faster ? 'good' : 'bad'}">`
+      + `${faster ? '&#9660;' : '&#9650;'} latest run is ${Math.abs(ins.trend).toFixed(2)}s/receipt `
+      + `${faster ? 'faster' : 'slower'} than the overall average `
+      + `<span style="color:var(--muted)">(range ${ins.fastest_batch_avg}s–${ins.slowest_batch_avg}s)</span></div>`;
+  }
+
+  let models = '';
+  if (ins.models && ins.models.length > 1) {
+    const max = Math.max(...ins.models.map(m => m.avg_seconds || 0)) || 1;
+    const rows = ins.models.map(m => {
+      const isFast = m.model === ins.fastest_model;
+      const pct = Math.max(6, Math.round((m.avg_seconds / max) * 100));
+      return `<div class="bench-model-row">
+        <span class="bench-model-name" title="${esc(m.model)}">${isFast ? '&#9889; ' : ''}${esc(m.model)}</span>
+        <span class="bench-model-bar"><span style="width:${pct}%;${isFast ? 'background:var(--success)' : ''}"></span></span>
+        <span class="bench-model-val">${m.avg_seconds}s <span style="color:var(--muted)">/ ${m.receipts}r</span></span>
+      </div>`;
+    }).join('');
+    models = `<div class="bench-models"><div class="bench-models-title">Average per receipt, by model</div>${rows}</div>`;
+  }
+
+  return `<div class="bench-insights"><div class="bench-tiles">${tiles}</div>${trend}${models}</div>`;
 }
 function _renderBenchmarks() {
   const box = document.getElementById('bench-body');
@@ -4106,7 +4329,8 @@ function _renderBenchmarks() {
       <td style="padding:4px 10px">${esc(b.distill_model || '')}</td>
       <td style="padding:4px 0">${esc(b.ocr_model || '')}</td>
     </tr>`).join('');
-  box.innerHTML = `<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;width:100%">
+  box.innerHTML = _renderBenchInsights(_benchInsights)
+    + `<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;width:100%">
     <thead><tr style="color:var(--muted)">
       <th style="padding:4px 10px 4px 0;text-align:left">When</th>
       <th style="padding:4px 10px;text-align:right">Receipts</th>
@@ -4244,7 +4468,7 @@ document.getElementById('conc-slider').addEventListener('change', () => {
     try {
       await fetch('/settings/processing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_parallel: v }) });
-      showToast(`Processing ${v} receipt${v === 1 ? '' : 's'} at a time (next batch)`, true);
+      showToast(`Processing ${v} receipt${v === 1 ? '' : 's'} at a time (applies live)`, true);
     } catch (err) { showToast(`Error: ${err.message}`, false); }
   }, 150);
 });
