@@ -176,6 +176,17 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (synthetic receipt test-bench):** New `receipt_testkit.py` — a
+  fixed suite of 9 challenge receipts (clean, rotated_90, faint_thermal,
+  multi_total, us_date_ambiguous, noisy_scan, long_itemized, missing_vendor,
+  big_amount), each a PIL-rendered image with known ground truth. `build_test_receipts`
+  renders them; `score_extraction(truth, got)` scores vendor/amount/date/category
+  (vendor=containment, amount=±0.01, weighted 0.3/0.4/0.2/0.1; blank-vendor rewards
+  NOT fabricating); `run_benchmark(manifest, extract_fn)` aggregates and
+  `format_scorecard` prints a table. CLI: `python receipt_testkit.py --out DIR [--run]`
+  (`--run` drives the real pipeline to score the active LLM). Pure-PIL generator +
+  scorer are LLM-free and unit-tested. `tests/test_receipt_testkit.py` (+7).
+
 - **2026-06-16 (LLM spatial awareness — model-placed field boxes):** The vision
   path now also asks the model WHERE vendor/date/amount sit on the image, with a
   confidence. `_GEMMA_VISION_TEMPLATE` gained a `"boxes"` schema (fractional
