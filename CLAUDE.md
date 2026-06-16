@@ -53,7 +53,6 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 | `watch_mode.py` | Standalone watch-mode daemon (monitor inbox, process, email on schedule). `main()` entry. |
 | `scheduler.py` | Weekly scheduled export/delivery. |
 | `app_secrets.py` | Secrets store (SMTP password etc.) kept out of the main config. |
-| `extras/receipt_gui.py` | A separate/legacy desktop GUI experiment — not the main app. |
 | `tests/` | pytest suite (see Testing). |
 
 ## Processing pipeline (per receipt) — `process_receipts._extract_receipt_with_status`
