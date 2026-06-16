@@ -176,6 +176,12 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (spreadsheet: image above data):** In `_build_image_sheet`, the
+  receipt picture is now embedded **above** its metadata row (was below), and the
+  Summary→image hyperlink anchor points at the receipt's header row, so clicking a
+  link lands with the image in view. Per-receipt order is now header → image →
+  data → spacer. `tests/test_image_above_data.py` (+1).
+
 - **2026-06-16 (Developer mode + gunmetal theme + review colour-coding):**
   * **Developer mode** — the old "Advanced settings" toggle is now "Developer mode"
     (same `#advanced-toggle` / localStorage `advancedMode` / `body.hide-advanced`

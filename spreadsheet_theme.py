@@ -482,6 +482,12 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
         # Summary row reference (None if pre-calc wasn't provided)
         sr = summary_data_rows[i] if summary_data_rows and i < len(summary_data_rows) else None
 
+        # Anchor the Summary hyperlink to this receipt's header row, so clicking
+        # the link lands with the receipt IMAGE (rendered directly below the
+        # header) in view — rather than scrolling to the data with the image
+        # below the fold.
+        anchors.append(f"A{current_row}")
+
         # Colored receipt header row — visually separates each receipt
         _flood(ws, current_row, _fill(header_fill_color), cols=range(1, LAST_COL + 1))
         ws.merge_cells(f"A{current_row}:H{current_row}")
@@ -497,8 +503,50 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
         ws.row_dimensions[current_row].height = 16
         current_row += 1
 
-        anchors.append(f"A{current_row}")
+        # Embed the image FIRST — above the metadata — so the link target shows
+        # the receipt picture immediately.
+        if img_path_str and Path(img_path_str).exists():
+            try:
+                from io import BytesIO
+                from openpyxl.drawing.image import Image as XLImage
+                from PIL import Image as PILImage
 
+                with PILImage.open(img_path_str) as pil_img:
+                    orig_w, orig_h = pil_img.size
+                    if getattr(pil_img, "format", None) == "MPO":
+                        buf = BytesIO()
+                        pil_img.convert("RGB").save(buf, "JPEG", quality=85, optimize=True)
+                        buf.seek(0)
+                        img_source = buf
+                    else:
+                        img_source = img_path_str
+
+                scale  = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
+                img_w  = int(orig_w * scale)
+                img_h  = int(orig_h * scale)
+                rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
+
+                xl_img        = XLImage(img_source)
+                xl_img.width  = img_w
+                xl_img.height = img_h
+                ws.add_image(xl_img, f"A{current_row}")
+                for r in range(current_row, current_row + rows_needed):
+                    ws.row_dimensions[r].height = _IMG_ROW_HEIGHT_PT
+                current_row += rows_needed
+            except Exception as exc:
+                err_cell = ws.cell(row=current_row, column=1,
+                                   value=f"[Image error: {exc}]")
+                err_cell.font = _font(size=9, color="991B1B")
+                ws.row_dimensions[current_row].height = 14
+                current_row += 1
+        else:
+            ph = ws.cell(row=current_row, column=1,
+                         value=f"[Image not available: {filename}]")
+            ph.font = _font(size=9, color="6B7280")
+            ws.row_dimensions[current_row].height = 14
+            current_row += 1
+
+        # Metadata row — now BELOW the image
         row_fill   = _fill(COLOR_ROW_PLAIN if i % 2 == 0 else COLOR_ROW_ALT)
         row_border = _receipt_sep_border()
         _flood(ws, current_row, row_fill, _font(size=10), row_border)
@@ -546,48 +594,6 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
 
         ws.row_dimensions[current_row].height = 22
         current_row += 1
-
-        # Embed image below the metadata row
-        if img_path_str and Path(img_path_str).exists():
-            try:
-                from io import BytesIO
-                from openpyxl.drawing.image import Image as XLImage
-                from PIL import Image as PILImage
-
-                with PILImage.open(img_path_str) as pil_img:
-                    orig_w, orig_h = pil_img.size
-                    if getattr(pil_img, "format", None) == "MPO":
-                        buf = BytesIO()
-                        pil_img.convert("RGB").save(buf, "JPEG", quality=85, optimize=True)
-                        buf.seek(0)
-                        img_source = buf
-                    else:
-                        img_source = img_path_str
-
-                scale  = min(_IMG_MAX_W_PX / orig_w, _IMG_MAX_H_PX / orig_h, 1.0)
-                img_w  = int(orig_w * scale)
-                img_h  = int(orig_h * scale)
-                rows_needed = max(int(img_h * 0.75 / _IMG_ROW_HEIGHT_PT) + 2, _IMG_ROWS)
-
-                xl_img        = XLImage(img_source)
-                xl_img.width  = img_w
-                xl_img.height = img_h
-                ws.add_image(xl_img, f"A{current_row}")
-                for r in range(current_row, current_row + rows_needed):
-                    ws.row_dimensions[r].height = _IMG_ROW_HEIGHT_PT
-                current_row += rows_needed
-            except Exception as exc:
-                err_cell = ws.cell(row=current_row, column=1,
-                                   value=f"[Image error: {exc}]")
-                err_cell.font = _font(size=9, color="991B1B")
-                ws.row_dimensions[current_row].height = 14
-                current_row += 1
-        else:
-            ph = ws.cell(row=current_row, column=1,
-                         value=f"[Image not available: {filename}]")
-            ph.font = _font(size=9, color="6B7280")
-            ws.row_dimensions[current_row].height = 14
-            current_row += 1
 
         # Spacer
         ws.row_dimensions[current_row].height = 8
