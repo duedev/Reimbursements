@@ -481,6 +481,69 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
+def _content_bbox_by_edges(gray: Image.Image, frac: float):
+    """Detect the receipt content box via an edge-energy projection (numpy).
+
+    Far more robust than corner-background subtraction on real photos: it doesn't
+    assume the corners are background, so it survives gradients, shadows, busy
+    desktops and coloured surfaces. Edge magnitude is summed into per-row and
+    per-column profiles; the content extent is where each profile rises a
+    fraction ``frac`` of the way from its background (median) to its peak. Returns
+    a raw content bbox ``(left, top, right, bottom)`` or ``None``. Raises
+    ``ImportError`` when numpy is unavailable so the caller can fall back.
+    """
+    import numpy as np  # local import: only needed for crop, keeps startup light
+
+    arr = np.asarray(gray, dtype=np.float32)
+    h, w = arr.shape
+    gmag = np.zeros((h, w), dtype=np.float32)
+    gmag[:, 1:] += np.abs(arr[:, 1:] - arr[:, :-1])   # horizontal gradient (vertical edges)
+    gmag[1:, :] += np.abs(arr[1:, :] - arr[:-1, :])   # vertical gradient (horizontal edges)
+
+    def _smooth(p, k):
+        if k <= 1:
+            return p
+        return np.convolve(p, np.ones(k, dtype=np.float32) / k, mode="same")
+
+    col_prof = _smooth(gmag.sum(axis=0), max(1, w // 200))
+    row_prof = _smooth(gmag.sum(axis=1), max(1, h // 200))
+
+    def _bounds(prof):
+        peak = float(prof.max())
+        if peak <= 0:
+            return None
+        base = float(np.median(prof))
+        thr = base + frac * (peak - base)
+        idx = np.where(prof >= thr)[0]
+        if idx.size == 0:
+            return None
+        return int(idx[0]), int(idx[-1] + 1)
+
+    cb, rb = _bounds(col_prof), _bounds(row_prof)
+    if not cb or not rb:
+        return None
+    return (cb[0], rb[0], cb[1], rb[1])
+
+
+def _content_bbox_by_corner_bg(gray: Image.Image, threshold: float):
+    """Legacy corner-background content detection (fallback when numpy is absent).
+
+    Estimates the background from the four corner patches and returns the bbox of
+    everything that differs from it by more than ``threshold``. Returns a raw
+    content bbox or ``None``.
+    """
+    w, h = gray.size
+    samples = []
+    for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
+                (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
+        samples.extend(gray.crop(box).tobytes())
+    samples.sort()
+    bg = samples[len(samples) // 2]
+    diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
+    mask = diff.point(lambda v: 255 if v > threshold else 0)
+    return mask.getbbox()
+
+
 def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -> dict:
     """Inspect what auto-crop would do to ``img`` without mutating it.
 
@@ -491,29 +554,28 @@ def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -
     ``kept_ratio`` is its area as a fraction of the original, and ``reason`` is a
     short, human-readable explanation of the decision.  ``aggressiveness``
     defaults to the module-level ``AUTOCROP_AGGRESSIVENESS`` dial.
+
+    Detection uses an edge-energy projection (robust to non-uniform backgrounds);
+    it falls back to legacy corner-background subtraction only if numpy is
+    unavailable. The aggressiveness dial, margin and accept/reject gating are
+    unchanged so the slider behaves predictably.
     """
     if aggressiveness is None:
         aggressiveness = AUTOCROP_AGGRESSIVENESS
     p = _autocrop_params(aggressiveness)
     min_ratio, max_ratio = p["min_ratio"], p["max_ratio"]
-    threshold = p["threshold"]
     try:
         gray = img.convert("L")
         w, h = gray.size
         if w < 64 or h < 64:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "image too small to crop (min 64×64 px)"}
-        # Background estimated from the median of the four 8x8 corner patches
-        samples = []
-        for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
-                    (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
-            samples.extend(gray.crop(box).tobytes())
-        samples.sort()
-        bg = samples[len(samples) // 2]
-
-        diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
-        mask = diff.point(lambda v: 255 if v > threshold else 0)
-        bbox = mask.getbbox()
+        try:
+            # `threshold` (16..46) reused as a 0.16..0.46 energy fraction: higher
+            # aggressiveness ⇒ larger fraction ⇒ fainter edges ignored ⇒ tighter box.
+            bbox = _content_bbox_by_edges(gray, p["threshold"] / 100.0)
+        except ImportError:
+            bbox = _content_bbox_by_corner_bg(gray, p["threshold"])
         if not bbox:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "no content edges stand out from the background"}

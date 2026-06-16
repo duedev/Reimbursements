@@ -176,6 +176,17 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (auto-crop rewrite — edge-energy projection):** Replaced the
+  corner-background content detection (which failed on gradients/shadows/busy
+  desks — the "crop never fires no matter how aggressive" bug) with an
+  **edge-energy projection** (`_content_bbox_by_edges`, numpy): per-row/col edge
+  magnitude, content extent where each profile rises `frac` of the way from its
+  median to its peak (`frac = threshold/100`, so the aggressiveness dial still
+  controls tightness). `autocrop_analyze` keeps the same margin + accept/reject
+  gating + reasons, and falls back to legacy `_content_bbox_by_corner_bg` only if
+  numpy is unavailable. `tests/test_autocrop_robust.py` (+3); existing
+  `tests/test_autocrop*.py` unchanged and still green.
+
 - **2026-06-16 (spreadsheet: image above data):** In `_build_image_sheet`, the
   receipt picture is now embedded **above** its metadata row (was below), and the
   Summary→image hyperlink anchor points at the receipt's header row, so clicking a
