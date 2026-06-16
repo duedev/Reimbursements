@@ -176,6 +176,31 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (polish batch — 6 changes):**
+  * **Blue accent restored** — dark theme `:root` reverts to vivid `--accent: #3b82f6`
+    (blue) + `--accent-2: #a855f7` (purple); added `--teal: #14b8a6` and `--rose:
+    #fb7185`; `--ring` updated to `rgba(59,130,246,0.28)`; `body::before` gradient
+    now uses blue/purple wash; logo-mark shadow, drop-zone drag-over bg, and
+    `.btn-primary` box-shadow all updated from the old steel `rgba(111,143,166,…)`
+    to the new blue `rgba(59,130,246,…)`.
+  * **LLM URL normalization** — new `_normalize_llm_url(url)` helper (defined before
+    `_apply_llm_server_config` in `server.py`) appends `/v1` if the user omits it.
+    Used in `_apply_llm_server_config` when restoring `llm_model_config.base_url`
+    and `llm_server.base_url`, and in `set_llm_server` for the `elif base_url` path.
+  * **Audit card grid layout** — replaced the vertical flex stack with a
+    `display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr))` 2-col
+    grid; labels now show a small UPPERCASE category name + inline `$`/`max`/`days`
+    adornments.
+  * **Retry moves to next** — success path of the retry button handler now calls
+    `_loadNextAny(fn)` before `_closeReviewModal()`, so the reviewer lands on the
+    next receipt rather than the empty board.
+  * **Spreadsheet link anchor** — in `_build_image_sheet`, `anchors.append` now
+    points to a new 4pt-tall thin row inserted AFTER the header (between the header
+    label and the receipt image), so Summary hyperlinks scroll directly to the image.
+  * **Progress card collapsed by default** — `#progress-body` starts with
+    `style="display:none"` and `#progress-toggle` starts with `class="section-toggle
+    collapsed"` so the Processing & Errors section is hidden until the user opens it.
+
 - **2026-06-16 (batch of 12 features):**
   * **Autocrop (Feature 1):** Default `AUTOCROP_AGGRESSIVENESS` raised from 70 to 85.
     Removed the accept/reject gate that blocked crops as "too aggressive" or "borders
