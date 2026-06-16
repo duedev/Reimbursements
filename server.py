@@ -235,6 +235,30 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     return _processing_settings()
 
 
+def _apply_model_config(cfg: dict | None = None) -> None:
+    """Restore the persisted single-model selection + LLM-OCR toggle.
+
+    Run BEFORE initialize_models so a user's saved model choice survives a
+    restart: initialize_models only overrides the model when it isn't loaded.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    models = cfg.get("models") or {}
+    if models.get("llm_ocr") is not None:
+        _pr.set_llm_ocr(bool(models["llm_ocr"]))
+    if models.get("active"):
+        _pr.set_active_model(str(models["active"]))
+
+
+def _persist_model_config() -> None:
+    """Save the current single-model selection + LLM-OCR toggle to config."""
+    cfg = _load_config()
+    cfg["models"] = {
+        "active":  _pr._active_distill_model,
+        "llm_ocr": bool(_pr._llm_ocr_enabled),
+    }
+    _save_config(cfg)
+
+
 def _audit_settings() -> dict:
     """Current spending/date-warning thresholds as the UI sees them (None = off)."""
     return {
@@ -326,7 +350,7 @@ def _safe_receipt_data(data) -> dict:
               "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
               "_distill_seconds", "_ocr_engine", "_steps", "_field_boxes",
-              "_review_required", "_approved"):
+              "_llm_field_boxes", "_review_required", "_approved"):
         if k in data:
             out[k] = data[k]
     return out
@@ -1006,6 +1030,7 @@ async def lifespan(app: FastAPI):
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     _apply_audit_config()        # restore UI-saved spending/date warning thresholds
+    _apply_model_config()        # restore saved single-model choice before auto-select
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -1867,6 +1892,17 @@ def _compute_stats(results: list[dict]) -> dict:
     dated_total = round(sum(by_day.values()), 2)
     peak = max(timeline, key=lambda t: t["total"]) if timeline else None
 
+    # Calendar span of the dated receipts (inclusive), NOT the count of distinct
+    # days that happen to have receipts. The full Y/M/D dates are used so a range
+    # spanning multiple years reports the true number of days, e.g. receipts on
+    # 173 distinct days across two years span ~730 days, not 173.
+    if timeline:
+        first_day = date.fromisoformat(timeline[0]["date"])
+        last_day = date.fromisoformat(timeline[-1]["date"])
+        span_days = (last_day - first_day).days + 1
+    else:
+        span_days = 0
+
     return {
         "count":        len(results),
         "total":        round(total, 2),
@@ -1879,6 +1915,7 @@ def _compute_stats(results: list[dict]) -> dict:
         "timeline_total":  dated_total,
         "timeline_peak":   peak,
         "timeline_days":   len(timeline),
+        "timeline_span_days": span_days,
         "proc_total_seconds": round(sum(proc_times), 1),
         "proc_avg_seconds":   round(sum(proc_times) / len(proc_times), 1) if proc_times else 0.0,
     }
@@ -2396,6 +2433,7 @@ async def get_available_models():
             "models":         models,
             "active_distill": _pr._active_distill_model,
             "active_ocr":     _pr._active_ocr_model,
+            "llm_ocr":        _pr._llm_ocr_enabled,
             "thinking":       _pr._thinking_enabled,
             "ok":             True,
         })
@@ -2404,6 +2442,7 @@ async def get_available_models():
             "models":         [],
             "active_distill": _pr._active_distill_model,
             "active_ocr":     _pr._active_ocr_model,
+            "llm_ocr":        _pr._llm_ocr_enabled,
             "thinking":       _pr._thinking_enabled,
             "ok":             False,
             "error":          str(exc),
@@ -2416,18 +2455,33 @@ class ModelSwapRequest(BaseModel):
 
 @app.post("/models/distill")
 async def swap_distill_model(body: ModelSwapRequest):
-    """Set the distillation model. LM Studio loads it on first use."""
-    target = body.model.strip()
-    _pr._active_distill_model = target
-    return JSONResponse({"ok": True, "active_distill": target})
+    """Set the single active AI model (used for distillation and, optionally, OCR).
+
+    OCR and distillation are consolidated onto one model, so this also re-points
+    the OCR alias when the LLM-OCR cross-reference is enabled. The choice is
+    persisted and LM Studio loads the model on first use.
+    """
+    target = _pr.set_active_model(body.model)
+    _persist_model_config()
+    return JSONResponse({"ok": True, "active_distill": target,
+                         "active_ocr": _pr._active_ocr_model})
+
+
+class LlmOcrRequest(BaseModel):
+    enabled: bool = False
 
 
 @app.post("/models/ocr")
-async def swap_ocr_model(body: ModelSwapRequest):
-    """Set (or clear) the dedicated OCR model. LM Studio loads it on first use."""
-    target = body.model.strip()
-    _pr._active_ocr_model = target        # empty string = disable OCR stage
-    return JSONResponse({"ok": True, "active_ocr": target})
+async def toggle_llm_ocr(body: LlmOcrRequest):
+    """Toggle whether the single active model also transcribes the receipt (LLM OCR).
+
+    There is no separate OCR model any more; when enabled, the active model's
+    transcription is cross-referenced against the built-in RapidOCR reading.
+    """
+    enabled = _pr.set_llm_ocr(body.enabled)
+    _persist_model_config()
+    return JSONResponse({"ok": True, "llm_ocr": enabled,
+                         "active_ocr": _pr._active_ocr_model})
 
 
 class ThinkingRequest(BaseModel):

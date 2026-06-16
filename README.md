@@ -84,9 +84,33 @@ python -m uvicorn server:app --reload
 1. Download and launch [LM Studio](https://lmstudio.ai)
 2. Load any **multimodal / vision model** (the app auto-detects whatever you load)
 3. Start the **Local Server** in LM Studio (default port **1234**)
-4. The app auto-detects loaded models and populates the model selectors
+4. The app **auto-selects and loads** a model at startup and **warms it up** with a tiny dummy receipt so your first batch is fast
 
-**Two-stage OCR mode (optional):** Load a second, dedicated OCR model (e.g. `allenai/olmOCR-2-7B`). Select it in the "OCR Model" dropdown. The first model transcribes text; the second distills structured data — useful for boosting accuracy on difficult receipts.
+**One model, both stages:** OCR and extraction share a single model (pick it under Settings → AI Model). The built-in RapidOCR always runs locally; flip **"Also use this model for OCR"** to additionally have the AI model transcribe each receipt and cross-reference both readings — more accurate on hard receipts, but slower (two model calls each).
+
+---
+
+## Bundled LLM (no external LM Studio)
+
+Prefer to run everything in one `docker compose up`? You can bundle a local model
+**inside** the stack instead of installing LM Studio. The `model-server` service
+(profile `bundled-llm`) bakes the weights into its image and serves an
+OpenAI-compatible API the app talks to.
+
+```bash
+# In .env, set the model download URLs (a small Qwen3-VL-2B GGUF + its mmproj is
+# recommended — find current links on Hugging Face), then:
+LMSTUDIO_BASE_URL=http://model-server:1234/v1 \
+  docker compose --profile bundled-llm up --build
+```
+
+- **Weights are baked into the image** → the container runs fully offline, but the
+  image is large (~2–3 GB for a 2B vision model). Swap the model with the
+  `MODEL_URL` / `MMPROJ_URL` build args (see `Dockerfile.model`).
+- A **vision** model (GGUF + mmproj) is expected so the direct-image path and the
+  on-image field-location boxes work.
+- CPU-only by default; enable the commented GPU block in `docker-compose.yml`
+  (needs the NVIDIA container toolkit) to offload layers.
 
 ---
 

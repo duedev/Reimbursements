@@ -11,22 +11,24 @@
   <meta name="apple-mobile-web-app-title" content="Receipts">
   <style>
     :root {
-      --bg:       #0b1120;
-      --surface:  #131c30;
-      --surface2: #1b2740;
-      --border:   #2a3a55;
-      --accent:   #4f8ef7;
-      --accent-h: #2563eb;
-      --accent-2: #8b5cf6;
+      /* Gunmetal dark theme — neutral graphite/charcoal surfaces with a muted
+         steel accent. Deliberately off the old blue/purple "AI default" hue. */
+      --bg:       #16191c;
+      --surface:  #1f2329;
+      --surface2: #2a3037;
+      --border:   #3b434c;
+      --accent:   #6f8fa6;
+      --accent-h: #58758a;
+      --accent-2: #9aa6b1;
       --success:  #2dd482;
       --danger:   #f4566a;
       --warning:  #f5a623;
-      --text:     #e6edf7;
-      --muted:    #8da2bd;
+      --text:     #e7eaee;
+      --muted:    #97a1ac;
       --amber:    #d97706;
-      --shadow:   0 4px 24px rgba(0,0,0,0.35);
-      --shadow-sm:0 2px 8px rgba(0,0,0,0.25);
-      --ring:     0 0 0 3px rgba(79,142,247,0.25);
+      --shadow:   0 4px 24px rgba(0,0,0,0.40);
+      --shadow-sm:0 2px 8px rgba(0,0,0,0.28);
+      --ring:     0 0 0 3px rgba(111,143,166,0.28);
     }
     [data-theme="light"] {
       --bg:       #dde4ee;
@@ -78,8 +80,8 @@
       z-index: -1;
       pointer-events: none;
       background:
-        radial-gradient(1200px 500px at 80% -10%, rgba(79,142,247,0.10), transparent 60%),
-        radial-gradient(900px 400px at 0% 0%, rgba(139,92,246,0.08), transparent 55%),
+        radial-gradient(1200px 500px at 80% -10%, rgba(124,143,160,0.09), transparent 60%),
+        radial-gradient(900px 400px at 0% 0%, rgba(90,100,112,0.07), transparent 55%),
         var(--bg);
     }
     /* Light mode gets a soft, warm wash — gentle teal + amber over a warm
@@ -113,7 +115,7 @@
       width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 2px 10px rgba(79,142,247,0.35);
+      box-shadow: 0 2px 10px rgba(111,143,166,0.35);
     }
     .logo-mark svg { width: 17px; height: 17px; color: #fff; }
     header h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; flex: 1; }
@@ -199,7 +201,7 @@
       cursor: pointer; transition: border-color 0.15s, background 0.15s;
       display: flex; align-items: center; gap: 14px;
     }
-    #drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    #drop-zone.drag-over { border-color: var(--accent); background: rgba(111,143,166,0.06); }
     #drop-zone:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
     #drop-zone svg { width: 28px; height: 28px; color: var(--muted); flex-shrink: 0; }
     #drop-zone .dz-text { display: flex; flex-direction: column; gap: 2px; }
@@ -285,9 +287,9 @@
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn-primary {
       background: linear-gradient(135deg, var(--accent), var(--accent-h));
-      color: #fff; box-shadow: 0 2px 12px rgba(79,142,247,0.3);
+      color: #fff; box-shadow: 0 2px 12px rgba(111,143,166,0.3);
     }
-    .btn-primary:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 4px 16px rgba(79,142,247,0.45); }
+    .btn-primary:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 4px 16px rgba(111,143,166,0.45); }
     .btn-success {
       background: linear-gradient(135deg, var(--success), #16a34a);
       color: #fff; box-shadow: 0 2px 12px rgba(45,212,130,0.25);
@@ -301,9 +303,9 @@
 
     /* Quiet outline variants for secondary / contextual actions */
     .btn-outline-accent {
-      background: rgba(79,142,247,0.12); border: 1px solid var(--accent); color: var(--accent);
+      background: rgba(111,143,166,0.12); border: 1px solid var(--accent); color: var(--accent);
     }
-    .btn-outline-accent:not(:disabled):hover { background: rgba(79,142,247,0.22); }
+    .btn-outline-accent:not(:disabled):hover { background: rgba(111,143,166,0.22); }
     .btn-outline-amber {
       background: rgba(217,119,6,0.12); border: 1px solid var(--amber); color: var(--amber);
     }
@@ -344,7 +346,7 @@
       display: inline-block; padding: 3px 10px; border-radius: 99px;
       font-size: 12px; font-weight: 600;
     }
-    .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge-running { background: rgba(111,143,166,0.15); color: var(--accent); }
     .badge-done    { background: rgba(34,197,94,0.15);  color: var(--success); }
     .badge-error   { background: rgba(239,68,68,0.15);  color: var(--danger); }
 
@@ -450,7 +452,7 @@
 
     /* Inline editing */
     .k-edit { cursor: pointer; border-bottom: 1px dashed transparent; border-radius: 3px; transition: border-color 0.15s, background 0.15s; }
-    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(79,142,247,0.08); }
+    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(111,143,166,0.08); }
     .k-edit-input {
       background: var(--surface); border: 1px solid var(--accent); border-radius: 5px;
       color: var(--text); font-size: 12px; padding: 2px 6px; outline: none;
@@ -476,7 +478,7 @@
       color: var(--text); font-size: 11px; cursor: pointer;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-review-btn:hover { background: rgba(79,142,247,0.12); border-color: var(--accent); }
+    .k-review-btn:hover { background: rgba(111,143,166,0.12); border-color: var(--accent); }
     .k-review-btn.is-approved { border-color: rgba(45,212,130,0.45); color: var(--success); }
     .k-card.status-done.needs-review { border-left-color: var(--warning); }
     .k-card.status-done.is-approved  { border-left-color: var(--success); }
@@ -510,7 +512,7 @@
       font-weight: 600;
     }
     .k-status-badge.s-queued    { background: rgba(148,163,184,0.15); color: var(--muted); }
-    .k-status-badge.s-ocr       { background: rgba(59,130,246,0.2);   color: var(--accent); }
+    .k-status-badge.s-ocr       { background: rgba(111,143,166,0.2);   color: var(--accent); }
     .k-status-badge.s-distilling{ background: rgba(245,158,11,0.2);   color: var(--warning); }
     .k-status-badge.s-done      { background: rgba(34,197,94,0.2);    color: var(--success); }
     .k-status-badge.s-failed    { background: rgba(239,68,68,0.2);    color: var(--danger); }
@@ -545,7 +547,7 @@
     }
     .k-cat-fuel { background: rgba(245,158,11,0.2); color: #fbbf24; }
     .k-cat-mats { background: rgba(16,185,129,0.2); color: #34d399; }
-    .k-cat-misc { background: rgba(139,92,246,0.2); color: #a78bfa; }
+    .k-cat-misc { background: rgba(138,147,160,0.22); color: #b8c2cf; }
 
     .k-retry-btn {
       display: inline-flex; align-items: center; gap: 4px;
@@ -698,21 +700,21 @@
 
     /* Image view button on kanban cards */
     .k-img-btn {
-      background: rgba(79,142,247,0.08); border: 1px solid rgba(79,142,247,0.35);
+      background: rgba(111,143,166,0.08); border: 1px solid rgba(111,143,166,0.35);
       color: var(--accent); border-radius: 4px; padding: 3px 9px; font-size: 11px;
       cursor: pointer; margin-top: 5px; display: inline-block;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-img-btn:hover { background: rgba(79,142,247,0.18); border-color: var(--accent); }
+    .k-img-btn:hover { background: rgba(111,143,166,0.18); border-color: var(--accent); }
 
     /* Create (manual entry) button */
     .k-create-btn {
       display: inline-flex; align-items: center; gap: 4px;
       margin-top: 6px; margin-left: 6px; padding: 4px 10px; border-radius: 6px;
-      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
+      background: rgba(111,143,166,0.12); border: 1px solid rgba(111,143,166,0.3);
       color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
     }
-    .k-create-btn:hover { background: rgba(59,130,246,0.22); }
+    .k-create-btn:hover { background: rgba(111,143,166,0.22); }
 
     /* Modals */
     .modal-overlay {
@@ -729,6 +731,17 @@
     .modal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
     .modal-fields label, .modal-full-row { display: flex; flex-direction: column; gap: 5px;
       font-size: 12px; color: var(--muted); font-weight: 500; }
+    /* Field-coded inputs — the vendor/date/amount fields are tinted to match the
+       colour-coded boxes drawn on the receipt image (FIELD_MARKERS), so the form
+       field and its on-image location read as the same thing. */
+    .mr-fdot { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+      margin-right: 5px; vertical-align: baseline; }
+    #mr-vendor { border-left: 3px solid #3b82f6; }
+    #mr-date   { border-left: 3px solid #22c55e; }
+    #mr-amount { border-left: 3px solid #f59e0b; }
+    #mr-vendor:focus { box-shadow: 0 0 0 3px rgba(59,130,246,0.22); border-color: #3b82f6; }
+    #mr-date:focus   { box-shadow: 0 0 0 3px rgba(34,197,94,0.22);  border-color: #22c55e; }
+    #mr-amount:focus { box-shadow: 0 0 0 3px rgba(245,158,11,0.22); border-color: #f59e0b; }
     .modal-full-row { margin-bottom: 16px; }
     .dup-group { background: rgba(255,255,255,0.04); border: 1px solid var(--border);
       border-radius: 8px; padding: 12px; margin-bottom: 12px; }
@@ -813,6 +826,10 @@
       overflow: hidden; z-index: 3; }
     .field-box { position: absolute; border: 2px solid #3b82f6; border-radius: 3px;
       box-sizing: border-box; background: rgba(255,255,255,0.05); }
+    /* LLM-placed boxes are drawn dashed (vs the solid rules-based OCR boxes) and
+       carry the model's confidence in their tag. */
+    .field-box.llm { border-style: dashed; background: transparent; }
+    .field-box-tag.llm { top: auto; bottom: -15px; left: auto; right: -2px; opacity: 0.92; }
     .field-box-tag { position: absolute; top: -15px; left: -2px; font-size: 9px;
       font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: 3px;
       color: #fff; white-space: nowrap; letter-spacing: 0.3px; }
@@ -908,7 +925,7 @@
       font-size: 13px; transition: color 0.15s, border-color 0.15s, background 0.15s;
       display: flex; align-items: center; gap: 5px; flex-shrink: 0;
     }
-    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
+    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(111,143,166,0.07); }
     .theme-toggle svg { width: 14px; height: 14px; }
     .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; transition: color 0.15s; }
     .gh-link:hover { color: var(--text); }
@@ -939,8 +956,11 @@
     .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
     .section-desc strong { color: var(--text); }
-    /* Advanced-only settings — hidden unless the "Advanced settings" toggle is on. */
-    body.hide-advanced .adv-only { display: none !important; }
+    /* Developer-mode bits — hidden unless the "Developer mode" toggle is on.
+       Gates both the deep-technical settings (.adv-only) and the enhanced
+       workspace stats (.dev-only) off the same body.hide-advanced class. */
+    body.hide-advanced .adv-only,
+    body.hide-advanced .dev-only { display: none !important; }
     .inline-code {
       font-size: 11px; font-family: ui-monospace, monospace;
       background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;
@@ -1246,7 +1266,10 @@
         <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
         <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
+        <div class="stat-tile dev-only" title="Receipts whose amount was cross-checked against the OCR text"><div class="stat-value" id="st-verified">0</div><div class="stat-label">Verified</div></div>
+        <div class="stat-tile dev-only" title="Total model + OCR time across all processed receipts this session"><div class="stat-value" id="st-proc-total">&mdash;</div><div class="stat-label">Total Proc Time</div></div>
       </div>
+      <div class="dev-only" id="dev-engine-line" style="font-size:11px;color:var(--muted);margin:2px 2px 10px;display:flex;gap:14px;flex-wrap:wrap"></div>
       <div class="charts-row">
         <div class="chart-box">
           <h4>By Category</h4>
@@ -1400,7 +1423,7 @@
       </a>
       <div class="hidden" id="copy-images-reminder"
            style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;
-                  border-left:3px solid var(--accent);background:rgba(79,142,247,0.10);color:var(--text)">
+                  border-left:3px solid var(--accent);background:rgba(111,143,166,0.10);color:var(--text)">
         <strong>&#128247; Don't forget your receipt images.</strong>
         The workbook embeds them, but the original files live in the output
         <code class="inline-code">receipts</code> folder. Copy them alongside the report if you
@@ -1541,48 +1564,46 @@
   <!-- ════════════════════════ Settings tab ════════════════════════ -->
   <div class="tab-panel hidden" id="tab-settings">
 
-  <!-- Advanced mode — hides deep-technical sections from everyday users -->
+  <!-- Developer mode — reveals deep-technical sections + enhanced workspace stats -->
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
     <label class="check-label" style="margin:0">
       <input type="checkbox" id="advanced-toggle">
-      Advanced settings <span style="color:var(--muted)">— show AI model selection, image-processing internals, and maintenance tools (hidden by default to keep things simple)</span>
+      Developer mode <span style="color:var(--muted)">— show AI model selection, image-processing internals, maintenance tools, and enhanced stats on the workspace (hidden by default to keep things simple)</span>
     </label>
   </div>
 
   <!-- AI Models -->
   <div class="card adv-only" id="config-card">
-    <div class="card-title">AI Models</div>
+    <div class="card-title">AI Model</div>
     <p class="section-desc">
-      Pick which LM Studio models read your receipts. Changes apply to the next receipt — no restart needed.
+      One model reads your receipts — it handles both extraction and (optionally) OCR.
+      It's auto-selected and loaded at startup; change it here and it applies to the next receipt, no restart needed.
     </p>
-    <!-- Two model dropdowns -->
-    <div class="model-grid">
+    <!-- Single consolidated model selector -->
+    <div class="model-grid" style="grid-template-columns:1fr">
       <div>
-        <div class="model-section-label">OCR Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — when set, runs LLM OCR alongside the built-in engine and cross-references both; runs without reasoning)</span></div>
-        <div class="model-select-row">
-          <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
-          <select id="ocr-model-select" title="Optional LLM OCR model. When set, both the built-in engine and this model transcribe each receipt and the distillation model cross-references them.">
-            <option value="">(none — direct vision)</option>
-          </select>
-        </div>
-      </div>
-      <div>
-        <div class="model-section-label">Distillation Model</div>
+        <div class="model-section-label">AI Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(used for extraction &amp; audit — and OCR when enabled below)</span></div>
         <div class="model-select-row">
           <div class="model-active-dot" id="distill-model-dot"></div>
-          <select id="distill-model-select" title="Select model for extraction and audit">
+          <select id="distill-model-select" title="The single model used for extraction, audit, and (optionally) OCR. Auto-selected and loaded at startup.">
             <option value="">Loading available models…</option>
           </select>
         </div>
       </div>
     </div>
-    <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="Let the distillation model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
-        <input type="checkbox" id="reasoning-toggle">
-        Distillation reasoning
+    <div style="margin-top:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <label class="check-label" id="ocr-toggle-label" style="font-size:12px;color:var(--muted);gap:7px"
+             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower). The OCR pass always runs without reasoning.">
+        <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
+        <input type="checkbox" id="ocr-toggle">
+        Also use this model for OCR <span style="font-weight:400">(cross-reference — slower)</span>
       </label>
-      <button class="copy-btn" id="refresh-models-btn" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
+      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
+             title="Let the model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
+        <input type="checkbox" id="reasoning-toggle">
+        Reasoning
+      </label>
+      <button class="copy-btn" id="refresh-models-btn" style="margin-left:auto" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
       Loaded in LM Studio
@@ -1867,9 +1888,9 @@
         &#10003; This receipt is approved
       </div>
       <div class="modal-fields">
-        <label>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
-        <label>Date <input type="date" id="mr-date"></label>
-        <label>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
+        <label><span class="mr-fdot" style="background:#3b82f6"></span>Vendor / Store <input type="text" id="mr-vendor" placeholder="e.g. Shell"></label>
+        <label><span class="mr-fdot" style="background:#22c55e"></span>Date <input type="date" id="mr-date"></label>
+        <label><span class="mr-fdot" style="background:#f59e0b"></span>Amount <input type="text" id="mr-amount" placeholder="0.00"></label>
         <label>Category
           <select id="mr-category">
             <option value="fuel">Fuel</option>
@@ -2028,7 +2049,7 @@ downloadBtn.addEventListener('click', () => {
 const uploadCard   = document.getElementById('upload-card');
 const configCard   = document.getElementById('config-card');
 const distillSelect = document.getElementById('distill-model-select');
-const ocrSelect    = document.getElementById('ocr-model-select');
+const ocrToggle    = document.getElementById('ocr-toggle');
 
 let selectedFiles  = [];
 let completedCount = 0;
@@ -2885,8 +2906,10 @@ const FIELD_MARKERS = {
   amount: { hue: '#f59e0b', label: 'Amount' },
 };
 let _showFieldMarkers = true;   // toggled by the "Show field markers" checkbox
-let _mrFieldBoxes = null;       // boxes for the receipt open in the review modal
-let _lbFieldBoxes = null;       // boxes for the receipt open in the lightbox
+let _mrFieldBoxes = null;       // OCR boxes for the receipt open in the review modal
+let _lbFieldBoxes = null;       // OCR boxes for the receipt open in the lightbox
+let _mrLlmBoxes = null;         // LLM-placed boxes (with confidence) — review modal
+let _lbLlmBoxes = null;         // LLM-placed boxes (with confidence) — lightbox
 
 // The rectangle (within the element's content box) actually covered by the image
 // under object-fit: contain — accounts for the letterbox padding around tall
@@ -2900,44 +2923,60 @@ function _renderedImageRect(img) {
   return { left: (cw - w) / 2, top: (ch - h) / 2, width: w, height: h };
 }
 
-function drawFieldBoxes(boxes, img, overlay) {
+function drawFieldBoxes(boxes, img, overlay, llmBoxes) {
   if (!overlay) return;
   overlay.innerHTML = '';
-  if (!_showFieldMarkers || !boxes || !img) return;
+  if (!_showFieldMarkers || !img) return;
   const rect = _renderedImageRect(img);
   if (!rect) return;
-  for (const key of ['vendor', 'date', 'amount']) {
-    const b = boxes[key];
-    if (!b || b.length < 4) continue;
+
+  const place = (key, b, isLlm) => {
+    if (!b || b.length < 4) return;
     const meta = FIELD_MARKERS[key];
     const el = document.createElement('div');
-    el.className = 'field-box';
+    el.className = isLlm ? 'field-box llm' : 'field-box';
     el.style.left   = (rect.left + b[0] * rect.width)  + 'px';
     el.style.top    = (rect.top  + b[1] * rect.height) + 'px';
     el.style.width  = (b[2] * rect.width)  + 'px';
     el.style.height = (b[3] * rect.height) + 'px';
     el.style.borderColor = meta.hue;
-    el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.55), 0 0 10px ' + meta.hue + '88';
+    if (!isLlm) el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.55), 0 0 10px ' + meta.hue + '88';
     const tag = document.createElement('span');
-    tag.className = 'field-box-tag';
-    tag.textContent = meta.label;
+    tag.className = isLlm ? 'field-box-tag llm' : 'field-box-tag';
+    // LLM tags carry the model's confidence; b[4] is 0..100 when present.
+    tag.textContent = isLlm ? `${meta.label} ${Math.round(b[4] || 0)}%` : meta.label;
     tag.style.background = meta.hue;
     el.appendChild(tag);
     overlay.appendChild(el);
+  };
+
+  for (const key of ['vendor', 'date', 'amount']) {
+    if (boxes) place(key, boxes[key], false);          // rules-based OCR box (solid)
+    if (llmBoxes) place(key, llmBoxes[key], true);     // LLM-placed box (dashed, % conf)
   }
 }
 
 // Legend under the preview: a swatch per field, marking ones we couldn't locate.
-function _renderMarkerLegend(boxes, legendEl) {
+// A field counts as located if either the rules-based OCR box or an LLM-placed
+// box exists; LLM-located fields note the model's confidence.
+function _renderMarkerLegend(boxes, legendEl, llmBoxes) {
   if (!legendEl) return;
   const items = ['vendor', 'date', 'amount'].map(key => {
     const meta = FIELD_MARKERS[key];
-    const found = !!(boxes && boxes[key]);
+    const ocr = !!(boxes && boxes[key]);
+    const llm = !!(llmBoxes && llmBoxes[key]);
+    const found = ocr || llm;
+    let note = '';
+    if (!found) note = ' <em>(location not detected)</em>';
+    else if (llm) note = ` <em>(AI ${Math.round((llmBoxes[key][4]) || 0)}%)</em>`;
     return `<span class="mk-legend-item ${found ? '' : 'mk-missing'}">`
       + `<span class="mk-swatch" style="border-color:${meta.hue};background:${found ? meta.hue : 'transparent'}"></span>`
-      + `${meta.label}${found ? '' : ' <em>(location not detected)</em>'}</span>`;
+      + `${meta.label}${note}</span>`;
   });
-  legendEl.innerHTML = items.join('');
+  legendEl.innerHTML = items.join('')
+    + (llmBoxes && Object.keys(llmBoxes).length
+        ? '<span class="mk-legend-item" style="opacity:0.75"><span class="mk-swatch" style="border-style:dashed;background:transparent"></span>dashed = AI-placed</span>'
+        : '');
 }
 
 // Redraw whatever overlay is currently visible (image load, resize, toggle).
@@ -2945,12 +2984,12 @@ function _refreshFieldMarkers() {
   const modal = document.getElementById('manual-review-modal');
   if (modal && !modal.classList.contains('hidden')) {
     drawFieldBoxes(_mrFieldBoxes, document.getElementById('mr-preview-img'),
-                   document.getElementById('mr-box-overlay'));
+                   document.getElementById('mr-box-overlay'), _mrLlmBoxes);
   }
   const lb = document.getElementById('img-lightbox');
   if (lb && lb.style.display === 'flex') {
     drawFieldBoxes(_lbFieldBoxes, document.getElementById('lb-img'),
-                   document.getElementById('lb-box-overlay'));
+                   document.getElementById('lb-box-overlay'), _lbLlmBoxes);
   }
 }
 window.addEventListener('resize', _refreshFieldMarkers);
@@ -3054,18 +3093,20 @@ window.openManualReview = function(filename) {
   // On-image field markers (vendor/date/amount). Only show the legend/markers
   // when the app actually located at least one field on this receipt.
   _mrFieldBoxes = (data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
-  const hasMarkers = _mrFieldBoxes && Object.keys(_mrFieldBoxes).length > 0;
+  _mrLlmBoxes = (data._llm_field_boxes && typeof data._llm_field_boxes === 'object') ? data._llm_field_boxes : null;
+  const hasMarkers = (_mrFieldBoxes && Object.keys(_mrFieldBoxes).length > 0)
+                  || (_mrLlmBoxes && Object.keys(_mrLlmBoxes).length > 0);
   if (boxOverlay) boxOverlay.innerHTML = '';
   if (markerBar) markerBar.style.display = hasMarkers ? '' : 'none';
-  if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'));
+  if (hasMarkers) _renderMarkerLegend(_mrFieldBoxes, document.getElementById('mr-marker-legend'), _mrLlmBoxes);
   previewImg.src = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
-  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay); };
+  previewImg.onload  = () => { previewWrap.style.display = ''; drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes); };
   previewImg.onerror = () => { previewWrap.style.display = 'none'; };
   previewImg.onclick = () => openLightbox(previewImg.src, _mrFilename);
   // Cached images can be already-complete before onload is attached.
   if (previewImg.complete && previewImg.naturalWidth) {
     previewWrap.style.display = '';
-    drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay);
+    drawFieldBoxes(_mrFieldBoxes, previewImg, boxOverlay, _mrLlmBoxes);
   }
 
   document.getElementById('manual-review-modal').classList.remove('hidden');
@@ -3326,13 +3367,14 @@ async function loadModels() {
     const res  = await fetch('/models/available');
     const data = await res.json();
     const activeDistill = data.active_distill || '';
-    const activeOcr     = data.active_ocr     || '';
+    const llmOcr        = data.llm_ocr === true;
 
     const think = document.getElementById('reasoning-toggle');
     if (think) think.checked = data.thinking === true;   // single global toggle, default off
+    if (ocrToggle) ocrToggle.checked = llmOcr;
 
     document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('ocr-model-dot').style.background     = activeOcr     ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background     = llmOcr        ? 'var(--success)' : 'var(--border)';
 
     const models = data.models || [];
     const prevDistill = distillSelect.value;
@@ -3348,16 +3390,6 @@ async function loadModels() {
       });
       if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
     }
-
-    const prevOcr = ocrSelect.value;
-    ocrSelect.innerHTML = '<option value="">(none — direct vision)</option>';
-    models.forEach(id => {
-      const opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
-      if (id === activeOcr) opt.selected = true;
-      ocrSelect.appendChild(opt);
-    });
-    if (!ocrSelect.value && prevOcr) ocrSelect.value = prevOcr;
   } catch (_) {
     distillSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
   }
@@ -3372,7 +3404,9 @@ distillSelect.addEventListener('change', async () => {
     const data = await res.json();
     if (data.ok) {
       document.getElementById('distill-model-dot').style.background = 'var(--success)';
-      showToast(`Distillation model: ${chosen}`, true);
+      // OCR shares the one model, so its dot follows when the cross-reference is on.
+      document.getElementById('ocr-model-dot').style.background = ocrToggle.checked ? 'var(--success)' : 'var(--border)';
+      showToast(`AI model: ${chosen}`, true);
     } else {
       showToast(`Could not set model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
@@ -3380,20 +3414,21 @@ distillSelect.addEventListener('change', async () => {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
-ocrSelect.addEventListener('change', async () => {
-  const chosen = ocrSelect.value;
-  document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--warning)' : 'var(--border)';
+ocrToggle.addEventListener('change', async () => {
+  const enabled = ocrToggle.checked;
+  document.getElementById('ocr-model-dot').style.background = 'var(--warning)';
   try {
-    const res  = await fetch('/models/ocr', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
+    const res  = await fetch('/models/ocr', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('ocr-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
-      showToast(chosen ? `OCR model: ${chosen}` : 'OCR model cleared (direct vision)', true);
+      document.getElementById('ocr-model-dot').style.background = data.llm_ocr ? 'var(--success)' : 'var(--border)';
+      showToast(data.llm_ocr ? 'OCR cross-reference on (uses the AI model)' : 'OCR cross-reference off (built-in OCR only)', true);
     } else {
-      showToast(`Could not load OCR model: ${data.error}`, false);
+      ocrToggle.checked = !enabled;
+      showToast('Could not change OCR setting', false);
       document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
-  } catch (err) { showToast(`Error: ${err.message}`, false); }
+  } catch (err) { ocrToggle.checked = !enabled; showToast(`Error: ${err.message}`, false); }
 });
 
 document.getElementById('reasoning-toggle').addEventListener('change', async (e) => {
@@ -3601,7 +3636,7 @@ async function saveAuditSettings() {
   });
 });
 
-// ── Advanced mode (hide deep-technical sections from everyday users) ───────────
+// ── Developer mode (reveal deep-technical settings + enhanced workspace stats) ─
 function _applyAdvanced(on) {
   document.body.classList.toggle('hide-advanced', !on);
   const t = document.getElementById('advanced-toggle');
@@ -4257,10 +4292,11 @@ function openLightbox(src, filename) {
   const data = filename && receiptCards[filename] ? receiptCards[filename].data : null;
   // Field markers full-screen — reuse the same normalized boxes as the modal.
   _lbFieldBoxes = (data && data._field_boxes && typeof data._field_boxes === 'object') ? data._field_boxes : null;
+  _lbLlmBoxes = (data && data._llm_field_boxes && typeof data._llm_field_boxes === 'object') ? data._llm_field_boxes : null;
   if (lbOverlay) lbOverlay.innerHTML = '';
-  lbImg.onload = () => drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
+  lbImg.onload = () => drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay, _lbLlmBoxes);
   lbImg.src = src;
-  if (lbImg.complete && lbImg.naturalWidth) drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay);
+  if (lbImg.complete && lbImg.naturalWidth) drawFieldBoxes(_lbFieldBoxes, lbImg, lbOverlay, _lbLlmBoxes);
   if (data && data.vendor) {
     panel.innerHTML = _lbStatsHtml(data, filename);
     panel.hidden = false;
@@ -4362,7 +4398,7 @@ window.removeSavedItem = async function(listKey, value, panelId) {
 };
 
 // ── Insights dashboard ────────────────────────────────────────────────────────
-const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8b5cf6' };
+const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8a93a0' };
 const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let _statsTimer = null;
@@ -4386,6 +4422,23 @@ async function loadStats() {
     document.getElementById('st-flagged').textContent = s.flagged;
     document.getElementById('st-proc').textContent =
       s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
+
+    // Developer-mode enhanced stats (hidden unless Developer mode is on)
+    const vEl = document.getElementById('st-verified');
+    if (vEl) vEl.textContent = s.verified ?? 0;
+    const ptEl = document.getElementById('st-proc-total');
+    if (ptEl) ptEl.textContent = s.proc_total_seconds ? s.proc_total_seconds + 's' : '—';
+    const engEl = document.getElementById('dev-engine-line');
+    if (engEl) {
+      const spanTxt = (s.timeline_span_days != null)
+        ? `${s.timeline_span_days} day${s.timeline_span_days === 1 ? '' : 's'} spanned` : '';
+      engEl.innerHTML = [
+        `<span><strong>${s.verified ?? 0}</strong>/${s.count} amount-verified</span>`,
+        `<span><strong>${s.timeline_days ?? 0}</strong> dated days</span>`,
+        spanTxt ? `<span>${spanTxt}</span>` : '',
+        `<span>avg <strong>${s.proc_avg_seconds || 0}s</strong> · total <strong>${s.proc_total_seconds || 0}s</strong></span>`,
+      ].filter(Boolean).join('');
+    }
 
     renderDonut(s.by_category, s.total);
     renderTimeline(s);
@@ -4424,6 +4477,15 @@ function renderDonut(byCat, total) {
       <span>${labels[cat] || cat} (${v.count})</span>
       <span class="leg-amt">${fmtMoney(v.total)}</span>
     </div>`).join('');
+}
+
+// Inclusive day span between two ISO (YYYY-MM-DD) dates. UTC math sidesteps
+// local-timezone/DST drift; +1 so a single day reads as "1 day".
+function _daySpan(isoA, isoB) {
+  const a = isoA.split('-').map(Number), b = isoB.split('-').map(Number);
+  if (a.length !== 3 || b.length !== 3) return 1;
+  const ms = Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2]);
+  return Math.round(ms / 86400000) + 1;
 }
 
 function renderTimeline(stats) {
@@ -4481,8 +4543,14 @@ function renderTimeline(stats) {
 
   const peak = stats.timeline_peak;
   const range = n > 1 ? `${timeline[0].date.slice(5).replace('-','/')}–${timeline[n-1].date.slice(5).replace('-','/')}` : timeline[0].date.slice(5).replace('-','/');
+  // True calendar span (Y/M/D inclusive), not the count of distinct dated days —
+  // a multi-year range must report its full duration. Prefer the backend value;
+  // fall back to parsing the ISO dates locally (UTC math avoids TZ drift).
+  const spanDays = (stats.timeline_span_days != null)
+    ? stats.timeline_span_days
+    : _daySpan(timeline[0].date, timeline[n - 1].date);
   const caption = `<div class="tl-caption">
-      <span><strong>${fmtMoney(total)}</strong> over ${n} day${n === 1 ? '' : 's'} (${range})</span>
+      <span><strong>${fmtMoney(total)}</strong> over ${spanDays} day${spanDays === 1 ? '' : 's'} (${range})</span>
       ${peak ? `<span>Peak <strong>${fmtMoney(peak.total)}</strong> on ${peak.date.slice(5).replace('-','/')}</span>` : ''}
       <span class="tl-key"><i class="tl-bar"></i>daily &nbsp;<i class="tl-cum"></i>cumulative &nbsp;<i class="tl-avg"></i>avg</span>
     </div>`;
@@ -4636,7 +4704,7 @@ function playCelebrationTone() {
 
 function celebrate() {
   playCelebrationTone();
-  const colors = ['#4f8ef7', '#8b5cf6', '#2dd482', '#f5a623', '#f4566a'];
+  const colors = ['#6f8fa6', '#8a93a0', '#2dd482', '#f5a623', '#f4566a'];
   // Fall just past the bottom of the *actual* visible viewport. window.innerHeight
   // tracks mobile chrome, so the confetti reaches the bottom of the screen instead
   // of stopping where `vh` mis-measures (the old "covers only 2/3" bug).
@@ -4681,7 +4749,7 @@ setInterval(() => {
   const settings = document.getElementById('tab-settings');
   if (!settings || settings.classList.contains('hidden')) return;
   const active = document.activeElement;
-  if (active && (active.id === 'ocr-model-select' || active.id === 'distill-model-select')) return;
+  if (active && active.id === 'distill-model-select') return;
   loadModels();
 }, 30000);
 </script>

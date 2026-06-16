@@ -176,6 +176,105 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (Docker: bundled LLM):** New `Dockerfile.model` (multi-stage:
+  curl-fetch the GGUF + mmproj, bake into `ghcr.io/ggml-org/llama.cpp:server`) +
+  a `model-server` compose service under profile `bundled-llm` serving an
+  OpenAI-compatible API on :1234. App's `LMSTUDIO_BASE_URL` is now env-overridable
+  (`${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}`) so it can point at
+  `http://model-server:1234/v1`. Weights are baked into the image (offline, but
+  ~2-3 GB); model is swappable via `MODEL_URL`/`MMPROJ_URL` build args (default
+  alias `qwen3-vl-2b-instruct`). `.env.example` + README "Bundled LLM" documented;
+  README OCR note updated for the single-model consolidation. No code/tests changed.
+
+- **2026-06-16 (synthetic receipt test-bench):** New `receipt_testkit.py` — a
+  fixed suite of 9 challenge receipts (clean, rotated_90, faint_thermal,
+  multi_total, us_date_ambiguous, noisy_scan, long_itemized, missing_vendor,
+  big_amount), each a PIL-rendered image with known ground truth. `build_test_receipts`
+  renders them; `score_extraction(truth, got)` scores vendor/amount/date/category
+  (vendor=containment, amount=±0.01, weighted 0.3/0.4/0.2/0.1; blank-vendor rewards
+  NOT fabricating); `run_benchmark(manifest, extract_fn)` aggregates and
+  `format_scorecard` prints a table. CLI: `python receipt_testkit.py --out DIR [--run]`
+  (`--run` drives the real pipeline to score the active LLM). Pure-PIL generator +
+  scorer are LLM-free and unit-tested. `tests/test_receipt_testkit.py` (+7).
+
+- **2026-06-16 (LLM spatial awareness — model-placed field boxes):** The vision
+  path now also asks the model WHERE vendor/date/amount sit on the image, with a
+  confidence. `_GEMMA_VISION_TEMPLATE` gained a `"boxes"` schema (fractional
+  x,y,w,h 0..1 + confidence 0–100); `_normalize_llm_boxes` validates/clamps it and
+  `_parse_llm_record` lifts it onto `data["_llm_field_boxes"]` (`{field:[x,y,w,h,conf]}`),
+  whitelisted in `_safe_receipt_data`. UI `drawFieldBoxes(boxes, img, overlay, llmBoxes)`
+  now draws the LLM boxes **dashed** with a `Label NN%` tag alongside the solid
+  rules-based OCR boxes; legend notes AI-placed fields + confidence.
+  `tests/test_llm_field_boxes.py` (+6). Note: only the vision/rescue path sees the
+  image, so these boxes appear when the vision model runs (not on pure OCR-text
+  distillation, which can't place coordinates).
+
+- **2026-06-16 (auto-crop rewrite — edge-energy projection):** Replaced the
+  corner-background content detection (which failed on gradients/shadows/busy
+  desks — the "crop never fires no matter how aggressive" bug) with an
+  **edge-energy projection** (`_content_bbox_by_edges`, numpy): per-row/col edge
+  magnitude, content extent where each profile rises `frac` of the way from its
+  median to its peak (`frac = threshold/100`, so the aggressiveness dial still
+  controls tightness). `autocrop_analyze` keeps the same margin + accept/reject
+  gating + reasons, and falls back to legacy `_content_bbox_by_corner_bg` only if
+  numpy is unavailable. `tests/test_autocrop_robust.py` (+3); existing
+  `tests/test_autocrop*.py` unchanged and still green.
+
+- **2026-06-16 (spreadsheet: image above data):** In `_build_image_sheet`, the
+  receipt picture is now embedded **above** its metadata row (was below), and the
+  Summary→image hyperlink anchor points at the receipt's header row, so clicking a
+  link lands with the image in view. Per-receipt order is now header → image →
+  data → spacer. `tests/test_image_above_data.py` (+1).
+
+- **2026-06-16 (Developer mode + gunmetal theme + review colour-coding):**
+  * **Developer mode** — the old "Advanced settings" toggle is now "Developer mode"
+    (same `#advanced-toggle` / localStorage `advancedMode` / `body.hide-advanced`
+    mechanism). The CSS gate now also hides `.dev-only` elements, used for **enhanced
+    workspace stats**: two dev-only insight tiles (Verified, Total Proc Time) + a
+    `#dev-engine-line` technical summary (amount-verified ratio, dated-days, span,
+    avg/total proc seconds), all driven from `/stats` in `updateStats`.
+  * **Gunmetal dark theme** — retoned the default (`:root`) palette off the blue/
+    purple hue to neutral graphite surfaces + a muted steel accent (`--accent
+    #6f8fa6`). Swapped the accent-tinted `rgba(79,142,247…)`/`rgba(59,130,246…)`
+    backgrounds to steel `rgba(111,143,166…)`, re-washed `body::before`, and moved
+    the misc category / confetti colours off purple. Light theme untouched.
+  * **Review-window colour coding** — the Vendor/Date/Amount inputs in the review
+    modal are tinted to match their on-image `FIELD_MARKERS` boxes (vendor=blue,
+    date=green, amount=amber): left-border + focus ring + a leading `.mr-fdot`
+    swatch per label.
+
+- **2026-06-16 (single AI model + auto-load + warm-up):**
+  * **Consolidated to one model** — OCR and distillation now share a SINGLE active
+    model. `process_receipts.set_active_model(id)` sets `_active_distill_model` and
+    keeps `_active_ocr_model` in lock-step (= active model when LLM-OCR is on, else
+    `""`). `set_llm_ocr(bool)` toggles the optional LLM-OCR cross-reference (reuses
+    the one model — no separate OCR model). `_llm_ocr_enabled` global, default off.
+  * **Auto-load + warm-up** — `initialize_models(warm=True)` now also `_try_load_model`s
+    the chosen model into LM Studio memory, then `warm_up_model()` fires a tiny dummy
+    receipt (`_WARMUP_OCR_TEXT`) through `_unified_distillation` so the first real
+    batch isn't cold. Best-effort; skipped when LM Studio is unreachable.
+  * **Persistence** — selection + OCR toggle persist under `cfg["models"]`
+    (`_persist_model_config` / `_apply_model_config`, restored in lifespan BEFORE
+    `initialize_models` so a saved choice survives restart).
+  * **Endpoints** — `POST /models/distill` now sets the single model (persists);
+    `POST /models/ocr` now takes `{enabled: bool}` (was `{model}`) to toggle LLM-OCR;
+    `GET /models/available` adds `llm_ocr`. UI: one "AI Model" selector + an "Also use
+    this model for OCR" checkbox (replaces the two dropdowns). `tests/test_model_consolidation.py` (+8).
+
+- **2026-06-16 (bug fixes — date span + vendor default):**
+  * **Spend-over-time duration** — the dashboard caption reported
+    `timeline.length` (count of distinct *dated days*) as the duration, so a
+    multi-year range read as "over 173 days". `_compute_stats` now also returns
+    `timeline_span_days` = inclusive calendar distance between the first/last ISO
+    date (full Y/M/D). `renderTimeline` uses it (with a local `_daySpan(isoA,isoB)`
+    UTC fallback). `tests/test_timeline_span.py` (+5).
+  * **Vendor no longer defaults to "Butchs Grinders"** — that string was a concrete
+    example vendor in the distillation/vision `summary` examples; the model echoed
+    it as the vendor when OCR couldn't read one. Both prompt templates now use
+    generic category-level examples and an explicit rule: copy the printed vendor,
+    else return `""` — never guess/invent/copy an example.
+    `tests/test_vendor_prompt_hygiene.py` (+2).
+
 - **2026-06-16 (advanced-mode toggle + LLM benchmark):**
   * **Advanced mode** — Settings has an "Advanced settings" toggle
     (`#advanced-toggle`, localStorage `advancedMode`, default OFF). When off,

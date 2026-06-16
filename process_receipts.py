@@ -96,11 +96,21 @@ IMAGE_MAX_PX         = 1568
 # via PDF_MAX_PAGES.
 PDF_MAX_PAGES        = int(os.getenv("PDF_MAX_PAGES", "50"))
 
-# Runtime state — both selectable from the UI
-# _active_ocr_model:    empty string = skip dedicated OCR step, use distill model directly
-# _active_distill_model: model used for unified extraction + audit
-_active_ocr_model:    str = ""           # no dedicated OCR model by default
-_active_distill_model: str = ""           # populated by initialize_models() at startup
+# Runtime state — a SINGLE model now drives both stages (consolidated).
+# _active_distill_model: the one active model, used for unified extraction + audit
+#                        and (when LLM OCR is enabled) transcription too.
+# _active_ocr_model:     mirrors the active model when LLM OCR is on; empty = the
+#                        dedicated LLM OCR pass is skipped (built-in RapidOCR only).
+# _llm_ocr_enabled:      when True the active model also transcribes the receipt and
+#                        its reading is cross-referenced with RapidOCR. Off by
+#                        default — it doubles the per-receipt model calls. There is
+#                        no separate OCR model: OCR and distillation share one model.
+_active_ocr_model:    str = ""           # set in lock-step with the active model
+_active_distill_model: str = ""           # the single active model — set by initialize_models()
+_llm_ocr_enabled:     bool = False        # active model also does OCR when True
+
+# Tiny throwaway "receipt" used to warm the model into memory at startup.
+_WARMUP_OCR_TEXT = "QUICK MART\n1 Main St\nCoffee 1.00\nTOTAL $1.00\n01/01/2025"
 
 # Reasoning ("thinking") mode is applied per stage, on purpose:
 #   • OCR / transcription  → reasoning is ALWAYS off. Transcribing visible text
@@ -186,7 +196,7 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     '  "amount": 0.00,\n'
     '  "category": "fuel | mats | misc",\n'
     '  "expense_description": null,\n'
-    '  "summary": "one-sentence description WITHOUT the dollar amount, e.g. Lunch at Butchs Grinders",\n'
+    '  "summary": "one-sentence description WITHOUT the dollar amount, e.g. \'Lunch at a restaurant\' or \'Fuel at a gas station\'",\n'
     '  "flags": []\n'
     "}}\n\n"
     "Category rules:\n"
@@ -198,6 +208,9 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "- You may be given more than one OCR transcription of the SAME receipt "
     "(labelled transcription A and B) from different engines — cross-reference "
     "them, prefer values that agree, and use the clearer reading where they differ\n"
+    "- vendor: copy the store/business name exactly as printed on the receipt. "
+    "If no vendor name is legible, return an empty string \"\" — NEVER guess, "
+    "invent, or copy an example name\n"
     "- Use TOTAL or GRAND TOTAL for amount\n"
     "- date must be YYYY-MM-DD; ALWAYS read ambiguous numeric dates as US "
     "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
@@ -222,8 +235,13 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
   "amount": 0.00,
   "category": "fuel | mats | misc",
   "expense_description": null,
-  "summary": "one-sentence description WITHOUT the dollar amount, e.g. Lunch at Butchs Grinders",
-  "flags": []
+  "summary": "one-sentence description WITHOUT the dollar amount, e.g. 'Lunch at a restaurant' or 'Fuel at a gas station'",
+  "flags": [],
+  "boxes": {{
+    "vendor": {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}},
+    "date":   {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}},
+    "amount": {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}}
+  }}
 }}
 
 Category rules:
@@ -231,7 +249,9 @@ Category rules:
 - "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
 - "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
 
+Vendor: copy the store/business name exactly as printed. If no vendor name is legible, return an empty string "" — never guess, invent, or copy an example name.
 Amount: use TOTAL or GRAND TOTAL.
+boxes: for vendor, date and amount, give WHERE that text sits on the image as fractions of the image size — x,y = top-left corner, w,h = width/height, all between 0 and 1 (0,0 = top-left of the image) — plus a confidence 0–100 for that location. If you cannot locate a field, set its confidence to 0.
 Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
 Summary: vendor and purpose only — do NOT include the dollar amount.
 Do NOT include job_name or job_number.
@@ -304,14 +324,64 @@ def _looks_like_chat_model(model_id: str) -> bool:
                    ("embed", "bge-", "rerank", "whisper", "tts", "clip", "vae"))
 
 
-def initialize_models() -> str:
-    """Check LM Studio connectivity and adopt whatever model is loaded.
+def set_active_model(model_id: str) -> str:
+    """Select the single AI model used for both distillation and (optional) OCR.
 
-    If the configured distill model isn't actually loaded, fall back to a loaded
-    Gemma if present, otherwise the first loaded chat-capable model — so the app
-    works out of the box with whatever the user has running in LM Studio.
+    OCR shares the one model, so the OCR alias is kept in lock-step: it points at
+    the active model when LLM OCR is enabled, and is cleared otherwise.
     """
-    global _active_distill_model
+    global _active_distill_model, _active_ocr_model
+    _active_distill_model = (model_id or "").strip()
+    _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
+    return _active_distill_model
+
+
+def set_llm_ocr(enabled: bool) -> bool:
+    """Toggle whether the single active model also transcribes the receipt (OCR)."""
+    global _active_ocr_model, _llm_ocr_enabled
+    _llm_ocr_enabled = bool(enabled)
+    _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
+    return _llm_ocr_enabled
+
+
+def _make_client() -> OpenAI:
+    """Build an LM Studio (OpenAI-compatible) client with the standard settings."""
+    return OpenAI(
+        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
+    )
+
+
+def warm_up_model() -> bool:
+    """Prime the active model into memory with a tiny dummy distillation.
+
+    Best-effort, called once at startup after the model is selected/loaded. It
+    sends a minimal fake receipt through the real distillation path so the
+    weights are resident and the runtime is warm before the first real receipt —
+    the first user batch then doesn't pay the cold-start latency. Any failure is
+    swallowed; the app still works cold.
+    """
+    if not _active_distill_model:
+        return False
+    try:
+        _unified_distillation(_make_client(), _WARMUP_OCR_TEXT, _retry=False)
+        print(f"[warmup] Primed model into memory: {_active_distill_model}")
+        return True
+    except Exception as exc:
+        print(f"[warmup] skipped: {exc}")
+        return False
+
+
+def initialize_models(warm: bool = True) -> str:
+    """Check LM Studio connectivity, adopt a model, load it, and warm it up.
+
+    If the configured model isn't actually loaded, fall back to a loaded Gemma if
+    present, otherwise the first loaded chat-capable model — so the app works out
+    of the box with whatever the user has running in LM Studio. The chosen model
+    is then **auto-loaded** into memory and (when ``warm``) primed with a tiny
+    dummy receipt so the first real batch is fast.
+    """
+    global _active_distill_model, _active_ocr_model
     available = list_available_models()
     if available:
         print(f"[models] {len(available)} model(s) available: {available}")
@@ -323,11 +393,19 @@ def initialize_models() -> str:
             )
             _active_distill_model = chosen
             print(f"[models] Auto-selected loaded model: {chosen}")
+        # Auto-load the active model into LM Studio memory so the first real
+        # receipt doesn't pay the cold-load latency.
+        if _active_distill_model and _try_load_model(_active_distill_model):
+            print(f"[models] Auto-loaded into memory: {_active_distill_model}")
+        # OCR shares the single active model when enabled.
+        _active_ocr_model = _active_distill_model if _llm_ocr_enabled else ""
     else:
         print("[models] LM Studio not reachable or no models loaded")
 
-    print(f"[models] OCR model: {_active_ocr_model or '(none — using distill model for vision)'}")
+    print(f"[models] OCR model: {_active_ocr_model or '(none — built-in OCR only)'}")
     print(f"[models] Distill model: {_active_distill_model}")
+    if warm and available:
+        warm_up_model()
     return _active_distill_model
 
 
@@ -409,6 +487,69 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
+def _content_bbox_by_edges(gray: Image.Image, frac: float):
+    """Detect the receipt content box via an edge-energy projection (numpy).
+
+    Far more robust than corner-background subtraction on real photos: it doesn't
+    assume the corners are background, so it survives gradients, shadows, busy
+    desktops and coloured surfaces. Edge magnitude is summed into per-row and
+    per-column profiles; the content extent is where each profile rises a
+    fraction ``frac`` of the way from its background (median) to its peak. Returns
+    a raw content bbox ``(left, top, right, bottom)`` or ``None``. Raises
+    ``ImportError`` when numpy is unavailable so the caller can fall back.
+    """
+    import numpy as np  # local import: only needed for crop, keeps startup light
+
+    arr = np.asarray(gray, dtype=np.float32)
+    h, w = arr.shape
+    gmag = np.zeros((h, w), dtype=np.float32)
+    gmag[:, 1:] += np.abs(arr[:, 1:] - arr[:, :-1])   # horizontal gradient (vertical edges)
+    gmag[1:, :] += np.abs(arr[1:, :] - arr[:-1, :])   # vertical gradient (horizontal edges)
+
+    def _smooth(p, k):
+        if k <= 1:
+            return p
+        return np.convolve(p, np.ones(k, dtype=np.float32) / k, mode="same")
+
+    col_prof = _smooth(gmag.sum(axis=0), max(1, w // 200))
+    row_prof = _smooth(gmag.sum(axis=1), max(1, h // 200))
+
+    def _bounds(prof):
+        peak = float(prof.max())
+        if peak <= 0:
+            return None
+        base = float(np.median(prof))
+        thr = base + frac * (peak - base)
+        idx = np.where(prof >= thr)[0]
+        if idx.size == 0:
+            return None
+        return int(idx[0]), int(idx[-1] + 1)
+
+    cb, rb = _bounds(col_prof), _bounds(row_prof)
+    if not cb or not rb:
+        return None
+    return (cb[0], rb[0], cb[1], rb[1])
+
+
+def _content_bbox_by_corner_bg(gray: Image.Image, threshold: float):
+    """Legacy corner-background content detection (fallback when numpy is absent).
+
+    Estimates the background from the four corner patches and returns the bbox of
+    everything that differs from it by more than ``threshold``. Returns a raw
+    content bbox or ``None``.
+    """
+    w, h = gray.size
+    samples = []
+    for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
+                (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
+        samples.extend(gray.crop(box).tobytes())
+    samples.sort()
+    bg = samples[len(samples) // 2]
+    diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
+    mask = diff.point(lambda v: 255 if v > threshold else 0)
+    return mask.getbbox()
+
+
 def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -> dict:
     """Inspect what auto-crop would do to ``img`` without mutating it.
 
@@ -419,29 +560,28 @@ def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -
     ``kept_ratio`` is its area as a fraction of the original, and ``reason`` is a
     short, human-readable explanation of the decision.  ``aggressiveness``
     defaults to the module-level ``AUTOCROP_AGGRESSIVENESS`` dial.
+
+    Detection uses an edge-energy projection (robust to non-uniform backgrounds);
+    it falls back to legacy corner-background subtraction only if numpy is
+    unavailable. The aggressiveness dial, margin and accept/reject gating are
+    unchanged so the slider behaves predictably.
     """
     if aggressiveness is None:
         aggressiveness = AUTOCROP_AGGRESSIVENESS
     p = _autocrop_params(aggressiveness)
     min_ratio, max_ratio = p["min_ratio"], p["max_ratio"]
-    threshold = p["threshold"]
     try:
         gray = img.convert("L")
         w, h = gray.size
         if w < 64 or h < 64:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "image too small to crop (min 64×64 px)"}
-        # Background estimated from the median of the four 8x8 corner patches
-        samples = []
-        for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
-                    (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
-            samples.extend(gray.crop(box).tobytes())
-        samples.sort()
-        bg = samples[len(samples) // 2]
-
-        diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
-        mask = diff.point(lambda v: 255 if v > threshold else 0)
-        bbox = mask.getbbox()
+        try:
+            # `threshold` (16..46) reused as a 0.16..0.46 energy fraction: higher
+            # aggressiveness ⇒ larger fraction ⇒ fainter edges ignored ⇒ tighter box.
+            bbox = _content_bbox_by_edges(gray, p["threshold"] / 100.0)
+        except ImportError:
+            bbox = _content_bbox_by_corner_bg(gray, p["threshold"])
         if not bbox:
             return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                     "reason": "no content edges stand out from the background"}
@@ -814,6 +954,47 @@ def _strip_json(raw: str) -> str:
     return match.group(0) if match else raw
 
 
+def _normalize_llm_boxes(raw) -> dict:
+    """Normalize a vision model's optional field-location boxes.
+
+    The model may report where it sees each field on the image, as fractions of
+    image width/height: ``{field: {x, y, w, h, confidence}}`` with x,y = top-left
+    corner and confidence 0–100. We return ``{field: [x, y, w, h, confidence]}``
+    for vendor/date/amount, clamping coords to 0..1 and confidence to 0..100 and
+    dropping anything malformed or zero-sized. These are advisory UI markers
+    (drawn alongside the rules-based OCR boxes) — never load-bearing — so a bad
+    box is silently ignored rather than raised.
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    out: dict[str, list] = {}
+    for field in ("vendor", "date", "amount"):
+        b = raw.get(field)
+        if not isinstance(b, dict):
+            continue
+        try:
+            x, y = float(b.get("x")), float(b.get("y"))
+            w, h = float(b.get("w")), float(b.get("h"))
+        except (TypeError, ValueError):
+            continue
+        if not (w > 0 and h > 0):
+            continue
+        try:
+            conf = float(b.get("confidence", 0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        out[field] = [
+            round(_clamp(x, 0.0, 1.0), 4), round(_clamp(y, 0.0, 1.0), 4),
+            round(_clamp(w, 0.0, 1.0), 4), round(_clamp(h, 0.0, 1.0), 4),
+            round(_clamp(conf, 0.0, 100.0), 1),
+        ]
+    return out
+
+
 def _parse_llm_record(raw: str) -> Optional[dict]:
     """Parse a model's JSON reply into a record dict, or None if it isn't one.
 
@@ -841,6 +1022,11 @@ def _parse_llm_record(raw: str) -> Optional[dict]:
     # value if it isn't parseable so nothing is silently lost.
     if result.get("date"):
         result["date"] = normalize_date(result["date"]) or result["date"]
+    # Optional LLM-placed field boxes (vision path only). Lifted onto a private
+    # key the UI overlays; the raw "boxes" key is dropped from the record.
+    boxes = _normalize_llm_boxes(result.pop("boxes", None))
+    if boxes:
+        result["_llm_field_boxes"] = boxes
     return result
 
 
