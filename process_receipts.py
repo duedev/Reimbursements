@@ -382,6 +382,7 @@ def initialize_models(warm: bool = True) -> str:
     dummy receipt so the first real batch is fast.
     """
     global _active_distill_model, _active_ocr_model
+    print(f"[models] LLM endpoint: {LMSTUDIO_BASE_URL}")
     available = list_available_models()
     if available:
         print(f"[models] {len(available)} model(s) available: {available}")

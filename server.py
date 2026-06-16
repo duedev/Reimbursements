@@ -257,6 +257,24 @@ def _normalize_llm_url(url: str) -> str:
     return url
 
 
+def _in_docker() -> bool:
+    """True when the app itself is running inside a Docker container."""
+    return Path("/.dockerenv").exists()
+
+
+def _docker_llm_url() -> str:
+    """Resolve the bundled "docker" LLM server URL for the current runtime.
+
+    The ``model-server`` hostname only resolves *inside* the docker-compose
+    network.  When the app itself runs on the host (no ``/.dockerenv``), the same
+    bundled server is reachable on its published port at ``127.0.0.1:11434``.
+    Using the service name in that case strands the connection on an unresolvable
+    host — so pick the address that actually works for where we're running.
+    """
+    host = "model-server" if _in_docker() else "127.0.0.1"
+    return f"http://{host}:11434/v1"
+
+
 def _apply_llm_server_config(cfg: dict | None = None) -> None:
     """Restore the persisted LLM server URL into process_receipts.LMSTUDIO_BASE_URL.
 
@@ -273,14 +291,14 @@ def _apply_llm_server_config(cfg: dict | None = None) -> None:
         _pr.set_active_model(str(llm_model_cfg["model_id"]))
     _legacy_url = ""
     if llm_model_cfg.get("server_type") == "docker":
-        _legacy_url = "http://model-server:11434/v1"
+        _legacy_url = _docker_llm_url()
     elif llm_model_cfg.get("base_url"):
         _legacy_url = _normalize_llm_url(str(llm_model_cfg["base_url"]))
 
     # Canonical key written by POST /settings/llm-server (overrides legacy)
     llm_srv = cfg.get("llm_server") or {}
     if llm_srv.get("server_type") == "docker":
-        _pr.LMSTUDIO_BASE_URL = "http://model-server:11434/v1"
+        _pr.LMSTUDIO_BASE_URL = _docker_llm_url()
     elif llm_srv.get("base_url"):
         _pr.LMSTUDIO_BASE_URL = _normalize_llm_url(str(llm_srv["base_url"]))
     elif _legacy_url:
@@ -2610,7 +2628,7 @@ async def set_llm_server(request: Request):
     base_url    = str(body.get("base_url", "")).strip()
 
     if server_type == "docker":
-        effective_url = "http://model-server:11434/v1"
+        effective_url = _docker_llm_url()
     elif base_url:
         effective_url = _normalize_llm_url(base_url)
     else:
@@ -2645,7 +2663,7 @@ async def llm_server_status():
     return JSONResponse({
         "reachable":    reachable,
         "model_loaded": model_loaded,
-        "is_docker":    Path("/.dockerenv").exists(),
+        "is_docker":    _in_docker(),
         "base_url":     base_url,
     })
 

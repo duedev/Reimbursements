@@ -176,6 +176,30 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (LLM connection fix — "docker" server-type stranding):** Root-caused
+  the persistent "LM Studio won't connect" report. Selecting **"Docker bundled
+  server"** in the LLM Server card or Configure Model dialog persisted
+  `server_type: "docker"`, and `_apply_llm_server_config()` then forced
+  `LMSTUDIO_BASE_URL = http://model-server:11434/v1` on **every startup**. The
+  `model-server` hostname only resolves *inside* the docker-compose network, so a
+  host-run app was permanently stranded (unreachable) even with LM Studio live on
+  `127.0.0.1:1234` — and a restart re-applied the bad config. Fixes:
+  * New `_in_docker()` seam + `_docker_llm_url()` helper (server.py): the "docker"
+    server-type now resolves to `model-server:11434` only when actually inside
+    Docker, else `127.0.0.1:11434` (the bundled server's published host port).
+    Used in `_apply_llm_server_config` (both legacy `llm_model_config` and
+    canonical `llm_server` keys) and `set_llm_server`. `/llm-server/status` reuses
+    `_in_docker()`.
+  * `set_llm_model_config` (Configure Model dialog) no longer calls
+    `_apply_llm_server_config` — it only applies the model_id for the session, so
+    the dialog can't silently overwrite a working URL (URL/server-type still defer
+    to next startup, matching the dialog's wording).
+  * `initialize_models` now logs `[models] LLM endpoint: <url>` so the tried URL is
+    visible in the console.
+  * UI: `loadLMStudioModels` shows the tried URL in the "unreachable" message + chip;
+    `checkLLMStatus()` runs at page load (not just when Settings opens).
+  * `tests/test_llm_server_url.py` (+10). Suite now 412 green.
+
 - **2026-06-16 (polish batch — 6 changes):**
   * **Blue accent restored** — dark theme `:root` reverts to vivid `--accent: #3b82f6`
     (blue) + `--accent-2: #a855f7` (purple); added `--teal: #14b8a6` and `--rose:
