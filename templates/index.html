@@ -1182,7 +1182,7 @@
     <span class="tagline">Local-AI expense reports — nothing leaves your machine</span>
   </h1>
   <button class="lm-chip" id="lm-status-chip" data-state="" onclick="switchTab('settings')"
-          title="LM Studio connection — click to open model settings">
+          title="LLM Server connection — click to open model settings">
     <span class="lm-dot"></span>
     <span class="lm-text" id="lm-status-text">Checking AI engine…</span>
   </button>
@@ -1613,13 +1613,51 @@
       </label>
       <button class="copy-btn" id="refresh-models-btn" style="margin-left:auto" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
     </div>
+    <!-- LLM Server selector — docker bundled vs custom OpenAI-compatible endpoint -->
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">LLM Server</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start">
+        <label class="check-label" style="font-size:12px;gap:6px">
+          <input type="radio" name="llm-server-type" value="custom" id="llm-server-custom" checked>
+          Custom / LM Studio URL
+        </label>
+        <label class="check-label" style="font-size:12px;gap:6px">
+          <input type="radio" name="llm-server-type" value="docker" id="llm-server-docker">
+          Docker bundled server
+        </label>
+      </div>
+      <div id="llm-server-url-row" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <input type="text" id="llm-server-url" placeholder="http://127.0.0.1:1234/v1" style="flex:1;min-width:0">
+        <button class="btn btn-outline-accent btn-sm" id="llm-server-save-btn">Apply</button>
+      </div>
+    </div>
+    <!-- Docker LLM server controls — only useful when the bundled model-server is in play -->
+    <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">LLM Server Controls</span>
+        <span id="llm-status-dot" title="LLM server reachability" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--border);flex-shrink:0"></span>
+        <span id="llm-status-label" style="font-size:11px;color:var(--muted)">checking…</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-outline-accent btn-sm" id="llm-start-btn">Start</button>
+        <button class="btn btn-cancel btn-sm" id="llm-stop-btn">Stop</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-restart-btn">Restart</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-load-btn">Load Model</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-status-refresh-btn">↻ Refresh</button>
+      </div>
+    </div>
+    <!-- Configure Model dialog trigger -->
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-outline-accent btn-sm" id="configure-model-btn">&#9881; Configure Model</button>
+      <span style="font-size:11px;color:var(--muted)">Set HuggingFace model ID and server for next startup</span>
+    </div>
     <div style="font-size:11px;color:var(--muted);margin:14px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">
-      Loaded in LM Studio
+      Loaded in LLM Server
     </div>
     <div class="model-strip" id="model-strip">
       <div class="model-row">
         <div class="model-dot"></div>
-        <span style="color:var(--muted);font-size:11px">Querying LM Studio…</span>
+        <span style="color:var(--muted);font-size:11px">Querying LLM server…</span>
       </div>
     </div>
   </div>
@@ -2025,6 +2063,42 @@
   <aside class="lb-stats" id="lb-stats" onclick="event.stopPropagation()" hidden></aside>
 </div>
 
+<!-- ── Configure Model Dialog ──────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="configure-model-modal" role="dialog" aria-modal="true" aria-labelledby="cm-modal-title">
+  <div class="modal-box" style="width:520px">
+    <h3 id="cm-modal-title">&#9881; Configure LLM Model</h3>
+    <p class="modal-sub">Set the model to load on next startup. The app will use this model for receipt extraction and AI processing.</p>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:18px">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted);font-weight:500">
+        HuggingFace model URL or model ID
+        <input type="text" id="cm-model-id" placeholder="e.g. ggml-org/qwen3-vl-2b-instruct"
+               style="font-size:13px;padding:8px 10px">
+        <span style="font-size:11px;color:var(--muted)">Weights will be fetched automatically on next startup via llama.cpp or LM Studio.</span>
+      </label>
+      <div>
+        <div style="font-size:12px;color:var(--muted);font-weight:500;margin-bottom:8px">Server</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <label class="check-label" style="font-size:13px;gap:8px">
+            <input type="radio" name="cm-server-type" value="docker" id="cm-server-docker">
+            Use Docker bundled LLM server (model-server:11434)
+          </label>
+          <label class="check-label" style="font-size:13px;gap:8px">
+            <input type="radio" name="cm-server-type" value="other" id="cm-server-other" checked>
+            Use LM Studio / other OpenAI-compatible server
+          </label>
+        </div>
+        <div id="cm-url-row" style="margin-top:8px">
+          <input type="text" id="cm-base-url" placeholder="http://127.0.0.1:1234/v1" style="width:100%;font-size:13px;padding:8px 10px">
+        </div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-success" id="cm-save-btn">Save &amp; Restart (next startup)</button>
+      <button class="btn btn-cancel" id="cm-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -2084,10 +2158,12 @@ function switchTab(name) {
     b.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   // Refresh the model selectors whenever Settings is opened so the list reflects
-  // whatever the user has loaded in LM Studio right now.
+  // whatever the user has loaded in the LLM server right now.
   if (name === 'settings' && typeof loadModels === 'function') {
     loadModels();
     loadLMStudioModels();
+    if (typeof loadLLMServerSettings === 'function') loadLLMServerSettings();
+    if (typeof checkLLMStatus === 'function') checkLLMStatus();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -2314,6 +2390,7 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
       inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    if (data.notes) inner += `<div class="k-note" title="${esc(data.notes)}" style="font-size:11px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">&#128203; ${esc(data.notes.length > 60 ? data.notes.slice(0, 57) + '…' : data.notes)}</div>`;
     if (status === 'done' && data._proc_seconds) {
       const oi = _ocrEngineInfo(data._ocr_engine);
       const engine = oi
@@ -3286,6 +3363,7 @@ function _mrFormBody(overrides = {}) {
     job_name:        document.getElementById('mr-job-name').value.trim(),
     job_number:      document.getElementById('mr-job-number').value.trim(),
     summary:         document.getElementById('mr-summary').value.trim(),
+    notes:           document.getElementById('mr-notes').value.trim(),
     review_required: !!(card?.data?._review_required),
     approved:        !!(card?.data?._approved),
     ...overrides,
@@ -3657,7 +3735,7 @@ function _setLmChip(state, text) {
   if (!chip) return;
   chip.dataset.state = state;
   document.getElementById('lm-status-text').textContent = text;
-  chip.title = `LM Studio: ${text} — click to open model settings`;
+  chip.title = `LLM Server: ${text} — click to open model settings`;
 }
 
 async function loadLMStudioModels() {
@@ -3669,19 +3747,124 @@ async function loadLMStudioModels() {
       strip.innerHTML = data.loaded.map(id =>
         `<div class="model-row"><div class="model-dot loaded"></div><span class="model-name">${esc(id)}</span></div>`
       ).join('');
-      _setLmChip('ok', `LM Studio · ${data.loaded.length} model${data.loaded.length === 1 ? '' : 's'}`);
+      _setLmChip('ok', `LLM Server · ${data.loaded.length} model${data.loaded.length === 1 ? '' : 's'}`);
     } else if (data.ok) {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
       _setLmChip('warn', 'No models loaded');
     } else {
-      strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>';
-      _setLmChip('err', 'LM Studio offline');
+      strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable</span></div>';
+      _setLmChip('err', 'LLM server offline');
     }
   } catch (_) {
-    document.getElementById('model-strip').innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LM Studio unreachable</span></div>';
-    _setLmChip('err', 'LM Studio offline');
+    document.getElementById('model-strip').innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable</span></div>';
+    _setLmChip('err', 'LLM server offline');
   }
 }
+
+// ── LLM server controls (Feature 11/12) ──────────────────────────────────────
+async function loadLLMServerSettings() {
+  try {
+    const r = await fetch('/settings/llm-server');
+    const d = await r.json();
+    const dockerRadio = document.getElementById('llm-server-docker');
+    const customRadio = document.getElementById('llm-server-custom');
+    const urlInput    = document.getElementById('llm-server-url');
+    if (d.server_type === 'docker') {
+      dockerRadio.checked = true;
+      document.getElementById('llm-server-url-row').style.display = 'none';
+    } else {
+      customRadio.checked = true;
+      urlInput.value = d.base_url || 'http://127.0.0.1:1234/v1';
+    }
+  } catch (_) {}
+}
+
+async function checkLLMStatus() {
+  try {
+    const r = await fetch('/llm-server/status');
+    const d = await r.json();
+    const dot   = document.getElementById('llm-status-dot');
+    const label = document.getElementById('llm-status-label');
+    if (d.reachable) {
+      dot.style.background = 'var(--success)';
+      label.textContent = d.model_loaded ? 'Online — model loaded' : 'Online — no model loaded';
+    } else {
+      dot.style.background = 'var(--border)';
+      label.textContent = 'Offline';
+    }
+  } catch (_) {
+    document.getElementById('llm-status-dot').style.background = 'var(--border)';
+    document.getElementById('llm-status-label').textContent = 'Status unknown';
+  }
+}
+
+// Show/hide custom URL row based on radio selection
+document.querySelectorAll('input[name="llm-server-type"]').forEach(r => {
+  r.addEventListener('change', () => {
+    document.getElementById('llm-server-url-row').style.display =
+      document.getElementById('llm-server-docker').checked ? 'none' : '';
+  });
+});
+
+document.getElementById('llm-server-save-btn').addEventListener('click', async () => {
+  const serverType = document.getElementById('llm-server-docker').checked ? 'docker' : 'custom';
+  const baseUrl    = document.getElementById('llm-server-url').value.trim();
+  try {
+    const r = await fetch('/settings/llm-server', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({server_type: serverType, base_url: baseUrl}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast(`LLM server set to: ${d.base_url}`, true);
+      loadLMStudioModels();
+    } else {
+      showToast(`Error: ${d.error || 'unknown'}`, false);
+    }
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+});
+
+document.getElementById('llm-start-btn').addEventListener('click', async () => {
+  try { const r = await fetch('/llm-server/start',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server starting…':'Start failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
+});
+document.getElementById('llm-stop-btn').addEventListener('click', async () => {
+  try { const r = await fetch('/llm-server/stop',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server stopping…':'Stop failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
+});
+document.getElementById('llm-restart-btn').addEventListener('click', async () => {
+  try { const r = await fetch('/llm-server/restart',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server restarting…':'Restart failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
+});
+document.getElementById('llm-load-btn').addEventListener('click', async () => {
+  try { const r = await fetch('/llm-server/load',{method:'POST'}); const d=await r.json(); showToast(d.ok?'Model load started…':'Load failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
+});
+document.getElementById('llm-status-refresh-btn').addEventListener('click', checkLLMStatus);
+
+// ── Configure Model dialog (Feature 2) ────────────────────────────────────────
+document.getElementById('configure-model-btn').addEventListener('click', () => {
+  document.getElementById('configure-model-modal').classList.remove('hidden');
+});
+document.getElementById('cm-cancel-btn').addEventListener('click', () => {
+  document.getElementById('configure-model-modal').classList.add('hidden');
+});
+document.querySelectorAll('input[name="cm-server-type"]').forEach(r => {
+  r.addEventListener('change', () => {
+    document.getElementById('cm-url-row').style.display =
+      document.getElementById('cm-server-docker').checked ? 'none' : '';
+  });
+});
+document.getElementById('cm-save-btn').addEventListener('click', async () => {
+  const modelId    = document.getElementById('cm-model-id').value.trim();
+  const serverType = document.getElementById('cm-server-docker').checked ? 'docker' : 'other';
+  const baseUrl    = document.getElementById('cm-base-url').value.trim();
+  try {
+    const r = await fetch('/settings/llm-model', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({model_id: modelId, server_type: serverType, base_url: baseUrl}),
+    });
+    const d = await r.json();
+    document.getElementById('configure-model-modal').classList.add('hidden');
+    showToast(d.message || 'Settings saved — model will load on next startup.', d.ok !== false);
+  } catch (err) { showToast('Error: '+err.message, false); }
+});
 
 document.getElementById('open-folder-btn').addEventListener('click', async () => {
   try {

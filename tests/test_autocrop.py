@@ -26,15 +26,17 @@ def test_crops_centered_receipt_with_margin():
 
 
 def test_full_frame_receipt_unchanged():
-    # Content fills the frame — trimming would be negligible (>95% kept)
+    # Content fills the frame — after margin the bbox equals the full image.
     img = _receipt_on_background(box=(5, 5, 995, 995))
     assert autocrop_receipt(img).size == img.size
 
 
-def test_tiny_content_guard_unchanged():
-    # Crop would keep <40% of the area — too aggressive, skip
+def test_tiny_content_crops():
+    # Gate removed: a tiny receipt on a large background is now cropped,
+    # no matter how small the kept_ratio.
     img = _receipt_on_background(box=(450, 450, 550, 550))
-    assert autocrop_receipt(img).size == img.size
+    out = autocrop_receipt(img)
+    assert out.size != img.size
 
 
 def test_solid_color_unchanged():
@@ -72,15 +74,19 @@ def test_analyze_reports_crop_for_bordered_receipt():
 
 
 def test_analyze_skips_full_frame_with_reason():
+    # Full-frame content: after adding the safety margin the bbox collapses to the
+    # whole image, so would_crop is False (nothing to trim).
     info = autocrop_analyze(_receipt_on_background(box=(5, 5, 995, 995)))
     assert info["would_crop"] is False
-    assert "negligible" in info["reason"]
+    assert "no meaningful border" in info["reason"]
 
 
-def test_analyze_skips_tiny_content_with_reason():
+def test_analyze_crops_tiny_content():
+    # Accept/reject gate removed: tiny content on a large background is always
+    # cropped — the kept_ratio just tells the caller how much was trimmed.
     info = autocrop_analyze(_receipt_on_background(box=(450, 450, 550, 550)))
-    assert info["would_crop"] is False
-    assert "aggressive" in info["reason"]
+    assert info["would_crop"] is True
+    assert info["kept_ratio"] < 0.30
 
 
 def test_analyze_skips_too_small_image():
@@ -112,8 +118,13 @@ def test_autocrop_params_clamped():
     assert _autocrop_params(999) == _autocrop_params(100)
 
 
-def test_higher_aggressiveness_unlocks_a_crop():
-    # ~30% content: too tight for the gentle floor, fine for the aggressive one.
+def test_higher_aggressiveness_crops_tighter():
+    # Accept/reject gate removed: both aggressiveness levels now crop when there is
+    # a detectable border.  Confirm that higher aggressiveness produces a smaller
+    # kept_ratio (i.e. tighter crop), proving the dial still has an effect.
     img = _receipt_on_background(box=(250, 200, 750, 800))
-    assert autocrop_analyze(img, aggressiveness=0)["would_crop"] is False
-    assert autocrop_analyze(img, aggressiveness=100)["would_crop"] is True
+    lo = autocrop_analyze(img, aggressiveness=0)
+    hi = autocrop_analyze(img, aggressiveness=100)
+    assert lo["would_crop"] is True
+    assert hi["would_crop"] is True
+    assert hi["kept_ratio"] <= lo["kept_ratio"]

@@ -176,6 +176,43 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (batch of 12 features):**
+  * **Autocrop (Feature 1):** Default `AUTOCROP_AGGRESSIVENESS` raised from 70 to 85.
+    Removed the accept/reject gate that blocked crops as "too aggressive" or "borders
+    negligible" — crop now fires whenever the detected bbox is strictly smaller than
+    the original. `tests/test_autocrop.py` updated (4 tests adjusted).
+  * **LLM model config dialog (Feature 2):** New `POST /settings/llm-model` endpoint
+    saves `{model_id, server_type, base_url}` to `cfg["llm_model_config"]`; applied
+    by `_apply_llm_server_config()` at startup. Settings UI: "Configure Model" button
+    opens a modal with model-ID input, docker/other radio, and base-URL input.
+  * **Theme correction (Feature 3):** Confetti colors updated to vivid party colors
+    (red, gold, green, blue, purple, orange). "LM Studio" labels → "LLM Server".
+  * **Developer mode — card fields (Feature 4):** `makeCard()` wraps confidence
+    badge, proc-time + OCR engine, step-log toggle, and step-log div in
+    `class="dev-only"` — hidden when developer mode is off.
+  * **Info tab (Features 5+6):** New "Info" nav tab (`#tab-info`) with About, Getting
+    Started, Docker Commands (copy buttons), Keyboard Shortcuts, Pipeline Overview,
+    and Tips.
+  * **Remove review/approve buttons from cards; add Review All (Feature 7):**
+    Done cards no longer show "Review & Approve" button (card body opens modal).
+    Export card gained `#review-all-btn` + `#pending-review-count`.
+  * **Review modal: Retry and Next buttons (Feature 8):** Modal footer has
+    `#mr-retry-btn` (posts to `/retry-receipt`) and `#mr-next-btn` (`_loadNextAny()`).
+  * **Notes field (Feature 9):** `notes` added to `_safe_receipt_data`, `_EDITABLE_FIELDS`,
+    `ManualReceiptRequest`, `add_manual_result`. Review modal has `#mr-notes` textarea.
+    Cards show truncated note indicator. `spreadsheet_theme.py` col H combines
+    `data["notes"]` + `data["_flag"]`.
+  * **Docker port 1234 → 11434 (Feature 10):** `model-server` service in
+    `docker-compose.yml` moved to :11434. `Dockerfile.model` updated. `.env.example`
+    comments updated. Non-docker LM Studio default unchanged.
+  * **LLM server control buttons (Feature 11):** New endpoints `GET /llm-server/status`,
+    `POST /llm-server/start/stop/restart/load`. UI: status dot + Start/Stop/Restart/
+    Load/Refresh buttons in AI Models card.
+  * **Server selection (Feature 12):** New `GET/POST /settings/llm-server` updates
+    `_pr.LMSTUDIO_BASE_URL` immediately, persists under `cfg["llm_server"]`.
+    `_apply_llm_server_config()` restores at startup. Docker/Custom radio + URL
+    input in AI Models card. User-facing "LM Studio" → "LLM Server".
+
 - **2026-06-16 (Docker: bundled LLM):** New `Dockerfile.model` (multi-stage:
   curl-fetch the GGUF + mmproj, bake into `ghcr.io/ggml-org/llama.cpp:server`) +
   a `model-server` compose service under profile `bundled-llm` serving an
