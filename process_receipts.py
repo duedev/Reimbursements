@@ -438,7 +438,7 @@ AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "fa
 # detection knob below so one slider moves the whole behaviour. The default leans
 # aggressive on purpose: phone photos carry a lot of background, and a timid crop
 # reads to the user as "it didn't do anything".
-AUTOCROP_AGGRESSIVENESS = int(os.getenv("AUTOCROP_AGGRESSIVENESS", "70"))
+AUTOCROP_AGGRESSIVENESS = int(os.getenv("AUTOCROP_AGGRESSIVENESS", "85"))
 
 
 def _autocrop_params(aggressiveness: float) -> dict:
@@ -595,17 +595,12 @@ def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -
         kept = ((right - left) * (bottom - top)) / float(w * h)
         margined = (left, top, right, bottom)
 
-        if kept < min_ratio:
+        # Always crop if bbox is smaller than the original (any non-trivial border found).
+        if kept >= 1.0 or margined == (0, 0, w, h):
             return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
-                    "reason": f"crop looks too aggressive — would keep only "
-                              f"{kept:.0%} (min {min_ratio:.0%} at this aggressiveness; "
-                              f"raise the slider to allow it)"}
-        if kept > max_ratio:
-            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
-                    "reason": f"borders are negligible — keeps {kept:.0%} "
-                              f"(needs < {max_ratio:.0%}; raise the slider to trim more)"}
+                    "reason": "no meaningful border detected — image fills the frame"}
         return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
-                "reason": f"trims background to {kept:.0%} of the original"}
+                "reason": f"trims background border to {kept:.0%} of the original"}
     except Exception as exc:
         return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
                 "reason": f"detection error: {exc}"}

@@ -266,9 +266,14 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     cell_g.font      = _font(size=10, color="4B5563")
     cell_g.alignment = _align(h="center", wrap=True)
 
-    # H — Notes (always written)
-    flag_text = data.get("_flag") or ""
-    cell_h = ws.cell(row=row, column=COL_NOTES, value=flag_text or None)
+    # H — Notes: user notes + any automated flag, separated by a line break when both present
+    flag_text  = data.get("_flag") or ""
+    notes_text = (data.get("notes") or "").strip()
+    if notes_text and flag_text:
+        notes_cell_value = f"{notes_text}\n{flag_text}"
+    else:
+        notes_cell_value = notes_text or flag_text or None
+    cell_h = ws.cell(row=row, column=COL_NOTES, value=notes_cell_value)
     if flag_text:
         cell_h.fill  = _fill(COLOR_FLAG_BG)
         cell_h.font  = _font(size=10, color="991B1B")
@@ -585,8 +590,13 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
         cell_g.font      = _font(size=9, color="4B5563")
         cell_g.alignment = _align(h="center", wrap=True)
 
-        cell_h = ws.cell(row=current_row, column=8, value=_fml("H", data.get("_flag") or None))
-        flag_text = data.get("_flag") or ""
+        flag_text  = data.get("_flag") or ""
+        notes_text = (data.get("notes") or "").strip()
+        if notes_text and flag_text:
+            _img_notes_fallback = f"{notes_text}\n{flag_text}"
+        else:
+            _img_notes_fallback = notes_text or flag_text or None
+        cell_h = ws.cell(row=current_row, column=8, value=_fml("H", _img_notes_fallback))
         if flag_text and not sr:
             cell_h.fill = _fill(COLOR_FLAG_BG)
             cell_h.font = _font(size=9, color="991B1B")

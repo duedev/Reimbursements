@@ -249,6 +249,36 @@ def _apply_model_config(cfg: dict | None = None) -> None:
         _pr.set_active_model(str(models["active"]))
 
 
+def _apply_llm_server_config(cfg: dict | None = None) -> None:
+    """Restore the persisted LLM server URL into process_receipts.LMSTUDIO_BASE_URL.
+
+    Handles both the legacy ``llm_model_config`` key (POST /settings/llm-model)
+    and the canonical ``llm_server`` key (POST /settings/llm-server).  The
+    ``llm_server`` key wins when both are present.  Run BEFORE initialize_models
+    so the right endpoint is used on the very first model query.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+
+    # Legacy key written by POST /settings/llm-model
+    llm_model_cfg = cfg.get("llm_model_config") or {}
+    if llm_model_cfg.get("model_id"):
+        _pr.set_active_model(str(llm_model_cfg["model_id"]))
+    _legacy_url = ""
+    if llm_model_cfg.get("server_type") == "docker":
+        _legacy_url = "http://model-server:11434/v1"
+    elif llm_model_cfg.get("base_url"):
+        _legacy_url = str(llm_model_cfg["base_url"])
+
+    # Canonical key written by POST /settings/llm-server (overrides legacy)
+    llm_srv = cfg.get("llm_server") or {}
+    if llm_srv.get("server_type") == "docker":
+        _pr.LMSTUDIO_BASE_URL = "http://model-server:11434/v1"
+    elif llm_srv.get("base_url"):
+        _pr.LMSTUDIO_BASE_URL = str(llm_srv["base_url"])
+    elif _legacy_url:
+        _pr.LMSTUDIO_BASE_URL = _legacy_url
+
+
 def _persist_model_config() -> None:
     """Save the current single-model selection + LLM-OCR toggle to config."""
     cfg = _load_config()
@@ -350,7 +380,7 @@ def _safe_receipt_data(data) -> dict:
               "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
               "_distill_seconds", "_ocr_engine", "_steps", "_field_boxes",
-              "_llm_field_boxes", "_review_required", "_approved"):
+              "_llm_field_boxes", "_review_required", "_approved", "notes"):
         if k in data:
             out[k] = data[k]
     return out
@@ -1030,6 +1060,7 @@ async def lifespan(app: FastAPI):
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     _apply_audit_config()        # restore UI-saved spending/date warning thresholds
+    _apply_llm_server_config()   # restore LLM server URL before any model query
     _apply_model_config()        # restore saved single-model choice before auto-select
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
@@ -1640,6 +1671,7 @@ class ManualReceiptRequest(BaseModel):
     summary:         str = ""
     review_required: bool = False
     approved:        bool = False
+    notes:           str = ""
 
 
 @app.post("/results/add-manual")
@@ -1668,6 +1700,7 @@ async def add_manual_result(body: ManualReceiptRequest):
         "_confidence":      None,
         "_review_required": body.review_required,
         "_approved":        body.approved,
+        "notes":            body.notes.strip()[:500],
     }
 
     with _results_lock:
@@ -2030,7 +2063,7 @@ async def clear_reports():
 # ── Results management ─────────────────────────────────────────────────────────
 
 _EDITABLE_FIELDS = {"vendor", "date", "amount", "category", "job_name",
-                    "job_number", "ai_summary", "expense_description"}
+                    "job_number", "ai_summary", "expense_description", "notes"}
 _DUP_FLAG_KEYWORDS = ("potential duplicate", "duplicate of")
 
 
@@ -2065,6 +2098,8 @@ async def update_result(body: UpdateResultRequest):
         if value not in ("fuel", "mats", "misc"):
             return JSONResponse({"ok": False, "error": "Invalid category"},
                                 status_code=400)
+    elif field == "notes":
+        value = str(value)[:500]
 
     with _results_lock:
         target = None
@@ -2509,9 +2544,148 @@ async def get_lmstudio_models():
 
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return JSONResponse({"loaded": models, "ok": True})
+        return JSONResponse({"loaded": models, "ok": True,
+                             "base_url": _pr.LMSTUDIO_BASE_URL})
     except Exception as exc:
-        return JSONResponse({"loaded": [], "ok": False, "error": str(exc)})
+        return JSONResponse({"loaded": [], "ok": False, "error": str(exc),
+                             "base_url": _pr.LMSTUDIO_BASE_URL})
+
+
+# ── LLM model config endpoint (Feature 2) ─────────────────────────────────────
+
+@app.post("/settings/llm-model")
+async def set_llm_model_config(request: Request):
+    """Save LLM model configuration (applied immediately and on next startup)."""
+    body = await request.json()
+    model_id    = str(body.get("model_id",    "")).strip()
+    server_type = str(body.get("server_type", "other")).strip()  # "docker" or "other"
+    base_url    = str(body.get("base_url",    "")).strip()
+
+    cfg = _load_config()
+    cfg["llm_model_config"] = {
+        "model_id":    model_id,
+        "server_type": server_type,
+        "base_url":    base_url,
+    }
+    _save_config(cfg)
+    # Apply immediately so a restart isn't required.
+    _apply_llm_server_config(cfg)
+    return JSONResponse({"ok": True,
+                         "message": "Settings saved — model will load on next startup."})
+
+
+# ── LLM server settings endpoints (Feature 12) ────────────────────────────────
+
+@app.get("/settings/llm-server")
+async def get_llm_server_settings():
+    """Return current LLM server configuration."""
+    cfg = _load_config()
+    llm_srv = cfg.get("llm_server") or {}
+    return JSONResponse({
+        "server_type": llm_srv.get("server_type", "custom"),
+        "base_url":    llm_srv.get("base_url",
+                                   getattr(_pr, "LMSTUDIO_BASE_URL",
+                                           "http://127.0.0.1:1234/v1")),
+    })
+
+
+@app.post("/settings/llm-server")
+async def set_llm_server(request: Request):
+    """Update the LLM server URL used for model queries and inference."""
+    body = await request.json()
+    server_type = str(body.get("server_type", "custom")).strip()
+    base_url    = str(body.get("base_url", "")).strip()
+
+    if server_type == "docker":
+        effective_url = "http://model-server:11434/v1"
+    elif base_url:
+        effective_url = base_url
+    else:
+        effective_url = "http://127.0.0.1:1234/v1"
+
+    _pr.LMSTUDIO_BASE_URL = effective_url
+
+    cfg = _load_config()
+    cfg["llm_server"] = {"server_type": server_type, "base_url": base_url}
+    _save_config(cfg)
+    return JSONResponse({"ok": True, "base_url": effective_url})
+
+
+# ── LLM server control endpoints (Feature 11) ─────────────────────────────────
+
+@app.get("/llm-server/status")
+async def llm_server_status():
+    """Check if the configured LLM server is reachable."""
+    import httpx
+    base_url = getattr(_pr, "LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+    reachable    = False
+    model_loaded = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{base_url}/models")
+            if r.status_code == 200:
+                reachable    = True
+                data         = r.json()
+                model_loaded = len(data.get("data", [])) > 0
+    except Exception:
+        pass
+    return JSONResponse({
+        "reachable":    reachable,
+        "model_loaded": model_loaded,
+        "is_docker":    Path("/.dockerenv").exists(),
+        "base_url":     base_url,
+    })
+
+
+@app.post("/llm-server/start")
+async def llm_server_start():
+    """Start the bundled Docker LLM server (best-effort)."""
+    try:
+        subprocess.Popen(
+            ["docker", "compose", "--profile", "bundled-llm", "up", "-d", "model-server"],
+            cwd=str(Path(__file__).parent),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    return JSONResponse({"ok": True})
+
+
+@app.post("/llm-server/stop")
+async def llm_server_stop():
+    """Stop the bundled Docker LLM server (best-effort)."""
+    try:
+        subprocess.Popen(
+            ["docker", "compose", "stop", "model-server"],
+            cwd=str(Path(__file__).parent),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    return JSONResponse({"ok": True})
+
+
+@app.post("/llm-server/restart")
+async def llm_server_restart():
+    """Restart the bundled Docker LLM server (best-effort)."""
+    try:
+        subprocess.Popen(
+            ["docker", "compose", "--profile", "bundled-llm", "restart", "model-server"],
+            cwd=str(Path(__file__).parent),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    return JSONResponse({"ok": True})
+
+
+@app.post("/llm-server/load")
+async def llm_server_load():
+    """Trigger model warm-up / load into LLM server memory."""
+    asyncio.create_task(
+        asyncio.get_event_loop().run_in_executor(None, _pr.warm_up_model)
+    )
+    return JSONResponse({"ok": True, "message": "Model warm-up started"})
 
 
 # ── Folder / file-manager helpers ──────────────────────────────────────────────

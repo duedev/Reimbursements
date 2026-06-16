@@ -14,3 +14,4 @@ config/
 .app_secrets.json
 .DS_Store
 *.xlsx
+.claude/worktrees/

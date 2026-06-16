@@ -40,13 +40,13 @@ RUN set -eu; \
 # ── Stage 2: the OpenAI-compatible server with the weights inside ─────────────
 FROM ghcr.io/ggml-org/llama.cpp:server
 COPY --from=fetch /models /models
-EXPOSE 1234
+EXPOSE 11434
 # The base image's entrypoint is the llama-server binary; everything below is
 # its arguments. --alias is the model id the app sees at /v1/models (auto-picked
 # by initialize_models). -ngl 0 is CPU-only; raise it (and enable the GPU block
 # in docker-compose.yml) to offload layers to a GPU.
 CMD ["-m", "/models/model.gguf", \
      "--mmproj", "/models/mmproj.gguf", \
-     "--host", "0.0.0.0", "--port", "1234", \
+     "--host", "0.0.0.0", "--port", "11434", \
      "-c", "8192", "-ngl", "0", \
      "--alias", "qwen3-vl-2b-instruct"]
