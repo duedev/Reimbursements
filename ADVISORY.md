@@ -99,8 +99,8 @@ The 1568 px resize and auto-crop (which trims blank borders from receipt photos)
 
 The following findings came out of a code review of the current codebase. They are documented here so future contributors understand what changed and why.
 
-**`receipt_gui.py` — unrunnable in the shipped container.**
-`customtkinter` is not in `requirements.txt` and is not installed in the Docker image. The file was intentionally kept out of the container build because it requires a display. It has been moved to `extras/` to avoid confusion; users who want the desktop GUI are instructed to install `customtkinter` separately before running it.
+**`receipt_gui.py` — removed from the repo.**
+The standalone `customtkinter` desktop GUI was unrunnable in the shipped container (`customtkinter` is not in `requirements.txt` and the image has no display) and duplicated the web UI's functionality. It has since been removed from the repository entirely — the web UI is the single supported front end. Anyone who still wants a desktop wrapper can call the same `process_receipts` pipeline directly.
 
 **`process_receipts_batch` — dead `template_path` parameter removed.**
 The function signature included a `template_path` parameter that was never wired to anything inside the function body. It was removed to avoid misleading callers.

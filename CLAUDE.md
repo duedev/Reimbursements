@@ -45,10 +45,10 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 | File | What lives here |
 |---|---|
-| `server.py` (~3k lines) | FastAPI app: all HTTP/SSE endpoints (66 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints. Imports the pipeline from `process_receipts`. |
-| `process_receipts.py` (~1.9k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
+| `server.py` (~4k lines) | FastAPI app: all HTTP/SSE endpoints (82 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints. Imports the pipeline from `process_receipts`. |
+| `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
-| `templates/index.html` | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
+| `templates/index.html` (~5.4k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
 | `vendor_db.py` | Curated vendor → category lookup data/helpers. |
 | `watch_mode.py` | Standalone watch-mode daemon (monitor inbox, process, email on schedule). `main()` entry. |
 | `scheduler.py` | Weekly scheduled export/delivery. |
@@ -141,7 +141,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **422 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **434 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -176,7 +176,31 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-16 (docs sync — no code changes):** Brought the Markdown docs back in
+  line with the code (no behavior changed):
+  * **CLAUDE.md** — refreshed the Key-files map (server.py ~4k lines / **82 routes**,
+    process_receipts.py ~2.7k, index.html ~5.4k) and corrected the Testing line to
+    **434 tests** (matched the changelog, which the Testing section still listed as 422).
+  * **README.md** — removed the stale **Desktop GUI** (`receipt_gui.py` no longer
+    exists in the repo); corrected `MAX_PARALLEL_REQUESTS` default 4→**3**; replaced
+    the hard-coded **Threshold flags** section (fuel>$200/mats>$500/misc>$300 + 6-month)
+    with the current **opt-in, off-by-default** Spending & Date Warnings; fixed the
+    pipeline diagram's Validate box; updated the Models API (`/models/ocr` now
+    `{enabled}`, added `/models/thinking`), the `/settings/processing` keys
+    (autorotate, autocrop_aggressiveness, max_parallel), and added LLM-Server /
+    Benchmarks / Audit / finish endpoint rows; Python requirement 3.12+→**3.11+**
+    (CI tests 3.11 & 3.12).
+  * **BLUEPRINT.md** — §5/§7 updated for the opt-in warnings (the baked-in
+    thresholds/stale-date flags are gone).
+  * **TUTORIAL.md** — Step 2 now describes the single **AI Model** + *"Also use this
+    model for OCR"* toggle (no separate "OCR Model" dropdown post-consolidation).
+  * **ADVISORY.md** — §6 note updated: `receipt_gui.py` was removed from the repo
+    (not just moved to `extras/`).
+  * **DESIGN_FROM_SCRATCH.md** — added the per-field zoomed review callouts to the
+    "port straight over" review-UX list.
+
 - **2026-06-16 (review/export/benchmark UX batch — 7 changes):**
+  * **Confetti gated on a finished workload** — `batch_done` only fires `celebrate()`
   * **Confetti gated on a finished workload** — `batch_done` only fires `celebrate()`
     when nothing is left (`pending === 0` **and** no card is `queued`/`ocr`/`distilling`),
     so a batch that completes mid-run with more queued no longer triggers it early.
