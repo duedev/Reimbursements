@@ -204,6 +204,18 @@ user input, never the placeholder.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-17 (free cloud deploy — Oracle Always Free + Caddy):** Added a
+  production deploy path for hosting the Docker image free, 24/7. `docker-compose.prod.yml`
+  is an overlay (`-f docker-compose.yml -f docker-compose.prod.yml`) that adds a
+  **Caddy** reverse-proxy service for automatic Let's Encrypt HTTPS in front of the
+  app (only Caddy's 80/443 are public; the app stays on the internal compose network
+  as `receipt-processor:8000`), forces `APP_AUTH_TOKEN` (`:?` guard), and wires the
+  cloud LLM keys. `Caddyfile` proxies with `flush_interval -1` so SSE streams
+  unbuffered. `DEPLOY_ORACLE.md` is the step-by-step for an Oracle Cloud Always-Free
+  Ampere A1 (ARM) VM — build happens on the VM so aarch64 wheels are pulled natively;
+  the LM Studio tier is inert in cloud (chain = Gemini → Mistral → offline parser).
+  Docs/compose only — no app code or tests changed.
+
 - **2026-06-17 (cloud LLM fallback chain — Gemini → Mistral → LM Studio):** Extraction
   can now fall back across multiple OpenAI-compatible providers instead of only the
   local LM Studio endpoint. `process_receipts.make_llm_client()` returns a
