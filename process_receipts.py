@@ -428,12 +428,16 @@ def initialize_models(warm: bool = True) -> str:
 # provider is still exhausted after its retries, the chain moves to the next one.
 
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY",  "")
+# Defaults are the smallest FREE, vision-capable model on each provider's free
+# tier. Gemini 2.5 Flash-Lite is the cheapest/stable free Gemini with image input
+# (highest free request/day allowance); Mistral Small is the smallest maintained
+# free vision model (Pixtral 12B is deprecated). Override per provider as needed.
 GEMINI_MODEL    = os.getenv("GEMINI_MODEL",    "gemini-2.5-flash-lite")
 GEMINI_BASE_URL = os.getenv(
     "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 
 MISTRAL_API_KEY  = os.getenv("MISTRAL_API_KEY",  "")
-MISTRAL_MODEL    = os.getenv("MISTRAL_MODEL",    "pixtral-12b-latest")
+MISTRAL_MODEL    = os.getenv("MISTRAL_MODEL",    "mistral-small-latest")
 MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
 
 # Ordered cloud providers tried before the local model. enabled=False or a blank

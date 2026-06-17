@@ -54,7 +54,7 @@ def _provider(name, kind, model, fn):
 def test_active_requires_key_and_model():
     pr.configure_providers([
         {"name": "gemini",  "api_key": "k", "model": "gemini-2.5-flash-lite", "enabled": True},
-        {"name": "mistral", "api_key": "",  "model": "pixtral-12b-latest",    "enabled": True},
+        {"name": "mistral", "api_key": "",  "model": "mistral-small-latest",  "enabled": True},
     ])
     assert pr.active_provider_names() == ["gemini", "lmstudio"]
 
