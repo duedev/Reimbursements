@@ -410,6 +410,175 @@ def initialize_models(warm: bool = True) -> str:
     return _active_distill_model
 
 
+# ── Cloud LLM providers (fallback chain) ─────────────────────────────────────────
+#
+# Extraction can fall back across several OpenAI-compatible endpoints, tried in
+# order. The default chain is:
+#
+#     Gemini Flash-Lite (cloud)  →  Mistral (cloud)  →  local LM Studio
+#
+# A cloud provider is only tried when its API key is set (env var or the Settings
+# UI). LM Studio is ALWAYS the final fallback, so a fully-local install keeps
+# working with no keys at all. If every provider errors, callers fall through to
+# the offline regex parser exactly as before — the chain only changes WHERE the
+# model call goes, not what happens when there's no model.
+#
+# Cloud free tiers rate-limit aggressively; the OpenAI SDK already retries 429 /
+# 5xx with exponential backoff honouring Retry-After (LLM_MAX_RETRIES). When a
+# provider is still exhausted after its retries, the chain moves to the next one.
+
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY",  "")
+GEMINI_MODEL    = os.getenv("GEMINI_MODEL",    "gemini-2.5-flash-lite")
+GEMINI_BASE_URL = os.getenv(
+    "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+
+MISTRAL_API_KEY  = os.getenv("MISTRAL_API_KEY",  "")
+MISTRAL_MODEL    = os.getenv("MISTRAL_MODEL",    "pixtral-12b-latest")
+MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
+
+# Ordered cloud providers tried before the local model. enabled=False or a blank
+# api_key takes a provider out of the chain. Mutated by configure_providers().
+_CLOUD_PROVIDERS: list[dict] = [
+    {"name": "gemini",  "base_url": GEMINI_BASE_URL,  "api_key": GEMINI_API_KEY,
+     "model": GEMINI_MODEL,  "enabled": True},
+    {"name": "mistral", "base_url": MISTRAL_BASE_URL, "api_key": MISTRAL_API_KEY,
+     "model": MISTRAL_MODEL, "enabled": True},
+]
+
+# Request params the cloud OpenAI-compatible endpoints understand. LM Studio
+# extras (the thinking body + repeat_penalty carried in extra_body, and
+# frequency_penalty) are dropped for cloud providers so they don't 400 on an
+# unknown field.
+_CLOUD_SAFE_PARAMS = {"messages", "temperature", "max_tokens", "response_format"}
+
+
+def _active_cloud_providers() -> list[dict]:
+    """Enabled cloud providers with a non-blank API key + model, in fallback order."""
+    return [p for p in _CLOUD_PROVIDERS
+            if p.get("enabled", True)
+            and (p.get("api_key") or "").strip()
+            and (p.get("model") or "").strip()]
+
+
+def configure_providers(specs: list[dict]) -> None:
+    """Replace cloud-provider settings at runtime (used by the Settings UI).
+
+    Each spec is a dict with ``name`` plus any of base_url/api_key/model/enabled;
+    fields left out keep their current value, and unknown provider names are
+    ignored. Does not touch the local LM Studio fallback.
+    """
+    by_name = {p["name"]: p for p in _CLOUD_PROVIDERS}
+    for spec in specs or []:
+        name = (spec.get("name") or "").strip()
+        cur = by_name.get(name)
+        if cur is None:
+            continue
+        for key in ("base_url", "api_key", "model", "enabled"):
+            if key in spec and spec[key] is not None:
+                cur[key] = spec[key]
+
+
+def provider_status() -> list[dict]:
+    """Fallback chain as the UI sees it — no API keys, just whether each is live."""
+    active = _active_cloud_providers()
+    chain = [{
+        "name":    p["name"],
+        "model":   p.get("model", ""),
+        "enabled": bool(p.get("enabled", True)),
+        "has_key": bool((p.get("api_key") or "").strip()),
+        "active":  p in active,
+    } for p in _CLOUD_PROVIDERS]
+    chain.append({"name": "lmstudio", "model": _active_distill_model or "",
+                  "enabled": True, "has_key": True, "active": True})
+    return chain
+
+
+def active_provider_names() -> list[str]:
+    """Ordered names of every provider that would actually be tried."""
+    return [p["name"] for p in _active_cloud_providers()] + ["lmstudio"]
+
+
+def _sanitize_create_kwargs(kind: str, kwargs: dict) -> dict:
+    """Strip LM-Studio-only params before sending to a cloud provider."""
+    if kind == "lmstudio":
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in _CLOUD_SAFE_PARAMS}
+
+
+class _FallbackCompletions:
+    """Mimics ``client.chat.completions`` across an ordered provider chain.
+
+    ``create()`` keeps the exact signature the pipeline already uses
+    (``model=…, messages=…, …``). For each provider in turn it substitutes that
+    provider's own model id, sanitises the request, and returns the first
+    success. The caller's ``model`` argument is used only for the local LM Studio
+    provider (whose model is runtime-selected). If every provider errors, the
+    last exception is re-raised so existing ``except Exception`` paths fall back
+    to the offline parser unchanged.
+    """
+
+    def __init__(self, providers: list[dict]):
+        self._providers = providers
+
+    def create(self, **kwargs):
+        requested_model = kwargs.pop("model", None)
+        last_exc: Optional[Exception] = None
+        attempted: list[str] = []
+        for p in self._providers:
+            model = p.get("model") or requested_model
+            if not model:
+                continue
+            call_kwargs = _sanitize_create_kwargs(p["kind"], dict(kwargs))
+            try:
+                resp = p["client"].chat.completions.create(model=model, **call_kwargs)
+                if attempted:
+                    print(f"[llm] '{p['name']}' ({model}) succeeded after "
+                          f"{', '.join(attempted)} failed")
+                return resp
+            except Exception as exc:  # noqa: BLE001 — fall through to the next provider
+                last_exc = exc
+                attempted.append(p["name"])
+                print(f"[llm] provider '{p['name']}' ({model}) failed: "
+                      f"{type(exc).__name__}: {exc}")
+                continue
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("No LLM providers configured")
+
+
+class _FallbackChat:
+    def __init__(self, providers: list[dict]):
+        self.completions = _FallbackCompletions(providers)
+
+
+class _FallbackClient:
+    """Drop-in stand-in for an OpenAI client exposing only ``chat.completions``."""
+
+    def __init__(self, providers: list[dict]):
+        self.chat = _FallbackChat(providers)
+
+
+def make_llm_client():
+    """Build the extraction client.
+
+    When any cloud provider is active, return the fallback chain
+    (cloud… → LM Studio); otherwise return the plain local LM Studio client so a
+    keyless install behaves byte-for-byte as before.
+    """
+    cloud = _active_cloud_providers()
+    if not cloud:
+        return _make_client()
+    providers = [{
+        "name": p["name"], "kind": "openai", "model": (p.get("model") or "").strip(),
+        "client": OpenAI(base_url=p["base_url"], api_key=p["api_key"],
+                         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES),
+    } for p in cloud]
+    providers.append({"name": "lmstudio", "kind": "lmstudio", "model": None,
+                      "client": _make_client()})
+    print(f"[llm] extraction chain: {' → '.join(p['name'] for p in providers)}")
+    return _FallbackClient(providers)
+
+
 # ── Image encoding ─────────────────────────────────────────────────────────────
 #
 # CANONICAL PIPELINE ORDER:  greyscale → autocrop → OCR/text extraction → … → compress
