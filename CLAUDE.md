@@ -223,7 +223,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **496 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **504 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -261,6 +261,49 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (OpenRouter-default + live mode availability + round-trip test + chip):**
+  Suite **496 → 504** green. A pass over the AI Model UX driven by the user request.
+  * **OpenRouter is the default mode** — a *fresh* config (no explicit choice) now
+    defaults the mode selector to ☁️ OpenRouter (the zero-setup free option) instead of
+    On-host. `GET /settings/llm-provider` gained a **`configured`** flag (true once any
+    `provider`/`llm_server`/`llm_model_config`/`openrouter` key exists); `loadLLMProvider`
+    picks `openrouter` when `!configured`. The HTML default `checked` radio + initial
+    section visibility flipped to OpenRouter. Backend inference defaults are unchanged
+    (`_apply_llm_server_config` still `local`, `_first_run_provider_default` still no-ops
+    without an env key) — the default lives at the UI layer so nothing breaks for
+    local-only users or the suite.
+  * **No models on local → None, suggest OpenRouter** — when On-host/Docker is selected
+    and the server reports zero models, `loadModels` shows `#llm-no-models-warn`
+    (defaults to None = built-in OCR + offline parser, with a "switch to OpenRouter"
+    link) instead of silently using the cloud.
+  * **Live per-mode availability + header chip** — new `GET /llm-server/availability`
+    probes the On-host (`127.0.0.1:1234` or saved custom) and Docker (`_docker_llm_url()`)
+    endpoints **in parallel** (`asyncio.gather`) and reports the OpenRouter key presence +
+    the active mode/model. One `refreshLLMOverview()` fetch drives BOTH the per-mode
+    "● reachable (N) / ○ offline / key set" indicators next to each radio AND the
+    always-visible header chip. **Auto-runs** every 20s globally and every 12s while
+    Settings is open ("auto-detect to auto-run while the section is visible"), plus on
+    every mode change / save / autodetect.
+  * **Header chip = active mode + model** (was "Offline · url") — `_renderEngineChip`
+    shows e.g. `☁️ OpenRouter · openrouter/free`, `🔒 On-host · <model>`, `🐳 Docker · …`,
+    with the ok/warn/err dot from reachability/key. `loadLMStudioModels` no longer owns
+    the chip (only renders the loaded-models strip).
+  * **OpenRouter "Test connection"** — `POST /settings/openrouter/test` runs a real
+    send → receive round-trip through the same client/headers/routing body the pipeline
+    uses, returning a step **log** (endpoint, model, headers, latency, reply) and a
+    typed **hint** on failure (401/404/429/timeout). UI: a 🔌 *Test connection* button +
+    scrollable result panel in the OpenRouter card.
+  * **Scan-app import moved to Info** — the redundant "Import from a scan app" button was
+    removed from the Add Receipts card; a new **Importing from a scan app** Info card holds
+    the guidance + the (unchanged) `#camscanner-btn` → modal. Functionality intact.
+  * **Removed cloud "warnings" + local-AI tagline** — dropped the header
+    *"Local-AI expense reports — nothing leaves your machine"* tagline, the OpenRouter
+    ⚠ Privacy box (→ neutral key-setup hint), the *"nothing is sent to the cloud"* Tips
+    line, and the *"No receipt data ever leaves your machine"* About claim (reworded to
+    mention on-host **or** OpenRouter). The On-host "(private)" framing stays.
+  * Tests: `tests/test_llm_provider.py` (+8 — `configured` flag, availability probes,
+    OpenRouter round-trip ok/no-key/not-active/failure-hint).
 
 - **2026-06-19 (AI Model section rework + benchmark steps + scan-app import):** Suite
   **483 → 496** green.

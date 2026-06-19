@@ -1023,6 +1023,15 @@
     .lm-chip[data-state="warn"] .lm-dot { background: var(--warning); }
     .lm-chip[data-state="err"]  .lm-dot { background: var(--danger); }
 
+    /* Per-mode availability indicators in the AI Model card */
+    .mode-avail { font-size: 11px; margin-left: auto; color: var(--muted); white-space: nowrap; }
+    .mode-row { padding: 3px 2px; border-radius: 8px; }
+    .mode-row.mode-active { background: rgba(59,130,246,0.08); }
+    .mode-avail .av-active { color: var(--accent); font-weight: 600; }
+    .mode-avail .av-ok     { color: var(--success); }
+    .mode-avail .av-off    { color: var(--muted); }
+    .mode-avail .av-warn   { color: var(--warning); }
+
     /* Settings sections — shared heading / description rhythm */
     .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
@@ -1273,9 +1282,7 @@
         d="M9 14l2 2 4-4m5 8V5a2 2 0 00-2-2H6a2 2 0 00-2 2v15l2-1.5L8 20l2-1.5L12 20l2-1.5L16 20l2-1.5L20 20z"/>
     </svg>
   </div>
-  <h1>Receipt <span>Processor</span>
-    <span class="tagline">Local-AI expense reports — nothing leaves your machine</span>
-  </h1>
+  <h1>Receipt <span>Processor</span></h1>
   <button class="lm-chip" id="lm-status-chip" data-state="" onclick="switchTab('settings')"
           title="LLM Server connection — click to open model settings">
     <span class="lm-dot"></span>
@@ -1451,8 +1458,6 @@
     </label>
     <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
       <span class="status-note" id="file-count-note"></span>
-      <button class="btn btn-outline-accent btn-sm" id="camscanner-btn"
-              title="Guided import for CamScanner / Adobe Scan / Genius Scan exports — applies the best settings for already-scanned documents">&#128241; Import from a scan app</button>
       <span class="intake-note hidden" id="intake-row">
         <span><strong id="intake-count">0</strong> waiting in intake folder</span>
         <button class="btn btn-outline-accent btn-sm" id="queue-intake-btn"
@@ -1695,21 +1700,24 @@
          follow this single choice (on-host / docker-bundled / OpenRouter cloud). -->
     <div style="margin-bottom:12px">
       <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Where the model runs</div>
-      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
-        <label class="check-label" style="font-size:12px;gap:6px"
-               title="Run a model locally with LM Studio / llama.cpp / any OpenAI-compatible server. Receipts never leave your machine.">
-          <input type="radio" name="llm-mode" value="host" id="mode-host" checked>
-          🔒 On-host LLM <span style="font-weight:400">(private)</span>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label class="check-label mode-row" style="font-size:12px;gap:6px;justify-content:flex-start"
+               title="Use OpenRouter's free, vision-capable cloud models. A free API key gets you running in minutes — no local model to install.">
+          <input type="radio" name="llm-mode" value="openrouter" id="mode-openrouter" checked>
+          ☁️ OpenRouter <span style="font-weight:400">(free · recommended)</span>
+          <span class="mode-avail" id="avail-openrouter"></span>
         </label>
-        <label class="check-label" style="font-size:12px;gap:6px"
+        <label class="check-label mode-row" style="font-size:12px;gap:6px;justify-content:flex-start"
+               title="Run a model locally with LM Studio / llama.cpp / any OpenAI-compatible server. Receipts never leave your machine.">
+          <input type="radio" name="llm-mode" value="host" id="mode-host">
+          🔒 On-host LLM <span style="font-weight:400">(private)</span>
+          <span class="mode-avail" id="avail-host"></span>
+        </label>
+        <label class="check-label mode-row" style="font-size:12px;gap:6px;justify-content:flex-start"
                title="Use the LLM server bundled with this app's Docker compose stack (model-server). Start/stop it with the controls below.">
           <input type="radio" name="llm-mode" value="docker" id="mode-docker">
           🐳 Docker bundled LLM
-        </label>
-        <label class="check-label" style="font-size:12px;gap:6px"
-               title="Use OpenRouter's cloud API and free, vision-capable models. Sends receipt data to a third-party cloud.">
-          <input type="radio" name="llm-mode" value="openrouter" id="mode-openrouter">
-          ☁️ OpenRouter <span style="font-weight:400">(cloud · free)</span>
+          <span class="mode-avail" id="avail-docker"></span>
         </label>
       </div>
     </div>
@@ -1725,7 +1733,7 @@
       <div id="llm-url-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
     </div>
 
-    <div id="provider-local-section">
+    <div id="provider-local-section" style="display:none">
     <!-- Single consolidated model selector — list is scoped to the selected mode,
          and "None" runs the built-in OCR + offline parser with no LLM. -->
     <div class="model-grid" style="grid-template-columns:1fr">
@@ -1739,6 +1747,15 @@
           <button class="copy-btn" id="refresh-models-btn" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh</button>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Only models on the selected server are shown. Pick <strong>None</strong> to skip the LLM — built-in OCR + offline parser only.</div>
+        <!-- Shown when the chosen on-host / docker server reports no models: we
+             default to None (no LLM) rather than silently using the cloud, and
+             suggest OpenRouter as the easy zero-setup path. -->
+        <div id="llm-no-models-warn" style="display:none;margin-top:8px;font-size:12px;line-height:1.5;color:var(--warning);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.32);border-radius:8px;padding:9px 11px">
+          ⚠ No models detected on this server — running with <strong>None</strong> (built-in OCR + offline parser, no LLM).
+          Load a model in your LLM server, or switch to
+          <a href="#" id="llm-suggest-openrouter" style="color:var(--accent);font-weight:600;text-decoration:underline">☁️ OpenRouter (free)</a>
+          for a zero-setup option.
+        </div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -1790,9 +1807,11 @@
     </div><!-- /#provider-local-section -->
 
     <!-- OpenRouter cloud provider -->
-    <div id="provider-openrouter-section" style="display:none">
-      <div style="font-size:12px;line-height:1.5;color:var(--warning);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.32);border-radius:8px;padding:10px 12px;margin-bottom:12px">
-        ⚠ <strong>Privacy:</strong> OpenRouter is a cloud service — receipt data leaves your machine, and many free models may use submitted data for training. Pick <em>“OCR text only”</em> below to keep the receipt <em>image</em> local and send only extracted text.
+    <div id="provider-openrouter-section">
+      <div style="font-size:12px;line-height:1.5;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+        Run on OpenRouter's free, vision-capable models — no local model to install. Get a free key at
+        <strong>openrouter.ai/keys</strong>, paste it below, and Apply. Use the <em>“What to send”</em> options to
+        choose between sending the receipt image (best accuracy) or OCR text only.
       </div>
       <div style="margin-bottom:10px">
         <div class="model-section-label">OpenRouter API key</div>
@@ -1845,8 +1864,12 @@
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="or-save-btn">Apply OpenRouter settings</button>
+        <button class="btn btn-outline-accent btn-sm" id="or-test-btn"
+                title="Send a tiny prompt to OpenRouter and read the reply — a full round-trip that proves the key, model and routing all work. Shows the log if anything fails.">&#128268; Test connection</button>
         <span id="or-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
+      <!-- Full send → receive round-trip log (task: surface issues, not silent fails) -->
+      <div id="or-test-result" style="display:none;margin-top:10px"></div>
     </div>
   </div>
 
@@ -2137,7 +2160,7 @@
 
   <div class="card">
     <div class="card-title">About</div>
-    <p style="font-size:14px;line-height:1.65;color:var(--text)">This app processes receipt photos locally on your machine, extracts vendor, date, and amount using OCR and a local AI model, and generates a polished Excel reimbursement report. No receipt data ever leaves your machine.</p>
+    <p style="font-size:14px;line-height:1.65;color:var(--text)">This app reads your receipt photos, extracts vendor, date, and amount using OCR and an AI model — running on-host or via OpenRouter's free cloud models — and generates a polished Excel reimbursement report.</p>
   </div>
 
   <div class="card">
@@ -2148,6 +2171,23 @@
       <li>Review results — click any card to correct vendor, date, amount, or category</li>
       <li>Click "Generate Report" to export a polished Excel workbook</li>
     </ol>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Importing from a scan app</div>
+    <p style="font-size:14px;line-height:1.65;color:var(--text)">
+      Scan apps like <strong>CamScanner</strong>, <strong>Adobe Scan</strong> and <strong>Genius Scan</strong>
+      already crop, de-skew and enhance each page, so this app skips its own auto-crop and just reads them.
+      Each PDF page (or photo) becomes one receipt — you can drag exported files straight onto the
+      <em>Add Receipts</em> card, or use the guided import below to apply the best scanned-document settings automatically.
+    </p>
+    <ul style="font-size:13px;line-height:1.7;color:var(--muted);padding-left:18px;margin:8px 0 14px">
+      <li>Export as <strong>PDF</strong> (multi-page = one receipt per page) or <strong>JPG</strong> at <strong>HD / original</strong> quality</li>
+      <li>Color mode <strong>“Original”</strong> or <strong>“B&amp;W document”</strong> — both read well</li>
+      <li>A free-tier watermark is fine — it sits in the footer and doesn't affect the total</li>
+    </ul>
+    <button class="btn btn-outline-accent btn-sm" id="camscanner-btn"
+            title="Guided import for CamScanner / Adobe Scan / Genius Scan exports — applies the best settings for already-scanned documents">&#128241; Import from a scan app…</button>
   </div>
 
   <div class="card">
@@ -2193,7 +2233,7 @@
       <li>Good lighting and a flat surface give better OCR results</li>
       <li>You can edit any field in the review window before approving</li>
       <li>The report includes charts and a category breakdown</li>
-      <li>All processing happens locally — nothing is sent to the cloud</li>
+      <li>Pick where the model runs in Settings → AI Model: OpenRouter (free cloud) or an on-host LLM</li>
     </ul>
   </div>
 
@@ -2445,6 +2485,7 @@ function switchTab(name) {
     if (typeof loadLLMServerSettings === 'function') loadLLMServerSettings();
     if (typeof loadLLMProvider === 'function') loadLLMProvider();
     if (typeof checkLLMStatus === 'function') checkLLMStatus();
+    if (typeof refreshLLMOverview === 'function') refreshLLMOverview();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -4069,9 +4110,17 @@ async function loadModels() {
       distillSelect.appendChild(opt);
     }
     distillSelect.value = activeDistill || '';
+    // On-host / docker with no models → default to None and nudge toward OpenRouter.
+    _setNoModelsWarn(data.provider !== 'openrouter' && models.length === 0 && !activeDistill);
   } catch (_) {
     distillSelect.innerHTML = '<option value="">None — server unreachable (built-in OCR + offline parser)</option>';
+    _setNoModelsWarn(true);
   }
+}
+
+function _setNoModelsWarn(show) {
+  const warn = document.getElementById('llm-no-models-warn');
+  if (warn) warn.style.display = show ? '' : 'none';
 }
 
 distillSelect.addEventListener('change', async () => {
@@ -4166,6 +4215,9 @@ function _setLmChip(state, text) {
 }
 
 async function loadLMStudioModels() {
+  // Renders the "Loaded in LLM Server" strip only. The header engine chip is
+  // owned by refreshLLMOverview() (which knows the active mode + model), so this
+  // no longer fights it for the chip.
   try {
     const res  = await fetch('/models/lmstudio');
     const data = await res.json();
@@ -4174,10 +4226,8 @@ async function loadLMStudioModels() {
       strip.innerHTML = data.loaded.map(id =>
         `<div class="model-row"><div class="model-dot loaded"></div><span class="model-name">${esc(id)}</span></div>`
       ).join('');
-      _setLmChip('ok', `LLM Server · ${data.loaded.length} model${data.loaded.length === 1 ? '' : 's'}`);
     } else if (data.ok) {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
-      _setLmChip('warn', 'No models loaded');
     } else {
       // Unreachable at the CONFIGURED URL. Do NOT silently auto-detect and
       // persist a different endpoint here — that used to overwrite the user's
@@ -4186,12 +4236,65 @@ async function loadLMStudioModels() {
       // button recover on demand.
       const urlHint = data.base_url ? ` — tried <code style="font-size:10px">${esc(data.base_url)}</code>` : '';
       strip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable${urlHint} · use Auto-detect</span></div>`;
-      _setLmChip('err', `Offline${data.base_url ? ' · ' + esc(data.base_url) : ''}`);
     }
   } catch (_) {
     document.getElementById('model-strip').innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable</span></div>';
-    _setLmChip('err', 'LLM server offline');
   }
+}
+
+// ── Engine overview: header chip + per-mode availability indicators ───────────
+// One probe of /llm-server/availability feeds the always-visible header chip
+// (active mode + model) AND the per-mode "available / active" badges. Auto-runs
+// on a timer and while the AI Model settings are open.
+async function refreshLLMOverview() {
+  let d;
+  try {
+    d = await (await fetch('/llm-server/availability')).json();
+  } catch (_) {
+    _setLmChip('err', 'Engine unreachable');
+    return;
+  }
+  _renderEngineChip(d);
+  _renderModeAvailability(d);
+}
+
+function _renderEngineChip(d) {
+  const mode  = d.active_mode || 'host';
+  const model = d.active_model || '';
+  if (mode === 'openrouter') {
+    const ok = !!(d.openrouter && d.openrouter.has_key);
+    _setLmChip(ok ? 'ok' : 'warn',
+      `☁️ OpenRouter · ${model || (ok ? 'free router' : 'no key')}`);
+  } else if (mode === 'docker') {
+    const ok = !!(d.docker && d.docker.reachable);
+    _setLmChip(ok ? 'ok' : 'err',
+      `🐳 Docker · ${model || (ok ? 'no model (offline parser)' : 'offline')}`);
+  } else {
+    const ok = !!(d.host && d.host.reachable);
+    _setLmChip(ok ? 'ok' : 'err',
+      `🔒 On-host · ${model || (ok ? 'no model (offline parser)' : 'offline')}`);
+  }
+}
+
+function _renderModeAvailability(d) {
+  const active = d.active_mode || 'host';
+  const set = (mode, id, html) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = (active === mode ? '<span class="av-active">active</span> · ' : '') + html;
+    const row = el.closest('.mode-row');
+    if (row) row.classList.toggle('mode-active', active === mode);
+  };
+  const host = d.host || {}, docker = d.docker || {}, or = d.openrouter || {};
+  set('host', 'avail-host', host.reachable
+      ? `<span class="av-ok">● reachable${host.models ? ` (${host.models} model${host.models === 1 ? '' : 's'})` : ''}</span>`
+      : '<span class="av-off">○ offline</span>');
+  set('docker', 'avail-docker', docker.reachable
+      ? `<span class="av-ok">● reachable${docker.models ? ` (${docker.models} model${docker.models === 1 ? '' : 's'})` : ''}</span>`
+      : '<span class="av-off">○ not running</span>');
+  set('openrouter', 'avail-openrouter', or.has_key
+      ? '<span class="av-ok">● key set</span>'
+      : '<span class="av-warn">○ needs free key</span>');
 }
 
 // ── LLM server / mode controls ────────────────────────────────────────────────
@@ -4273,8 +4376,11 @@ async function loadLLMProvider() {
   try {
     const d = await (await fetch('/settings/llm-provider')).json();
     const serverType = (d.local && d.local.server_type) || 'custom';
-    const mode = d.provider === 'openrouter' ? 'openrouter'
-               : (serverType === 'docker' ? 'docker' : 'host');
+    // Fresh install (no explicit choice yet) → default the selector to OpenRouter,
+    // the zero-setup free option. An explicit saved choice always wins.
+    const mode = !d.configured ? 'openrouter'
+               : (d.provider === 'openrouter' ? 'openrouter'
+                  : (serverType === 'docker' ? 'docker' : 'host'));
     _applyModeUI(mode);
     if (mode === 'openrouter') {
       const or = d.openrouter || {};
@@ -4362,6 +4468,7 @@ document.querySelectorAll('input[name="llm-mode"]').forEach(radio => {
         if (d.warning) showToast(d.warning, false);
         else showToast(`OpenRouter active${d.resolved_model ? ' · ' + d.resolved_model : ''}`, true);
       }
+      refreshLLMOverview();
     } catch (e) { showToast('Error: ' + e.message, false); }
   });
 });
@@ -4391,8 +4498,42 @@ document.getElementById('or-save-btn').addEventListener('click', async () => {
       showToast(d.warning || 'Could not activate OpenRouter', false);
     }
     loadLLMProvider();
+    refreshLLMOverview();
   } catch (e) { showToast('Error: ' + e.message, false); }
   finally { btn.disabled = false; btn.textContent = prev; }
+});
+
+// OpenRouter "Test connection" — full send → receive round-trip with a log panel.
+document.getElementById('or-test-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('or-test-btn');
+  const panel = document.getElementById('or-test-result');
+  const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Testing…';
+  if (panel) {
+    panel.style.display = '';
+    panel.innerHTML = '<div class="instr-pre" style="color:var(--muted)">Running a full send → receive round-trip…</div>';
+  }
+  try {
+    const d = await (await fetch('/settings/openrouter/test', {method: 'POST'})).json();
+    const logs = (d.logs || []).map(esc).join('\n');
+    const headColor = d.ok ? 'var(--success)' : 'var(--danger)';
+    const head = d.ok
+      ? `✓ Connected · ${esc(d.model_used || d.requested_model || '')}${d.latency_ms != null ? ` · ${d.latency_ms} ms` : ''}`
+      : `✗ ${esc(d.error || 'Connection failed')}`;
+    panel.innerHTML =
+      `<div style="font-size:12px;font-weight:600;color:${headColor};margin-bottom:6px">${head}</div>` +
+      `<pre class="instr-pre" style="white-space:pre-wrap">${logs}</pre>`;
+    showToast(d.ok ? 'OpenRouter round-trip OK' : (d.error || 'OpenRouter test failed'), d.ok);
+  } catch (e) {
+    panel.innerHTML = `<div class="instr-pre" style="color:var(--danger)">Test failed: ${esc(e.message)}</div>`;
+    showToast('Test failed: ' + e.message, false);
+  } finally { btn.disabled = false; btn.textContent = prev; }
+});
+
+// "Switch to OpenRouter" shortcut from the no-models warning.
+document.getElementById('llm-suggest-openrouter').addEventListener('click', (e) => {
+  e.preventDefault();
+  const r = document.getElementById('mode-openrouter');
+  if (r) { r.checked = true; r.dispatchEvent(new Event('change', {bubbles: true})); }
 });
 
 async function checkLLMStatus() {
@@ -4431,6 +4572,7 @@ document.getElementById('llm-server-save-btn').addEventListener('click', async (
       loadLMStudioModels();
       checkLLMStatus();
       loadLLMServerSettings();
+      refreshLLMOverview();
     } else {
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
@@ -4460,7 +4602,7 @@ document.getElementById('llm-autodetect-btn').addEventListener('click', async ()
     } else {
       showToast('No LLM server found. Is LM Studio running with a model loaded?', false);
     }
-    loadLMStudioModels(); checkLLMStatus(); loadLLMServerSettings();
+    loadLMStudioModels(); checkLLMStatus(); loadLLMServerSettings(); loadModels(); refreshLLMOverview();
   } catch (e) { showToast('Auto-detect failed: ' + e.message, false); }
   finally { btn.disabled = false; btn.textContent = prev; }
 });
@@ -5988,6 +6130,7 @@ loadLMStudioModels();
 checkLLMStatus();
 loadModels();
 if (typeof loadLLMProvider === 'function') loadLLMProvider();
+refreshLLMOverview();
 loadSettings();
 loadSavedFields();
 loadStats();
@@ -5997,15 +6140,19 @@ loadRuns();
 setInterval(loadIntakeCount, 15000);
 setInterval(loadRejected, 20000);
 setInterval(loadLMStudioModels, 30000);
-// Auto-refresh the model dropdowns while Settings is open — but never while the
-// user is actively picking from one (that would close the open menu).
+// Keep the header engine chip (active mode + model) honest while the page idles.
+setInterval(refreshLLMOverview, 20000);
+// Auto-refresh the model list AND re-probe mode availability while the AI Model
+// settings are open ("auto-detect to auto-run while the section is visible") —
+// but never refresh the dropdown while the user is actively picking from it.
 setInterval(() => {
   const settings = document.getElementById('tab-settings');
   if (!settings || settings.classList.contains('hidden')) return;
+  refreshLLMOverview();
   const active = document.activeElement;
   if (active && active.id === 'distill-model-select') return;
   loadModels();
-}, 30000);
+}, 12000);
 </script>
 </body>
 </html>

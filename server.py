@@ -3560,8 +3560,14 @@ async def get_llm_provider():
     provider = (cfg.get("provider") or "local").strip()
     orc      = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
     llm_srv  = cfg.get("llm_server") or {}
+    # Has the user made any explicit LLM choice yet? On a truly fresh config the UI
+    # defaults the mode selector to OpenRouter (the zero-setup free option) rather
+    # than On-host, so it can tell "never configured" apart from "chose local".
+    configured = bool(cfg.get("provider") or cfg.get("llm_server")
+                      or cfg.get("llm_model_config") or cfg.get("openrouter"))
     return JSONResponse({
-        "provider": provider,
+        "provider":   provider,
+        "configured": configured,
         "local": {
             "server_type": llm_srv.get("server_type", "custom"),
             "base_url":    llm_srv.get("base_url", "") or "",
@@ -3688,6 +3694,147 @@ async def llm_server_status():
         "is_docker":    _in_docker(),
         "base_url":     base_url,
     })
+
+
+@app.get("/llm-server/availability")
+async def llm_server_availability():
+    """Probe every model mode at once so the UI can show which are live.
+
+    Returns reachability (+ loaded-model count) for the On-host and Docker-bundled
+    endpoints and whether an OpenRouter key is set, plus the currently-active mode
+    and model. Drives the per-mode availability indicators and the header engine
+    chip, and is refreshed automatically while the AI Model settings are open.
+    """
+    cfg      = _load_config()
+    provider = (cfg.get("provider") or "local").strip()
+    llm_srv  = cfg.get("llm_server") or {}
+    srv_type = llm_srv.get("server_type", "custom")
+    # On a fresh config (no explicit choice) the default mode is OpenRouter, so the
+    # header chip and the mode selector agree before the user picks anything.
+    configured = bool(cfg.get("provider") or cfg.get("llm_server")
+                      or cfg.get("llm_model_config") or cfg.get("openrouter"))
+    active_mode = ("openrouter" if (provider == "openrouter" or not configured)
+                   else ("docker" if srv_type == "docker" else "host"))
+
+    # On-host candidate = the saved custom URL (if any) else the LM Studio default.
+    host_url = ("http://127.0.0.1:1234/v1"
+                if not (srv_type == "custom" and llm_srv.get("base_url"))
+                else _normalize_llm_url(str(llm_srv["base_url"])))
+    docker_url = _docker_llm_url()
+
+    if active_mode == "openrouter":
+        orc = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
+        active_model = (orc.get("resolved_model")
+                        or (orc.get("model") if orc.get("model") != "auto" else ""))
+    else:
+        active_model = _pr._active_distill_model
+
+    loop = asyncio.get_event_loop()
+    (host_ok, host_n), (docker_ok, docker_n) = await asyncio.gather(
+        loop.run_in_executor(None, _probe_llm_url, host_url, 1.0),
+        loop.run_in_executor(None, _probe_llm_url, docker_url, 1.0),
+    )
+    return JSONResponse({
+        "active_mode":  active_mode,
+        "active_model": active_model,
+        "host":         {"reachable": host_ok,   "models": host_n,   "base_url": host_url},
+        "docker":       {"reachable": docker_ok, "models": docker_n, "base_url": docker_url},
+        "openrouter":   {"has_key":   bool(_openrouter_api_key())},
+    })
+
+
+@app.post("/settings/openrouter/test")
+async def openrouter_test_connection():
+    """Run a real OpenRouter round-trip (full send → receive) and report the log.
+
+    Sends a tiny prompt through the SAME client/headers/routing body the pipeline
+    uses, so a green result proves the key, model, attribution headers and routing
+    all work end-to-end. Surfaces the exact failure (auth / no model / network)
+    when they don't — the "OpenRouter shows no calls" cases are no longer silent.
+    """
+    logs: list[str] = []
+    cfg      = _load_config()
+    provider = (cfg.get("provider") or "local").strip()
+    has_key  = bool(_openrouter_api_key())
+    orc      = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
+    model    = (orc.get("resolved_model") or orc.get("model")
+                or OPENROUTER_FREE_ROUTER).strip()
+    if model == "auto":
+        model = orc.get("resolved_model") or OPENROUTER_FREE_ROUTER
+
+    if provider != "openrouter":
+        logs.append("OpenRouter is not the active provider — select ☁️ OpenRouter first.")
+        return JSONResponse({"ok": False, "error": "OpenRouter is not the active provider.",
+                             "logs": logs})
+    if not has_key:
+        logs.append("No OpenRouter API key is set — add your key and Apply, then test again.")
+        return JSONResponse({"ok": False, "error": "No OpenRouter API key set.", "logs": logs})
+
+    # Make sure the live client reflects the saved OpenRouter config.
+    _apply_openrouter_config(cfg)
+    base_url = _pr.LMSTUDIO_BASE_URL
+    logs.append(f"Endpoint  : {base_url}")
+    logs.append(f"Model     : {model}")
+    logs.append(f"API key   : set ({'•' * 6}{(_openrouter_api_key() or '')[-4:]})")
+    logs.append(f"Headers   : {', '.join(sorted(_pr.LLM_EXTRA_HEADERS)) or '(none)'}")
+    fb = (orc.get("models_fallback") or [])
+    logs.append(f"Routing   : sort=throughput, fallbacks={len(fb)} vision model(s)")
+    logs.append("→ Sending: \"Reply with the single word: OK\"")
+
+    def _roundtrip():
+        client = _pr.make_client()
+        t0 = time.time()
+        resp = client.chat.completions.create(
+            model=model or OPENROUTER_FREE_ROUTER,
+            messages=[{"role": "user",
+                       "content": "Reply with the single word: OK"}],
+            max_tokens=16, temperature=0,
+            extra_body=dict(_pr.LLM_EXTRA_BODY),
+        )
+        dt = (time.time() - t0) * 1000.0
+        text = ""
+        try:
+            text = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            pass
+        used = getattr(resp, "model", "") or ""
+        return dt, text, used
+
+    loop = asyncio.get_event_loop()
+    try:
+        dt, text, used = await loop.run_in_executor(None, _roundtrip)
+        logs.append(f"← Received in {round(dt)} ms")
+        if used:
+            logs.append(f"Model used: {used}")
+        logs.append(f"Reply     : {text or '(empty)'}")
+        logs.append("✓ Full send → receive round-trip succeeded.")
+        return JSONResponse({
+            "ok":              True,
+            "latency_ms":      round(dt),
+            "response_text":   text,
+            "model_used":      used,
+            "requested_model": model,
+            "base_url":        base_url,
+            "logs":            logs,
+        })
+    except Exception as exc:
+        msg = str(exc)
+        logs.append(f"✗ Request failed: {msg}")
+        hint = ""
+        low = msg.lower()
+        if "401" in msg or "auth" in low or "key" in low:
+            hint = "Looks like an authentication problem — double-check your API key."
+        elif "404" in msg or "no endpoints" in low or "not a valid model" in low:
+            hint = "The selected model may be unavailable — try the free router or Refresh the list."
+        elif "429" in msg or "rate" in low:
+            hint = "Rate-limited — wait a moment and try again, or pick a different free model."
+        elif "timeout" in low or "connection" in low:
+            hint = "Network issue reaching openrouter.ai — check your internet connection."
+        if hint:
+            logs.append(hint)
+        return JSONResponse({"ok": False, "error": msg, "hint": hint,
+                             "requested_model": model, "base_url": base_url,
+                             "logs": logs})
 
 
 @app.post("/llm-server/autodetect")
