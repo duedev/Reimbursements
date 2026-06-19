@@ -36,6 +36,9 @@ Status key: 🟡 in progress · 🟢 planned · ✅ done (move to CLAUDE.md chan
 - [x] **Default to the free router `openrouter/free`** — steered toward quick,
       reliable, vision models via `LLM_EXTRA_BODY` (provider sort `throughput` +
       `allow_fallbacks` + a pinned free-vision fallback `models` list).
+- [x] **Zero-click first run** — `OPENROUTER_API_KEY` in the env auto-selects the
+      free router on a fresh install (never overrides an explicit choice); startup
+      skips the local model auto-select for the OpenRouter provider.
 - [x] **Privacy mode toggle** — "send receipt image" vs "send OCR text only"
       (`LLM_ALLOW_IMAGE` gates the LLM-OCR + vision-rescue image passes). Cloud use
       is explicit, opt-in, and warned in the UI.

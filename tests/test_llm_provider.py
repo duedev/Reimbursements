@@ -386,3 +386,59 @@ def test_post_provider_defaults_to_free_router(client, monkeypatch):
     assert pr._active_distill_model == "openrouter/free"
     assert pr.LLM_EXTRA_BODY["models"] == ["a/x:free", "b/y:free"]
     assert pr.LLM_EXTRA_BODY["provider"]["sort"] == "throughput"
+
+
+# ── first-run zero-click default (OPENROUTER_API_KEY present) ──────────────────
+
+def test_first_run_defaults_to_free_router_when_env_key_set(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    server._first_run_provider_default()
+    cfg = server._load_config()
+    assert cfg["provider"] == "openrouter"
+    assert cfg["openrouter"]["model"] == "openrouter/free"
+
+
+def test_first_run_noop_without_env_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    server._first_run_provider_default()
+    assert server._load_config() == {}            # nothing written
+
+
+def test_first_run_does_not_override_explicit_local_choice(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    server._save_config({"provider": "local",
+                         "llm_server": {"server_type": "custom",
+                                        "base_url": "http://127.0.0.1:1234"}})
+    server._first_run_provider_default()
+    cfg = server._load_config()
+    assert cfg["provider"] == "local"             # untouched
+    assert "openrouter" not in cfg
+
+
+def test_first_run_skips_when_local_server_already_configured(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    server._save_config({"llm_server": {"server_type": "custom", "base_url": ""}})
+    server._first_run_provider_default()
+    cfg = server._load_config()
+    assert cfg.get("provider") != "openrouter"
+    assert "openrouter" not in cfg
+
+
+def test_startup_skips_initialize_models_for_openrouter(monkeypatch):
+    monkeypatch.setattr(server, "_ensure_llm_reachable", lambda: None)
+    server._save_config({"provider": "openrouter",
+                         "openrouter": {"model": "openrouter/free",
+                                        "models_fallback": ["x/y:free"]}})
+    called = []
+    monkeypatch.setattr(server, "initialize_models", lambda *a, **k: called.append(1))
+    server._startup_models()
+    assert called == []                           # local auto-select skipped
+
+
+def test_startup_runs_initialize_models_for_local(monkeypatch):
+    monkeypatch.setattr(server, "_ensure_llm_reachable", lambda: None)
+    server._save_config({"provider": "local"})
+    called = []
+    monkeypatch.setattr(server, "initialize_models", lambda *a, **k: called.append(1))
+    server._startup_models()
+    assert called == [1]

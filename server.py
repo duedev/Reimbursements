@@ -455,11 +455,36 @@ def _ensure_llm_reachable() -> None:
 
 
 def _startup_models() -> None:
-    """Background-thread startup: auto-recover the endpoint, then init models."""
+    """Background-thread startup: auto-recover the endpoint, then init models.
+
+    For the OpenRouter provider the model is chosen explicitly (the free router
+    or a pinned id), so the local auto-select in initialize_models() is SKIPPED —
+    otherwise it would query the cloud catalogue, find the router slug "missing,"
+    and clobber the selection. We instead best-effort fill the quick-first vision
+    fallback list here, off the event loop.
+    """
     try:
         _ensure_llm_reachable()
     except Exception as exc:
         print(f"[models] auto-detect skipped: {exc}")
+    cfg = _load_config()
+    if (cfg.get("provider") or "local").strip() == "openrouter":
+        print(f"[models] OpenRouter provider active "
+              f"(model: {_pr._active_distill_model or 'openrouter/free'}); "
+              "skipping local model auto-select.")
+        orc = cfg.get("openrouter") or {}
+        if not orc.get("models_fallback"):
+            try:
+                fb = _openrouter_vision_fallback()
+                if fb:
+                    orc["models_fallback"] = fb
+                    cfg["openrouter"] = orc
+                    _save_config(cfg)
+                    _apply_openrouter_config(cfg)   # refresh LLM_EXTRA_BODY w/ fallback
+                    print(f"[models] OpenRouter vision fallback pinned: {fb}")
+            except Exception:
+                pass
+        return
     initialize_models()
 
 
@@ -624,6 +649,29 @@ def _apply_openrouter_config(cfg: dict) -> None:
         model = "" if chosen == "auto" else chosen
     if model:
         _pr.set_active_model(model)
+
+
+def _first_run_provider_default() -> None:
+    """First-run convenience: adopt the OpenRouter free router when an
+    OPENROUTER_API_KEY is present in the environment AND nothing has been
+    configured yet — so exporting the key (or putting it in .env) is enough to use
+    the cloud free router with zero extra clicks.
+
+    It NEVER overrides an explicit choice: it acts only on a truly fresh config (no
+    provider / llm_server / llm_model_config / openrouter keys) and persists the
+    decision so it's visible and stable. Run BEFORE _apply_llm_server_config.
+    """
+    if not (os.getenv("OPENROUTER_API_KEY") or "").strip():
+        return
+    cfg = _load_config()
+    if (cfg.get("provider") or cfg.get("llm_server")
+            or cfg.get("llm_model_config") or cfg.get("openrouter")):
+        return
+    cfg["provider"]   = "openrouter"
+    cfg["openrouter"] = _openrouter_default_cfg()        # model = openrouter/free
+    _save_config(cfg)
+    print("[models] First run: OPENROUTER_API_KEY detected — defaulting to the "
+          "OpenRouter free router (openrouter/free). Change it in Settings → AI Model.")
 
 
 def _apply_local_llm_config(cfg: dict) -> None:
@@ -1521,6 +1569,7 @@ async def lifespan(app: FastAPI):
     _restore_state()
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     _apply_audit_config()        # restore UI-saved spending/date warning thresholds
+    _first_run_provider_default()  # zero-click OpenRouter free router if a key is set & nothing chosen
     _apply_llm_server_config()   # restore LLM server URL before any model query
     _apply_model_config()        # restore saved single-model choice before auto-select
     # Session-start housekeeping: sweep away empty, non-active orphaned folders

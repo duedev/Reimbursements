@@ -174,7 +174,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **460 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **466 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -245,6 +245,14 @@ user input, never the placeholder.
     `allow_fallbacks`) with a pinned quick-first free **vision** fallback `models` list
     so image requests never land on a text-only model. `_openrouter_score` now ranks
     family → quick (small/fast) → context. Suite **455 → 460**.
+  * **Zero-click first-run OpenRouter** — `_first_run_provider_default()` (lifespan,
+    before `_apply_llm_server_config`): when `OPENROUTER_API_KEY` is set in the env AND
+    the config is fresh (no provider/llm_server/llm_model_config/openrouter keys), it
+    persists `provider:"openrouter"` + the free-router default — never overriding an
+    explicit choice. `_startup_models()` now **skips `initialize_models()` for the
+    openrouter provider** (the local auto-select would otherwise clobber the
+    `openrouter/free` slug) and best-effort pins the vision fallback list off-thread.
+    Suite **460 → 466**.
   * **Settings completeness** — previously env-only tunables surfaced in
     `/settings/processing` + Settings → Image Processing → *Advanced tuning*:
     `llm_timeout`, `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`
