@@ -1898,6 +1898,31 @@
         <input type="file" id="proc-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the full image-processing chain">
         <span id="proc-test-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
+      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
+            LLM request timeout (s)
+            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
+            LLM max retries
+            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
+            Stored image max side (px)
+            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
+            PDF max pages
+            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
+            Max upload size (MB, 0 = ∞)
+            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
+          </label>
+        </div>
+      </div>
     </div>
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
   </div>
@@ -4556,6 +4581,12 @@ async function loadProcessingSettings() {
     document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(aggr);
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
     document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
+    const _setNum = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    _setNum('proc-llm-timeout', d.llm_timeout != null ? Math.round(d.llm_timeout) : null);
+    _setNum('proc-llm-retries', d.llm_max_retries);
+    _setNum('proc-store-px',    d.store_max_px);
+    _setNum('proc-pdf-pages',   d.pdf_max_pages);
+    _setNum('proc-max-upload',  d.max_upload_mb);
   } catch (_) {}
 }
 
@@ -4577,6 +4608,11 @@ async function saveProcessingSettings() {
     compress:     document.getElementById('proc-compress').checked,
     local_ocr:    document.getElementById('proc-localocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
+    llm_timeout:     parseFloat(document.getElementById('proc-llm-timeout').value),
+    llm_max_retries: parseInt(document.getElementById('proc-llm-retries').value, 10),
+    store_max_px:    parseInt(document.getElementById('proc-store-px').value, 10),
+    pdf_max_pages:   parseInt(document.getElementById('proc-pdf-pages').value, 10),
+    max_upload_mb:   parseInt(document.getElementById('proc-max-upload').value, 10),
   };
   try {
     const res = await fetch('/settings/processing', {
@@ -4596,6 +4632,15 @@ async function saveProcessingSettings() {
 
 ['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
+});
+
+// Advanced numeric tunables — debounced save on change.
+['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', () => {
+    clearTimeout(_procSaveTimer);
+    _procSaveTimer = setTimeout(saveProcessingSettings, 150);
+  });
 });
 
 // Auto-crop aggressiveness slider — live label on drag, debounced save on release.

@@ -247,11 +247,18 @@ def _processing_settings() -> dict:
         "compress":                _pr.COMPRESS_ENABLED,
         "jpeg_quality":            _pr.JPEG_QUALITY,
         "max_parallel":            _pr.MAX_PARALLEL_REQUESTS,
+        # Advanced tunables (previously env-only — now user-settable).
+        "llm_timeout":             _pr.LLM_TIMEOUT,
+        "llm_max_retries":         _pr.LLM_MAX_RETRIES,
+        "store_max_px":            _pr.STORE_MAX_PX,
+        "pdf_max_pages":           _pr.PDF_MAX_PAGES,
+        "max_upload_mb":           (MAX_UPLOAD_BYTES // (1024 * 1024)) if MAX_UPLOAD_BYTES else 0,
     }
 
 
 def _apply_processing_config(cfg: dict | None = None) -> dict:
     """Push persisted image-processing settings into the process_receipts module."""
+    global MAX_UPLOAD_BYTES
     cfg = cfg if cfg is not None else _load_config()
     if "thinking_enabled" in cfg:
         _pr._thinking_enabled = bool(cfg["thinking_enabled"])
@@ -286,6 +293,32 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
             # Wake any workers blocked on the old (lower) limit so a raised
             # "process N at a time" slider takes effect on the running batch.
             _concurrency_gate.bump()
+        except (TypeError, ValueError):
+            pass
+    # Advanced tunables (previously env-only); each clamped to a safe range.
+    if proc.get("llm_timeout") is not None:
+        try:
+            _pr.LLM_TIMEOUT = float(max(10.0, min(600.0, float(proc["llm_timeout"]))))
+        except (TypeError, ValueError):
+            pass
+    if proc.get("llm_max_retries") is not None:
+        try:
+            _pr.LLM_MAX_RETRIES = int(max(0, min(5, int(proc["llm_max_retries"]))))
+        except (TypeError, ValueError):
+            pass
+    if proc.get("store_max_px") is not None:
+        try:
+            _pr.STORE_MAX_PX = int(max(512, min(4000, int(proc["store_max_px"]))))
+        except (TypeError, ValueError):
+            pass
+    if proc.get("pdf_max_pages") is not None:
+        try:
+            _pr.PDF_MAX_PAGES = int(max(1, min(200, int(proc["pdf_max_pages"]))))
+        except (TypeError, ValueError):
+            pass
+    if proc.get("max_upload_mb") is not None:
+        try:
+            MAX_UPLOAD_BYTES = max(0, min(2000, int(proc["max_upload_mb"]))) * 1024 * 1024
         except (TypeError, ValueError):
             pass
     return _processing_settings()
@@ -3452,6 +3485,11 @@ class ProcessingSettingsRequest(BaseModel):
     local_ocr:               bool | None = None
     jpeg_quality:            int | None = None
     max_parallel:            int | None = None
+    llm_timeout:             float | None = None
+    llm_max_retries:         int | None = None
+    store_max_px:            int | None = None
+    pdf_max_pages:           int | None = None
+    max_upload_mb:           int | None = None
 
 
 @app.get("/settings/processing")
@@ -3475,6 +3513,16 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
             proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
         if body.max_parallel is not None:
             proc["max_parallel"] = max(1, min(8, int(body.max_parallel)))
+        if body.llm_timeout is not None:
+            proc["llm_timeout"] = max(10.0, min(600.0, float(body.llm_timeout)))
+        if body.llm_max_retries is not None:
+            proc["llm_max_retries"] = max(0, min(5, int(body.llm_max_retries)))
+        if body.store_max_px is not None:
+            proc["store_max_px"] = max(512, min(4000, int(body.store_max_px)))
+        if body.pdf_max_pages is not None:
+            proc["pdf_max_pages"] = max(1, min(200, int(body.pdf_max_pages)))
+        if body.max_upload_mb is not None:
+            proc["max_upload_mb"] = max(0, min(2000, int(body.max_upload_mb)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)

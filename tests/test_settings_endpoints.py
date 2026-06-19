@@ -132,3 +132,36 @@ def test_nudge_skips_items_already_in_queue(client):
     r = client.post("/queue/nudge")
     assert r.json()["count"] == 0               # already queued — not duplicated
     assert sum(1 for it in server._work_queue if it["filename"] == "A.jpg") == 1
+
+
+def test_processing_advanced_tunables_roundtrip(client):
+    """The previously env-only tunables are now user-settable, applied, clamped."""
+    saved = (pr.LLM_TIMEOUT, pr.LLM_MAX_RETRIES, pr.STORE_MAX_PX, pr.PDF_MAX_PAGES,
+             server.MAX_UPLOAD_BYTES)
+    try:
+        r = client.post("/settings/processing", json={
+            "llm_timeout": 45, "llm_max_retries": 1, "store_max_px": 1600,
+            "pdf_max_pages": 20, "max_upload_mb": 50,
+        })
+        assert r.status_code == 200
+        d = r.json()
+        assert d["ok"] is True
+        assert d["llm_timeout"] == 45
+        assert d["llm_max_retries"] == 1
+        assert d["store_max_px"] == 1600
+        assert d["pdf_max_pages"] == 20
+        assert d["max_upload_mb"] == 50
+        # applied to the live module globals
+        assert pr.LLM_TIMEOUT == 45
+        assert pr.PDF_MAX_PAGES == 20
+        assert server.MAX_UPLOAD_BYTES == 50 * 1024 * 1024
+        # round-trips via GET
+        assert client.get("/settings/processing").json()["store_max_px"] == 1600
+        # out-of-range values are clamped, not rejected
+        d2 = client.post("/settings/processing",
+                         json={"llm_timeout": 5, "store_max_px": 99999}).json()
+        assert d2["llm_timeout"] == 10        # floored
+        assert d2["store_max_px"] == 4000     # ceiled
+    finally:
+        (pr.LLM_TIMEOUT, pr.LLM_MAX_RETRIES, pr.STORE_MAX_PX, pr.PDF_MAX_PAGES,
+         server.MAX_UPLOAD_BYTES) = saved
