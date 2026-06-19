@@ -114,9 +114,16 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
   call site hard-codes `api_key="lmstudio"` any more. For OpenRouter the base URL is
   `OPENROUTER_BASE_URL` and the key is the user's (secret `openrouter_api_key`).
 - **OpenRouter auto-pick:** `_openrouter_free_vision_models()` filters the catalogue
-  to free (zero prompt+completion price) + image-capable, ranks by family/context;
-  `_openrouter_autopick()` returns the best id. Endpoints: `GET/POST
-  /settings/llm-provider`, `GET /models/openrouter`.
+  to free (zero prompt+completion price) + image-capable, ranks by family → quick
+  (small/fast variants) → context; `_openrouter_autopick()` returns the best id.
+  Endpoints: `GET/POST /settings/llm-provider`, `GET /models/openrouter`.
+- **Free router default `openrouter/free`** (`OPENROUTER_FREE_ROUTER`): the default
+  OpenRouter model is the free router meta-model (OpenRouter auto-selects among free
+  models per request). It's STEERED via `process_receipts.LLM_EXTRA_BODY` — merged
+  into every completion call — to `{"provider": {"sort": "throughput",
+  "allow_fallbacks": True}, "models": [<quick-first free vision fallbacks>]}` so it
+  prefers quick, reliable, image-capable models. `model="auto"` instead uses our own
+  single best pick; an explicit id pins one model.
 - **Privacy gate `LLM_ALLOW_IMAGE`** (process_receipts): when False the LLM-OCR pass
   and the vision rescue are skipped so the receipt IMAGE is never transmitted —
   OpenRouter's "send OCR text only" mode. "send receipt image" keeps full accuracy.
@@ -167,7 +174,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **455 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **460 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -232,6 +239,12 @@ user input, never the placeholder.
     radios, privacy note). **Privacy gate `LLM_ALLOW_IMAGE`** — "send OCR text only"
     suppresses the LLM-OCR + vision-rescue image passes so the receipt image never
     leaves the machine; "send receipt image" keeps full accuracy.
+  * **Free router default (`openrouter/free`)** — the default OpenRouter model is the
+    free router meta-model, STEERED via `LLM_EXTRA_BODY` (merged into every completion
+    call) toward quick + reliable providers (`provider.sort:"throughput"`,
+    `allow_fallbacks`) with a pinned quick-first free **vision** fallback `models` list
+    so image requests never land on a text-only model. `_openrouter_score` now ranks
+    family → quick (small/fast) → context. Suite **455 → 460**.
   * **Settings completeness** — previously env-only tunables surfaced in
     `/settings/processing` + Settings → Image Processing → *Advanced tuning*:
     `llm_timeout`, `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`

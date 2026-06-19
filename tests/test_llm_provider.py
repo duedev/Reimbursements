@@ -30,6 +30,7 @@ def _restore_pr_globals():
         "LMSTUDIO_BASE_URL":    pr.LMSTUDIO_BASE_URL,
         "LLM_API_KEY":          pr.LLM_API_KEY,
         "LLM_EXTRA_HEADERS":    dict(pr.LLM_EXTRA_HEADERS),
+        "LLM_EXTRA_BODY":       dict(pr.LLM_EXTRA_BODY),
         "LLM_ALLOW_IMAGE":      pr.LLM_ALLOW_IMAGE,
         "_active_distill_model": pr._active_distill_model,
         "_active_ocr_model":    pr._active_ocr_model,
@@ -38,6 +39,13 @@ def _restore_pr_globals():
     yield
     for k, v in saved.items():
         setattr(pr, k, v)
+
+
+@pytest.fixture(autouse=True)
+def _no_openrouter_network(monkeypatch):
+    """Default: no real OpenRouter catalogue calls. Tests that need a catalogue
+    (or a specific fallback) override _fetch_openrouter_models / the helpers."""
+    monkeypatch.setattr(server, "_fetch_openrouter_models", lambda *a, **k: [])
 
 
 @pytest.fixture()
@@ -323,3 +331,58 @@ def test_ocr_text_only_skips_llm_ocr_pass(monkeypatch, tmp_path):
     raw.assert_not_called()                       # LLM-OCR image pass suppressed
     assert out is not None
     assert out["_ocr_engine"] == "rapidocr"       # only the built-in OCR was used
+
+
+# ── free router (openrouter/free) default + quick/reliable/vision steering ─────
+
+def test_default_openrouter_model_is_free_router():
+    assert server.OPENROUTER_FREE_ROUTER == "openrouter/free"
+    assert server._openrouter_default_cfg()["model"] == "openrouter/free"
+
+
+def test_extra_body_biases_quick_reliable_and_pins_vision_fallback():
+    body = server._openrouter_extra_body({"models_fallback": ["a/x:free", "b/y:free"]})
+    assert body["provider"]["sort"] == "throughput"       # "quick" — fastest providers
+    assert body["provider"]["allow_fallbacks"] is True    # reliability — fail over
+    assert body["models"] == ["a/x:free", "b/y:free"]      # vision fallback pinned
+    assert "models" not in server._openrouter_extra_body({})   # none → no key
+
+
+def test_score_prefers_quick_variant_same_family(monkeypatch):
+    sample = [
+        {"id": "google/gemini-pro-vision:free", "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"input_modalities": ["text", "image"]}, "context_length": 900000},
+        {"id": "google/gemini-2.0-flash-exp:free", "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"input_modalities": ["text", "image"]}, "context_length": 1000000},
+    ]
+    monkeypatch.setattr(server, "_fetch_openrouter_models", lambda *a, **k: sample)
+    fb = server._openrouter_vision_fallback()
+    assert fb[0] == "google/gemini-2.0-flash-exp:free"     # the quick (flash) one wins
+
+
+def test_apply_openrouter_sets_routing_body_and_router_model():
+    cfg = {"provider": "openrouter",
+           "openrouter": {"model": "openrouter/free", "resolved_model": "openrouter/free",
+                          "send_image": True, "models_fallback": ["a/x:free"]}}
+    server._apply_llm_server_config(cfg)
+    assert pr._active_distill_model == "openrouter/free"
+    assert pr.LLM_EXTRA_BODY["provider"]["sort"] == "throughput"
+    assert pr.LLM_EXTRA_BODY["models"] == ["a/x:free"]
+    # switching back to local clears the cloud routing body
+    server._apply_llm_server_config({"provider": "local",
+        "llm_server": {"server_type": "custom", "base_url": "http://127.0.0.1:1234"}})
+    assert pr.LLM_EXTRA_BODY == {}
+
+
+def test_post_provider_defaults_to_free_router(client, monkeypatch):
+    monkeypatch.setattr(server, "_openrouter_vision_fallback",
+                        lambda: ["a/x:free", "b/y:free"])
+    r = client.post("/settings/llm-provider",
+                    json={"provider": "openrouter", "api_key": "k"})  # no model → default
+    b = r.json()
+    assert b["model"] == "openrouter/free"
+    assert b["resolved_model"] == "openrouter/free"
+    assert b["fallback_count"] == 2
+    assert pr._active_distill_model == "openrouter/free"
+    assert pr.LLM_EXTRA_BODY["models"] == ["a/x:free", "b/y:free"]
+    assert pr.LLM_EXTRA_BODY["provider"]["sort"] == "throughput"

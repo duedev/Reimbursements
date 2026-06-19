@@ -31,8 +31,11 @@ Status key: 🟡 in progress · 🟢 planned · ✅ done (move to CLAUDE.md chan
 - [x] **OpenRouter as a selectable provider** alongside the local LLM (opt-in, off by
       default; key stored as a secret).
 - [x] **Auto-select the best FREE vision-capable model** — filters on zero token
-      price + image input modality, ranks by family/context (`/models/openrouter`,
-      `_openrouter_autopick`).
+      price + image input modality, ranks by family → quick → context
+      (`/models/openrouter`, `_openrouter_autopick`).
+- [x] **Default to the free router `openrouter/free`** — steered toward quick,
+      reliable, vision models via `LLM_EXTRA_BODY` (provider sort `throughput` +
+      `allow_fallbacks` + a pinned free-vision fallback `models` list).
 - [x] **Privacy mode toggle** — "send receipt image" vs "send OCR text only"
       (`LLM_ALLOW_IMAGE` gates the LLM-OCR + vision-rescue image passes). Cloud use
       is explicit, opt-in, and warned in the UI.

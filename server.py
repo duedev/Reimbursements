@@ -485,9 +485,18 @@ def _openrouter_api_key() -> str:
     return app_secrets.get_secret("openrouter_api_key", env="OPENROUTER_API_KEY")
 
 
+# OpenRouter's free router meta-model: given a request, it auto-selects among
+# free models. We pin it as the default `model` and STEER it (provider sort for
+# speed/uptime + a pinned vision fallback list) toward quick, reliable, image-
+# capable models — "implement using this free router with a preference for quick,
+# reliable, vision models."
+OPENROUTER_FREE_ROUTER = "openrouter/free"
+_OPENROUTER_FALLBACK_N = 5   # how many free vision models to pin as router fallbacks
+
+
 def _openrouter_default_cfg() -> dict:
-    return {"model": "auto", "send_image": True, "free_only": True,
-            "resolved_model": ""}
+    return {"model": OPENROUTER_FREE_ROUTER, "send_image": True, "free_only": True,
+            "resolved_model": "", "models_fallback": []}
 
 
 def _fetch_openrouter_models(timeout: float = 6.0) -> list[dict]:
@@ -529,7 +538,8 @@ def _model_is_vision(m: dict) -> bool:
 
 
 def _openrouter_score(m: dict) -> tuple:
-    """Sort key (higher first): preferred family, then larger context window."""
+    """Sort key (higher first): preferred family, then 'quick' (small/fast)
+    variants, then larger context. Biases the pick toward quick, reliable vision."""
     mid = str(m.get("id") or "").lower()
     ctx = m.get("context_length") or (m.get("top_provider") or {}).get("context_length") or 0
     try:
@@ -541,7 +551,11 @@ def _openrouter_score(m: dict) -> tuple:
         if tag in mid:
             fam = len(_OPENROUTER_PREFERRED) - i
             break
-    return (fam, ctx)
+    # "quick": small / distilled variants respond fastest.
+    fast = 1 if any(t in mid for t in
+                    ("flash", "mini", "lite", "small", "nano", "fast",
+                     "8b", "7b", "4b", "3b", "2b", "1b")) else 0
+    return (fam, fast, ctx)
 
 
 def _openrouter_free_vision_models() -> list[dict]:
@@ -558,10 +572,38 @@ def _openrouter_autopick() -> str:
     return str(cands[0].get("id") or "") if cands else ""
 
 
+def _openrouter_vision_fallback() -> list[str]:
+    """Top free, image-capable model ids (quick-first) to pin as router fallbacks."""
+    return [str(m.get("id")) for m in _openrouter_free_vision_models()
+            if m.get("id")][:_OPENROUTER_FALLBACK_N]
+
+
+def _openrouter_extra_body(orc: dict) -> dict:
+    """OpenRouter routing preferences merged into every completion request.
+
+    Biases the free router toward quick + reliable providers (`provider.sort`,
+    `allow_fallbacks`) and pins a vision-capable free fallback list (`models`) so
+    an image request never lands on a text-only model. Built from stored config
+    only — no network at apply time. The documented pattern is `model` (primary,
+    here the free router) + `models` (fallbacks tried if the primary is down).
+    """
+    body: dict = {
+        "provider": {
+            "sort":            "throughput",  # "quick" — fastest-generating providers first
+            "allow_fallbacks": True,          # reliability — fail over if a provider is down
+        },
+    }
+    fb = orc.get("models_fallback") or []
+    if fb:
+        body["models"] = list(fb)
+    return body
+
+
 def _reset_local_llm_runtime() -> None:
-    """Restore local-server client defaults: no cloud key/headers, image allowed."""
+    """Restore local-server client defaults: no cloud key/headers/body, image OK."""
     _pr.LLM_API_KEY = os.getenv("LLM_API_KEY") or "lmstudio"
     _pr.LLM_EXTRA_HEADERS = {}
+    _pr.LLM_EXTRA_BODY = {}
     _pr.LLM_ALLOW_IMAGE = True
 
 
@@ -572,12 +614,14 @@ def _apply_openrouter_config(cfg: dict) -> None:
     _pr.LMSTUDIO_BASE_URL = _pr.OPENROUTER_BASE_URL
     _pr.LLM_API_KEY       = key or "lmstudio"
     _pr.LLM_EXTRA_HEADERS = dict(OPENROUTER_ATTR_HEADERS)
+    _pr.LLM_EXTRA_BODY    = _openrouter_extra_body(orc)
     _pr.LLM_ALLOW_IMAGE   = bool(orc.get("send_image", True))
     model = (orc.get("resolved_model") or "").strip()
     if not model:
         chosen = str(orc.get("model") or "").strip()
-        if chosen and chosen != "auto":
-            model = chosen
+        # "auto" is resolved at save time; the free-router slug or an explicit id
+        # is used directly as the request model.
+        model = "" if chosen == "auto" else chosen
     if model:
         _pr.set_active_model(model)
 
@@ -3183,17 +3227,20 @@ async def set_llm_provider(request: Request):
 
     orc = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
     if "model" in body:
-        orc["model"] = (str(body.get("model") or "auto").strip() or "auto")
+        orc["model"] = (str(body.get("model") or "").strip() or OPENROUTER_FREE_ROUTER)
     if "send_image" in body:
         orc["send_image"] = bool(body.get("send_image"))
     if "free_only" in body:
         orc["free_only"] = bool(body.get("free_only"))
 
+    loop = asyncio.get_event_loop()
     if orc["model"] == "auto":
-        orc["resolved_model"] = await asyncio.get_event_loop().run_in_executor(
-            None, _openrouter_autopick)
+        orc["resolved_model"] = await loop.run_in_executor(None, _openrouter_autopick)
     else:
-        orc["resolved_model"] = orc["model"]
+        orc["resolved_model"] = orc["model"]   # free-router slug or explicit id
+    # Pin a quick-first free VISION fallback list so the router never lands on a
+    # text-only model for an image request (best-effort; [] when offline).
+    orc["models_fallback"] = await loop.run_in_executor(None, _openrouter_vision_fallback)
 
     cfg["openrouter"] = orc
     _save_config(cfg)
@@ -3208,9 +3255,11 @@ async def set_llm_provider(request: Request):
     return JSONResponse({
         "ok":             has_key,
         "provider":       "openrouter",
+        "model":          orc["model"],
         "resolved_model": orc["resolved_model"],
         "send_image":     orc["send_image"],
         "free_only":      orc["free_only"],
+        "fallback_count": len(orc.get("models_fallback") or []),
         "has_key":        has_key,
         "warning":        warning,
         "base_url":       _pr.LMSTUDIO_BASE_URL,

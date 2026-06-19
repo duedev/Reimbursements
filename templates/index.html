@@ -1736,11 +1736,13 @@
         <div class="model-section-label">Model</div>
         <div class="model-select-row">
           <div class="model-active-dot" id="or-model-dot"></div>
-          <select id="or-model" title="“Auto” picks the best free, image-capable model. Refresh to fetch the current free models from OpenRouter.">
+          <select id="or-model" title="“Free router” lets OpenRouter auto-select among free models, steered toward quick, reliable, vision-capable ones. “Auto” lets this app pick one specific best free vision model. Or choose an explicit model. Refresh to fetch the current free list.">
+            <option value="openrouter/free">Free router — auto · prefers fast vision</option>
             <option value="auto">Auto — best free vision model</option>
           </select>
           <button class="copy-btn" id="or-refresh-models" title="Fetch the current free vision models from OpenRouter">↻ Refresh</button>
         </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">The <strong>free router</strong> auto-selects among free models per request (biased to quick, reliable, image-capable ones, with a vision fallback list). Pick a specific model to pin it.</div>
       </div>
       <div style="margin-bottom:12px">
         <div class="model-section-label">What to send</div>
@@ -4094,7 +4096,7 @@ async function loadLLMProvider() {
         ks.textContent = or.has_key ? '✓ key saved' : 'no key set';
         ks.style.color = or.has_key ? 'var(--success)' : 'var(--warning)';
       }
-      await loadOpenRouterModels(or.model || 'auto');
+      await loadOpenRouterModels(or.model || 'openrouter/free');
       const dot = document.getElementById('or-model-dot');
       if (dot) dot.style.background = (or.has_key && (or.resolved_model || or.model)) ? 'var(--success)' : 'var(--border)';
     } else if (typeof loadLLMServerSettings === 'function') {
@@ -4106,10 +4108,12 @@ async function loadLLMProvider() {
 async function loadOpenRouterModels(savedChoice) {
   const sel = document.getElementById('or-model');
   if (!sel) return;
-  const want = savedChoice || sel.value || 'auto';
+  const want = savedChoice || sel.value || 'openrouter/free';
   try {
     const d = await (await fetch('/models/openrouter')).json();
-    sel.innerHTML = '<option value="auto">Auto — best free vision model</option>';
+    sel.innerHTML =
+      '<option value="openrouter/free">Free router — auto · prefers fast vision</option>'
+      + '<option value="auto">Auto — best free vision model</option>';
     (d.models || []).forEach(m => {
       const opt = document.createElement('option');
       opt.value = m.id;
@@ -4117,7 +4121,7 @@ async function loadOpenRouterModels(savedChoice) {
       sel.appendChild(opt);
     });
     sel.value = want;
-    if (!sel.value) sel.value = 'auto';
+    if (!sel.value) sel.value = 'openrouter/free';
   } catch (_) {}
 }
 
@@ -4140,7 +4144,7 @@ document.querySelectorAll('input[name="llm-provider"]').forEach(radio => {
         showToast('Provider: local server (private)', true);
       } else {
         const sendImage = document.getElementById('or-mode-image').checked;
-        const model = document.getElementById('or-model').value || 'auto';
+        const model = document.getElementById('or-model').value || 'openrouter/free';
         const d = await _saveProvider({provider: 'openrouter', model, send_image: sendImage});
         loadLLMProvider();
         if (d.warning) showToast(d.warning, false);
@@ -4160,7 +4164,7 @@ document.getElementById('or-save-btn').addEventListener('click', async () => {
   const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Applying…';
   try {
     const key = document.getElementById('or-key').value.trim();
-    const model = document.getElementById('or-model').value || 'auto';
+    const model = document.getElementById('or-model').value || 'openrouter/free';
     const sendImage = document.getElementById('or-mode-image').checked;
     const payload = {provider: 'openrouter', model, send_image: sendImage};
     if (key) payload.api_key = key;

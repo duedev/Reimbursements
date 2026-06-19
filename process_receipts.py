@@ -60,6 +60,11 @@ LLM_API_KEY: str = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY") o
 # Extra HTTP headers sent with every request (OpenRouter uses these for
 # attribution; harmless for local servers). Set when a cloud provider is active.
 LLM_EXTRA_HEADERS: dict = {}
+# Extra per-request JSON body merged into every chat.completions.create call.
+# Carries top-level OpenRouter routing fields — {"provider": {...}, "models": [...]}
+# — used to bias the free router toward quick/reliable providers and to pin a
+# vision-capable fallback list. Empty for a local server (LM Studio ignores it).
+LLM_EXTRA_BODY: dict = {}
 # Privacy gate. When False the pipeline must NOT transmit the receipt IMAGE to
 # the model — the LLM-OCR transcription pass and the direct-vision rescue are
 # both skipped, so only locally-extracted OCR *text* is ever sent. Used by the
@@ -1076,7 +1081,7 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
             ]}],
             temperature=0.0, max_tokens=2048,
             frequency_penalty=0.1,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         text = response.choices[0].message.content.strip()
         return text if text else None
@@ -1658,7 +1663,7 @@ def _unified_distillation(
             messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=1024,
             frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -1671,7 +1676,7 @@ def _unified_distillation(
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
                 temperature=0.0, max_tokens=1024,
                 frequency_penalty=0.15,
-                extra_body={**thinking_body, "repeat_penalty": 1.1},
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
@@ -1701,7 +1706,7 @@ def _extract_with_model(
             model=model_id, messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=1024,
             frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -1714,7 +1719,7 @@ def _extract_with_model(
                           {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
                 temperature=0.0, max_tokens=1024,
                 frequency_penalty=0.15,
-                extra_body={**thinking_body, "repeat_penalty": 1.1},
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
