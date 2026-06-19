@@ -118,6 +118,26 @@ LMSTUDIO_BASE_URL=http://model-server:1234/v1 \
 
 ---
 
+## Deploy free, 24/7 (Oracle Cloud Always Free)
+
+Want the app reachable from anywhere without paying for hosting? You can run it on
+an **Oracle Cloud "Always Free" ARM VM** (free for the life of the account — up to
+4 cores / 24 GB RAM) with automatic HTTPS, for **$0/month**.
+
+```bash
+# On the VM, after cloning:
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+`docker-compose.prod.yml` overlays a **Caddy** reverse proxy (automatic Let's
+Encrypt certificates) in front of the app — only Caddy's 80/443 are public — and
+forces `APP_AUTH_TOKEN`. Building on the ARM VM pulls the `aarch64` wheels
+natively, so there's nothing to cross-compile. In the cloud the local LM Studio
+tier is inert, so extraction runs the **Gemini → Mistral → offline parser** chain
+(set at least one free cloud key). **Full step-by-step: [`DEPLOY_ORACLE.md`](DEPLOY_ORACLE.md).**
+
+---
+
 ## Usage
 
 ### Web Interface

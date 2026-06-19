@@ -1,0 +1,16 @@
+# Caddy reverse proxy for the reimbursements app (see docker-compose.prod.yml).
+# Caddy fetches and auto-renews a free Let's Encrypt certificate for $APP_DOMAIN,
+# so the app is served over HTTPS with no manual cert work.
+#
+# $APP_DOMAIN must resolve to this VM's public IP and ports 80/443 must be open
+# (VCN security list + the instance firewall) for the certificate to issue.
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# flush_interval -1 disables response buffering so the app's Server-Sent
+	# Events (the live kanban board / log stream) reach the browser immediately.
+	reverse_proxy receipt-processor:8000 {
+		flush_interval -1
+	}
+}

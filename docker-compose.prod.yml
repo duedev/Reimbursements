@@ -1,0 +1,51 @@
+# Production overlay for a public host (e.g. an Oracle Cloud "Always Free" VM).
+#
+# Use it TOGETHER with the base compose file — the base defines the app, this
+# adds a Caddy reverse proxy that terminates HTTPS (automatic Let's Encrypt
+# certificates) in front of it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Only Caddy's ports 80/443 are exposed publicly; the app stays on the internal
+# compose network and is reachable by Caddy as `receipt-processor:8000`. The base
+# file's 127.0.0.1:8000 mapping is localhost-only on the VM (handy for debugging,
+# never public).
+#
+# Required host env (put them in a `.env` file next to this one):
+#   APP_AUTH_TOKEN  — long random string; every request must present it
+#   APP_DOMAIN      — the hostname pointed at this VM (e.g. a free DuckDNS subdomain)
+#   GEMINI_API_KEY  — optional; free-tier key enables the Gemini fallback
+#   MISTRAL_API_KEY — optional; free-tier key enables the Mistral fallback
+# (The local LM Studio tier is inert in the cloud, so the chain is effectively
+#  Gemini → Mistral → offline parser.)
+
+services:
+  receipt-processor:
+    environment:
+      # REQUIRED before exposing to the internet — the :? makes compose refuse to
+      # start if it's unset, so you can't accidentally publish an open instance.
+      - APP_AUTH_TOKEN=${APP_AUTH_TOKEN:?set APP_AUTH_TOKEN in .env before deploying}
+      # Cloud LLM fallback keys (free tiers). Blank = that provider is skipped.
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash-lite}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-small-latest}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - receipt-processor
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - APP_DOMAIN=${APP_DOMAIN:?set APP_DOMAIN (the hostname for this VM) in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # persisted Let's Encrypt certs — survives restarts
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
