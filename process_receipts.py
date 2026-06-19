@@ -1727,6 +1727,16 @@ def _extract_with_model(
     return None
 
 
+def _img_size(path: Path) -> Optional[tuple]:
+    """Best-effort (width, height) of a stored image, or None on any error.
+    Used only to annotate the image-prep step log — never on the hot path."""
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
 def _extract_receipt_with_status(
     client: OpenAI,
     image_path: Path,
@@ -1749,22 +1759,39 @@ def _extract_receipt_with_status(
 
     Each branch is recorded in step_log (if provided) for the per-item process log.
     """
+    # Image-preparation pre-passes (rules-based, no LLM). Each is recorded in the
+    # step log when it actually changes the file, so the per-receipt card AND the
+    # run log show exactly what was done to the picture before OCR — the user
+    # asked for "all details", including image processing.
+    #
     # Orientation pre-pass — bake the photo's EXIF rotation into the pixels FIRST,
     # so every later step (OCR, the vision model, the markup boxes, the preview)
     # sees text the right way up. A deeper OCR-guided rotation check runs inside the
     # OCR step below, where the engine's read tells us which way is actually upright.
-    autorotate_image_file(image_path)
+    if autorotate_image_file(image_path):
+        _append_step(step_log, "exif_rotate", "Auto-rotate (EXIF)",
+                     "baked the camera's orientation tag into the pixels", ok=True)
     # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
     # receipt to high-contrast grayscale in place so both the OCR engine (which
     # reads the file directly) and the vision model (via encode_image) get the
     # cleaner image. In-place, suffix preserved → no downstream path changes.
-    grayscale_image_file(image_path)
+    if grayscale_image_file(image_path):
+        _append_step(step_log, "grayscale", "Grayscale",
+                     "converted to high-contrast black & white", ok=True)
     # Autocrop the uniform photo border next, still BEFORE OCR — this is the
     # canonical greyscale → autocrop → OCR order (autocrop_receipt is conservative:
     # it no-ops unless it can trim a clear border). OCR then reads the cropped
     # image, which is also the one shown in the UI, so the field-markup boxes stay
     # pixel-aligned with the preview. Gated by AUTOCROP_ENABLED.
-    autocrop_image_file(image_path)
+    _crop_before = _img_size(image_path)
+    if autocrop_image_file(image_path):
+        _crop_after = _img_size(image_path)
+        if _crop_before and _crop_after:
+            detail = (f"trimmed border {_crop_before[0]}×{_crop_before[1]} → "
+                      f"{_crop_after[0]}×{_crop_after[1]}")
+        else:
+            detail = "trimmed uniform border"
+        _append_step(step_log, "autocrop", "Auto-crop", detail, ok=True)
 
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
