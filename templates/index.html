@@ -304,9 +304,9 @@
 
     /* Quiet outline variants for secondary / contextual actions */
     .btn-outline-accent {
-      background: rgba(111,143,166,0.12); border: 1px solid var(--accent); color: var(--accent);
+      background: rgba(59,130,246,0.12); border: 1px solid var(--accent); color: var(--accent);
     }
-    .btn-outline-accent:not(:disabled):hover { background: rgba(111,143,166,0.22); }
+    .btn-outline-accent:not(:disabled):hover { background: rgba(59,130,246,0.22); }
     .btn-outline-amber {
       background: rgba(217,119,6,0.12); border: 1px solid var(--amber); color: var(--amber);
     }
@@ -341,13 +341,55 @@
       white-space: pre-wrap; word-break: break-word; margin-top: 14px;
     }
 
+    /* Fully-viewable instruction blocks — the exact text sent to the model, never
+       truncated: scroll instead of clip so the whole prompt can be read. */
+    .instr-summary { font-size: 12px; line-height: 1.6; color: var(--text); margin-bottom: 10px; }
+    .instr-summary .k { color: var(--muted); }
+    .instr-summary .v { font-weight: 600; }
+    .instr-stage { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+      margin-bottom: 10px; background: rgba(59,130,246,0.05); }
+    .instr-stage > .st-title { font-weight: 700; font-size: 12px; color: var(--accent); }
+    .instr-stage > .st-when { font-size: 11px; color: var(--muted); margin: 3px 0 8px; }
+    .instr-pre {
+      background: rgba(0,0,0,0.32); border: 1px solid var(--border); border-radius: 6px;
+      font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11.5px; line-height: 1.5;
+      color: #cbd5e1; padding: 10px; margin: 4px 0 0;
+      max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    }
+    [data-theme="light"] .instr-pre { background: rgba(0,0,0,0.06); color: #2d3a4a; }
+    .instr-sys { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+    .instr-sys code { color: var(--accent); }
+
+    /* Run Log viewer */
+    #runlog-detail .rl-head { font-size: 12px; color: var(--muted); margin-bottom: 8px;
+      display: flex; flex-wrap: wrap; gap: 4px 14px; }
+    #runlog-detail .rl-head strong { color: var(--text); }
+    .rl-lines {
+      background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px;
+      font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11.5px;
+      color: #cbd5e1; padding: 10px; max-height: 240px; overflow: auto;
+      white-space: pre-wrap; word-break: break-word; margin: 6px 0 12px;
+    }
+    [data-theme="light"] .rl-lines { background: rgba(0,0,0,0.06); color: #2d3a4a; }
+    .rl-lines .rl-err { color: #fca5a5; }
+    .rl-receipt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+      margin-bottom: 8px; }
+    .rl-receipt .rl-r-head { font-size: 12px; font-weight: 600; display: flex; flex-wrap: wrap;
+      gap: 6px; align-items: center; }
+    .rl-receipt .rl-r-sum { font-size: 11px; color: var(--muted); margin: 3px 0 6px; }
+    .rl-badge { font-size: 10px; font-weight: 700; border-radius: 99px; padding: 1px 8px; }
+    .rl-badge.ok { background: rgba(16,185,129,0.18); color: #34d399; }
+    .rl-badge.bad { background: rgba(239,68,68,0.16); color: var(--danger); }
+    .section-toggle.instr-chev { transition: transform 0.2s; }
+    .section-toggle.instr-chev.open { transform: rotate(90deg); }
+
     .hidden { display: none !important; }
 
     .status-badge {
       display: inline-block; padding: 3px 10px; border-radius: 99px;
       font-size: 12px; font-weight: 600;
     }
-    .badge-running { background: rgba(111,143,166,0.15); color: var(--accent); }
+    .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
     .badge-done    { background: rgba(34,197,94,0.15);  color: var(--success); }
     .badge-error   { background: rgba(239,68,68,0.15);  color: var(--danger); }
 
@@ -453,7 +495,7 @@
 
     /* Inline editing */
     .k-edit { cursor: pointer; border-bottom: 1px dashed transparent; border-radius: 3px; transition: border-color 0.15s, background 0.15s; }
-    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(111,143,166,0.08); }
+    .k-edit:hover { border-bottom-color: var(--accent); background: rgba(59,130,246,0.08); }
     .k-edit-input {
       background: var(--surface); border: 1px solid var(--accent); border-radius: 5px;
       color: var(--text); font-size: 12px; padding: 2px 6px; outline: none;
@@ -479,7 +521,7 @@
       color: var(--text); font-size: 11px; cursor: pointer;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-review-btn:hover { background: rgba(111,143,166,0.12); border-color: var(--accent); }
+    .k-review-btn:hover { background: rgba(59,130,246,0.12); border-color: var(--accent); }
     .k-review-btn.is-approved { border-color: rgba(45,212,130,0.45); color: var(--success); }
     .k-card.status-done.needs-review { border-left-color: var(--warning); }
     .k-card.status-done.is-approved  { border-left-color: var(--success); }
@@ -523,7 +565,7 @@
       font-weight: 600;
     }
     .k-status-badge.s-queued    { background: rgba(148,163,184,0.15); color: var(--muted); }
-    .k-status-badge.s-ocr       { background: rgba(111,143,166,0.2);   color: var(--accent); }
+    .k-status-badge.s-ocr       { background: rgba(59,130,246,0.2);   color: var(--accent); }
     .k-status-badge.s-distilling{ background: rgba(245,158,11,0.2);   color: var(--warning); }
     .k-status-badge.s-done      { background: rgba(34,197,94,0.2);    color: var(--success); }
     .k-status-badge.s-failed    { background: rgba(239,68,68,0.2);    color: var(--danger); }
@@ -558,7 +600,7 @@
     }
     .k-cat-fuel { background: rgba(245,158,11,0.2); color: #fbbf24; }
     .k-cat-mats { background: rgba(16,185,129,0.2); color: #34d399; }
-    .k-cat-misc { background: rgba(138,147,160,0.22); color: #b8c2cf; }
+    .k-cat-misc { background: rgba(59,130,246,0.2); color: #93b4f7; }
 
     .k-retry-btn {
       display: inline-flex; align-items: center; gap: 4px;
@@ -711,21 +753,21 @@
 
     /* Image view button on kanban cards */
     .k-img-btn {
-      background: rgba(111,143,166,0.08); border: 1px solid rgba(111,143,166,0.35);
+      background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.35);
       color: var(--accent); border-radius: 4px; padding: 3px 9px; font-size: 11px;
       cursor: pointer; margin-top: 5px; display: inline-block;
       transition: background 0.15s, border-color 0.15s;
     }
-    .k-img-btn:hover { background: rgba(111,143,166,0.18); border-color: var(--accent); }
+    .k-img-btn:hover { background: rgba(59,130,246,0.18); border-color: var(--accent); }
 
     /* Create (manual entry) button */
     .k-create-btn {
       display: inline-flex; align-items: center; gap: 4px;
       margin-top: 6px; margin-left: 6px; padding: 4px 10px; border-radius: 6px;
-      background: rgba(111,143,166,0.12); border: 1px solid rgba(111,143,166,0.3);
+      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
       color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
     }
-    .k-create-btn:hover { background: rgba(111,143,166,0.22); }
+    .k-create-btn:hover { background: rgba(59,130,246,0.22); }
 
     /* Modals */
     .modal-overlay {
@@ -949,7 +991,7 @@
       font-size: 13px; transition: color 0.15s, border-color 0.15s, background 0.15s;
       display: flex; align-items: center; gap: 5px; flex-shrink: 0;
     }
-    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(111,143,166,0.07); }
+    .theme-toggle:hover { color: var(--text); border-color: var(--accent); background: rgba(59,130,246,0.07); }
     .theme-toggle svg { width: 14px; height: 14px; }
     .gh-link { display: inline-flex; align-items: center; color: var(--muted); margin-right: 4px; transition: color 0.15s; }
     .gh-link:hover { color: var(--text); }
@@ -1592,6 +1634,23 @@
         </div>
         <div id="error-log" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:12px;max-height:200px;overflow-y:auto"></div>
       </div>
+
+      <!-- Run Log — the full, reviewable record of each processing run: exactly
+           what was sent to the model, every image-processing + extraction step
+           per receipt, and the complete streamed log. -->
+      <div id="runlog-section" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Run Log
+            <span style="font-weight:400;font-size:11px;color:var(--muted)">— every detail of each run, for review</span>
+          </div>
+          <span style="flex:1"></span>
+          <button class="btn btn-outline-accent btn-sm" id="runlog-refresh" title="Reload the list of runs">↻ Refresh</button>
+          <button class="btn btn-outline-accent btn-sm" id="runlog-download" title="Download the selected run as a text file">&#10515; Download</button>
+          <button class="btn btn-cancel btn-sm" id="runlog-clear" title="Delete all saved run logs">Clear</button>
+        </div>
+        <select id="runlog-select" style="width:100%;margin-bottom:10px"></select>
+        <div id="runlog-detail"><span class="status-note" style="color:var(--muted)">No runs yet — process a batch to capture a full run log.</span></div>
+      </div>
     </div>
   </div>
 
@@ -1729,7 +1788,7 @@
         <div class="model-section-label">OpenRouter API key</div>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="password" id="or-key" placeholder="sk-or-…" autocomplete="off" style="flex:1;min-width:0">
-          <span id="or-key-status" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
+          <span id="or-key-status" style="font-size:11px;color:var(--muted)"></span>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Get a free key at <strong>openrouter.ai/keys</strong>. Stored locally (never synced to the output folder).</div>
       </div>
@@ -1759,6 +1818,20 @@
             Send OCR text only <span style="font-weight:400">(image stays local)</span>
           </label>
         </div>
+      </div>
+      <!-- Full transparency: the exact instructions/prompts sent to the model.
+           Yes, instructions ARE sent — this shows the whole text, never clipped. -->
+      <div style="margin-bottom:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div class="model-section-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none" onclick="toggleInstr()">
+          <span class="section-toggle instr-chev" id="or-instr-chev" style="width:16px;height:16px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </span>
+          Instructions sent to the model
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin:4px 0 0">
+          Yes — every receipt is sent with a fixed system + extraction prompt (plus OpenRouter routing headers). Click to read the full text — nothing is hidden or trimmed.
+        </div>
+        <div id="or-instr-body" style="display:none;margin-top:10px"></div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="or-save-btn">Apply OpenRouter settings</button>
@@ -2772,9 +2845,10 @@ function connectSSE() {
       loadIntakeCount();
       loadStats();
       loadBenchmarks();
+      loadRuns(msg.run_id);   // refresh the run-log picker, select the just-finished run
 
     } else if (msg.type === 'log') {
-      appendLog(msg.message);
+      appendLog(msg.message, msg.level);
 
     } else if (msg.type === 'progress') {
       const pct = msg.total ? (msg.current / msg.total) * 100 : 0;
@@ -3794,9 +3868,12 @@ document.getElementById('clear-board-btn').addEventListener('click', async () =>
 // ── Log helpers ───────────────────────────────────────────────────────────────
 let errorLines = [];
 
-function appendLog(text) {
+function appendLog(text, level) {
   logEl.textContent += text + '\n';
   logEl.scrollTop = logEl.scrollHeight;
+  // The curated Errors panel stays focused on genuine error *reasons* (so the
+  // verbose per-step detail dump doesn't flood it); `level` is accepted for
+  // forward-compat but the regex is what gates the curated panel.
   if (/error|skipped|SKIPPED/i.test(text)) {
     errorLines.push(text.trim());
     renderErrorPanel();
@@ -4549,6 +4626,155 @@ document.getElementById('bench-clear-btn').addEventListener('click', async () =>
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
+// ── "Instructions sent to the model" — full transparency, never clipped ───────
+function _renderInstructions(instr) {
+  if (!instr) return '<span class="status-note" style="color:var(--muted)">Unavailable.</span>';
+  const yn = b => b ? 'yes' : 'no';
+  let html =
+    `<div class="instr-summary">
+       <span class="k">Provider:</span> <span class="v">${esc(instr.provider || '?')}</span> &nbsp;·&nbsp;
+       <span class="k">Endpoint:</span> <span class="v">${esc(instr.endpoint || '')}</span><br>
+       <span class="k">Model:</span> <span class="v">${esc(instr.distill_model || '?')}</span> &nbsp;·&nbsp;
+       <span class="k">OCR:</span> <span class="v">${esc(instr.ocr_model || '')}</span><br>
+       <span class="k">Sends receipt image:</span> <span class="v">${yn(instr.send_image)}</span> &nbsp;·&nbsp;
+       <span class="k">Reasoning:</span> <span class="v">${yn(instr.thinking_enabled)}</span>
+     </div>`;
+  const eh = instr.extra_headers || {}, eb = instr.extra_body || {};
+  if (Object.keys(eh).length)
+    html += `<div class="instr-sys">HTTP headers sent with every request:</div><pre class="instr-pre">${esc(JSON.stringify(eh, null, 2))}</pre>`;
+  if (Object.keys(eb).length)
+    html += `<div class="instr-sys">Routing body merged into every request:</div><pre class="instr-pre">${esc(JSON.stringify(eb, null, 2))}</pre>`;
+  (instr.stages || []).forEach(st => {
+    html += `<div class="instr-stage">
+        <div class="st-title">${esc(st.stage || '')}</div>
+        <div class="st-when">${esc(st.runs_when || '')} · sends image: ${yn(st.sends_image)}</div>`;
+    if (st.system) html += `<div class="instr-sys">System prompt: <code>${esc(st.system)}</code></div>`;
+    html += `<pre class="instr-pre">${esc(st.user || '')}</pre></div>`;
+  });
+  return html;
+}
+
+let _instrOpen = false;
+async function toggleInstr() {
+  const body = document.getElementById('or-instr-body');
+  const chev = document.getElementById('or-instr-chev');
+  if (!body) return;
+  _instrOpen = !_instrOpen;
+  body.style.display = _instrOpen ? '' : 'none';
+  if (chev) chev.classList.toggle('open', _instrOpen);
+  if (_instrOpen) {
+    body.innerHTML = '<span class="status-note" style="color:var(--muted)">Loading…</span>';
+    try {
+      const instr = await (await fetch('/settings/llm-instructions')).json();
+      body.innerHTML = _renderInstructions(instr);
+    } catch (e) {
+      body.innerHTML = '<span class="status-note" style="color:var(--warning)">Could not load instructions.</span>';
+    }
+  }
+}
+
+// ── Run Log — full reviewable detail of every processing run ──────────────────
+let _runDetailCache = {};
+
+async function loadRuns(selectId) {
+  const sel = document.getElementById('runlog-select');
+  if (!sel) return;
+  try {
+    const d = await (await fetch('/runs')).json();
+    const runs = d.runs || [];
+    if (!runs.length) {
+      sel.innerHTML = '<option value="">No runs yet</option>';
+      document.getElementById('runlog-detail').innerHTML =
+        '<span class="status-note" style="color:var(--muted)">No runs yet — process a batch to capture a full run log.</span>';
+      return;
+    }
+    progressCard.classList.remove('hidden');
+    const want = selectId || sel.value || runs[0].id;
+    sel.innerHTML = runs.map(r => {
+      const when = (r.ts_start || '').replace('T', ' ');
+      const okfail = `${r.done || 0} ok${r.failed ? ' · ' + r.failed + ' failed' : ''}`;
+      const secs = r.total_seconds != null ? ` · ${r.total_seconds}s` : '';
+      return `<option value="${esc(r.id)}">${esc(when)} — ${r.count} receipt(s) · ${okfail}${secs} · ${esc(r.provider || '')}</option>`;
+    }).join('');
+    sel.value = runs.some(r => r.id === want) ? want : runs[0].id;
+    _showRun(sel.value);
+  } catch (_) {}
+}
+
+async function _showRun(id) {
+  const box = document.getElementById('runlog-detail');
+  if (!box || !id) return;
+  box.innerHTML = '<span class="status-note" style="color:var(--muted)">Loading run…</span>';
+  try {
+    const run = _runDetailCache[id] || await (await fetch('/runs/' + encodeURIComponent(id))).json();
+    if (run.error) { box.innerHTML = '<span class="status-note" style="color:var(--warning)">Run not found.</span>'; return; }
+    _runDetailCache[id] = run;
+    box.innerHTML = _renderRunDetail(run);
+  } catch (e) {
+    box.innerHTML = '<span class="status-note" style="color:var(--warning)">Could not load run.</span>';
+  }
+}
+
+function _renderRunDetail(run) {
+  const instr = run.instructions || {};
+  let html = `<div class="rl-head">
+      <span><strong>${esc(run.id || '')}</strong></span>
+      <span>${esc((run.ts_start || '').replace('T',' '))} → ${esc((run.ts_end || '').replace('T',' '))}</span>
+      <span><strong>${run.count || 0}</strong> receipt(s)</span>
+      ${run.total_seconds != null ? `<span><strong>${run.total_seconds}s</strong> total</span>` : ''}
+    </div>`;
+
+  // Collapsible "what was sent to the model" for this run.
+  html += `<details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--accent)">Instructions sent to the model (this run)</summary>
+      <div style="margin-top:8px">${_renderInstructions(instr)}</div>
+    </details>`;
+
+  // Full streamed log.
+  const lines = (run.lines || []).map(l => {
+    const cls = l.level === 'error' ? ' class="rl-err"' : '';
+    return `<span${cls}>${esc(l.t || '')}  ${esc(l.message || '')}</span>`;
+  }).join('\n');
+  html += `<div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Log (${(run.lines || []).length} lines)</div>`;
+  html += `<div class="rl-lines">${lines || '<span style="color:var(--muted)">No log lines.</span>'}</div>`;
+
+  // Per-receipt breakdown with full steps.
+  html += `<div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Receipts (${(run.receipts || []).length})</div>`;
+  (run.receipts || []).forEach(r => {
+    const ok = r.status === 'done';
+    const amt = (r.amount != null && !isNaN(r.amount)) ? ' · $' + Number(r.amount).toFixed(2) : '';
+    let rh = `<div class="rl-receipt">
+        <div class="rl-r-head">
+          <span class="rl-badge ${ok ? 'ok' : 'bad'}">${esc(r.status)}</span>
+          <span>${esc(r.filename || '')}</span>
+          ${r.new_filename && r.new_filename !== r.filename ? `<span style="color:var(--muted)">→ ${esc(r.new_filename)}</span>` : ''}
+        </div>
+        <div class="rl-r-sum">${esc(r.category || '?')} · ${esc(r.vendor || '?')}${amt}${r.confidence != null ? ' · ' + r.confidence + '% conf' : ''}${r.ocr_engine ? ' · ' + esc(r.ocr_engine) : ''}${r.proc_seconds != null ? ' · ' + r.proc_seconds + 's' : ''}</div>`;
+    rh += `<div class="k-step-log open" style="display:block">${renderSteps(r.steps || [])}</div>`;
+    if (r.error) rh += `<div class="k-error" style="margin-top:4px">&#9888; ${esc(r.error)}</div>`;
+    rh += `</div>`;
+    html += rh;
+  });
+  return html;
+}
+
+document.getElementById('runlog-select').addEventListener('change', e => _showRun(e.target.value));
+document.getElementById('runlog-refresh').addEventListener('click', () => { _runDetailCache = {}; loadRuns(); });
+document.getElementById('runlog-download').addEventListener('click', () => {
+  const id = document.getElementById('runlog-select').value;
+  if (!id) { showToast('No run selected', false); return; }
+  window.open(withToken('/runs/' + encodeURIComponent(id) + '/download'), '_blank');
+});
+document.getElementById('runlog-clear').addEventListener('click', async () => {
+  if (!confirm('Delete all saved run logs?')) return;
+  try {
+    await fetch('/runs/clear', { method: 'POST' });
+    _runDetailCache = {};
+    loadRuns();
+    showToast('Run logs cleared', true);
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+});
+
 // ── Review / approval settings ────────────────────────────────────────────────
 async function loadReviewSettings() {
   try {
@@ -5265,7 +5491,7 @@ window.removeSavedItem = async function(listKey, value, panelId) {
 };
 
 // ── Insights dashboard ────────────────────────────────────────────────────────
-const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#8a93a0' };
+const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#3b82f6' };
 const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let _statsTimer = null;
@@ -5608,6 +5834,7 @@ loadSettings();
 loadSavedFields();
 loadStats();
 loadReports();
+loadRuns();
 // Keep the intake count and the LM Studio health chip honest while the page idles
 setInterval(loadIntakeCount, 15000);
 setInterval(loadRejected, 20000);

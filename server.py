@@ -118,6 +118,20 @@ _benchmarks: list[dict] = []
 _bench_lock = threading.Lock()
 BENCH_MAX_ENTRIES = 100
 
+# Full per-run (per-batch) log — every detail of one processing run: the exact
+# instructions/prompts sent to the model, every image-processing + extraction
+# step per receipt, and the full streamed log. Newest first, capped, persisted.
+# `_current_run` is the run being assembled while a batch drains (None when idle);
+# every `type:"log"` broadcast is captured into it, so the Run Log viewer and the
+# Processing & Errors panel see the same stream.
+_runs: list[dict] = []
+_runs_lock = threading.Lock()
+RUNS_MAX_ENTRIES = int(os.getenv("RUNS_MAX_ENTRIES", "25"))
+RUN_MAX_LINES = int(os.getenv("RUN_MAX_LINES", "4000"))
+_current_run: "dict | None" = None
+_current_run_lock = threading.Lock()
+_run_seq = 0
+
 _seen_intake: set[str] = set()
 _seen_lock   = threading.Lock()
 
@@ -769,12 +783,38 @@ def _apply_audit_config(cfg: dict | None = None) -> dict:
 # ── SSE broadcast helpers ──────────────────────────────────────────────────────
 
 def _broadcast(event: dict) -> None:
+    # Every log line that streams to the Processing & Errors panel is also captured
+    # into the in-progress run (if any), so the Run Log is a complete, reviewable
+    # record of the same stream — no extra plumbing at the ~20 log call sites.
+    if event.get("type") == "log":
+        _append_run_line(event.get("message", ""), event.get("level", "info"))
     with _sub_lock:
         for q in list(_subscribers):
             try:
                 q.put_nowait(event)
             except Exception:
                 pass
+
+
+def _emit_log(message: str, level: str = "info") -> None:
+    """Broadcast a log line (→ Processing & Errors panel) with a severity level.
+    `level` is one of ``info`` / ``warn`` / ``error`` and rides along to the UI
+    and into the captured run log."""
+    _broadcast({"type": "log", "message": message, "level": level})
+
+
+def _append_run_line(message: str, level: str = "info") -> None:
+    """Append one log line to the run currently being assembled, if any.
+    Thread-safe and capped so a giant batch can't grow the buffer unbounded."""
+    with _current_run_lock:
+        run = _current_run
+        if run is None:
+            return
+        lines = run["lines"]
+        lines.append({"t": datetime.now().strftime("%H:%M:%S"),
+                      "level": level, "message": message})
+        if len(lines) > RUN_MAX_LINES:
+            del lines[:len(lines) - RUN_MAX_LINES]
 
 
 def _add_subscriber() -> Queue:
@@ -853,11 +893,14 @@ def _persist_state() -> None:
             }
         with _bench_lock:
             bench_copy = list(_benchmarks)
+        with _runs_lock:
+            runs_copy = copy.deepcopy(_runs)
         payload = {
             "results":      results_copy,
             "kanban":       kanban_copy,
             "last_context": context_copy,
             "benchmarks":   bench_copy,
+            "runs":         runs_copy,
         }
         OUT_FOLDER.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
@@ -905,6 +948,13 @@ def _restore_state() -> None:
             _benchmarks.extend(b for b in bench if isinstance(b, dict))
             del _benchmarks[BENCH_MAX_ENTRIES:]
 
+    runs = payload.get("runs")
+    if isinstance(runs, list):
+        with _runs_lock:
+            _runs.clear()
+            _runs.extend(r for r in runs if isinstance(r, dict))
+            del _runs[RUNS_MAX_ENTRIES:]
+
     with _results_lock:
         n = len(_results)
     if n:
@@ -939,8 +989,212 @@ def _run_worker() -> None:
             if not _drain_once():
                 time.sleep(0.4)
         except Exception as exc:
-            _broadcast({"type": "log", "message": f"[worker] recovered from error: {exc}"})
+            _abort_current_run()   # don't strand a half-built run on a crash
+            _emit_log(f"[worker] recovered from error: {exc}", level="error")
             time.sleep(1)
+
+
+# ── Run log: what gets sent + full per-run detail ──────────────────────────────
+
+def _llm_instructions_payload() -> dict:
+    """A self-documenting snapshot of EXACTLY what the app sends to the LLM for the
+    active provider: the system+user prompt for every pipeline stage, the privacy
+    gate, the OpenRouter routing body and attribution headers. Nothing is hidden.
+    Powers the "Instructions sent to the model" panel and is embedded in each run
+    log so a saved run is self-contained."""
+    cfg         = _load_config()
+    provider    = (cfg.get("provider") or "local").strip()
+    allow_image = bool(getattr(_pr, "LLM_ALLOW_IMAGE", True))
+    ocr_model   = _pr._active_ocr_model or ""
+    stages = [
+        {
+            "stage": "1 · OCR transcription (vision LLM)",
+            "runs_when": ("When an LLM-OCR model is selected and images may be sent — "
+                          "transcribes the image so the distiller can cross-check it"
+                          if (ocr_model and allow_image) else
+                          "Off — built-in RapidOCR only (no LLM-OCR model, or image "
+                          "sending disabled)"),
+            "sends_image": True,
+            "system": "",
+            "user": _pr.OLMOCR_RAW_PROMPT,
+        },
+        {
+            "stage": "2 · Distillation (OCR text → structured fields)",
+            "runs_when": "Every receipt that produced OCR text — the main extraction call",
+            "sends_image": False,
+            "system": "You are a receipt data extractor. Respond with valid JSON only.",
+            "user": _pr._UNIFIED_DISTILLATION_TEMPLATE.replace(
+                "{ocr_text}", "<the receipt's OCR text is inserted here>"),
+        },
+        {
+            "stage": "3 · Vision rescue (image → fields)",
+            "runs_when": ("Only when OCR text is missing or low-confidence AND images "
+                          "may be sent — a vision model reads the receipt directly"
+                          if allow_image else
+                          "Off — image sending is disabled (OCR-text-only privacy mode)"),
+            "sends_image": True,
+            "system": "You are a receipt data extractor. Always respond with valid JSON only.",
+            "user": _pr._GEMMA_VISION_TEMPLATE,
+        },
+    ]
+    return {
+        "provider":         provider,
+        "endpoint":         getattr(_pr, "LMSTUDIO_BASE_URL", ""),
+        "distill_model":    _pr._active_distill_model or "(auto-selected)",
+        "ocr_model":        ocr_model or "(built-in RapidOCR only)",
+        "send_image":       allow_image,
+        "thinking_enabled": bool(getattr(_pr, "_thinking_enabled", True)),
+        "extra_headers":    dict(getattr(_pr, "LLM_EXTRA_HEADERS", {}) or {}),
+        "extra_body":       dict(getattr(_pr, "LLM_EXTRA_BODY", {}) or {}),
+        "stages":           stages,
+    }
+
+
+def _begin_run(batch: list) -> dict:
+    """Start assembling a fresh run log for a batch; capture what we'll send."""
+    global _current_run, _run_seq
+    _run_seq += 1
+    run = {
+        "id":            datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{_run_seq:04d}",
+        "ts_start":      datetime.now().isoformat(timespec="seconds"),
+        "ts_end":        None,
+        "count":         len(batch),
+        "total_seconds": None,
+        "instructions":  _llm_instructions_payload(),
+        "lines":         [],
+        "receipts":      [],
+    }
+    with _current_run_lock:
+        _current_run = run
+    return run
+
+
+def _record_run_receipt(fname: str, status: str, data, steps, *, error: str = "") -> None:
+    """Attach a finished receipt to the active run AND stream its full per-step
+    breakdown into the live log (so the Processing & Errors panel shows every
+    detail: image-prep, OCR, distillation, classify, audit …)."""
+    safe = data or {}
+    cat  = safe.get("_category") or ""
+    entry = {
+        "filename":     fname,
+        "new_filename": safe.get("_new_filename", ""),
+        "status":       status,
+        "vendor":       safe.get("vendor", ""),
+        "amount":       safe.get("amount", None),
+        "date":         safe.get("date", ""),
+        "category":     cat,
+        "confidence":   safe.get("_confidence", None),
+        "ocr_engine":   safe.get("_ocr_engine", ""),
+        "proc_seconds": safe.get("_proc_seconds", None),
+        "error":        error or safe.get("_error", ""),
+        "steps":        [dict(s) for s in (steps or [])],
+    }
+    with _current_run_lock:
+        if _current_run is not None:
+            _current_run["receipts"].append(entry)
+
+    head = f"▸ {fname}"
+    if entry["new_filename"] and entry["new_filename"] != fname:
+        head += f" → {entry['new_filename']}"
+    _emit_log(f"{head}  [{status}]", level=("error" if status == "failed" else "info"))
+    for s in entry["steps"]:
+        ok  = s.get("ok", True)
+        dur = f" · {s['duration_s']}s" if s.get("duration_s") else ""
+        det = f" — {s['detail']}" if s.get("detail") else ""
+        _emit_log(f"    {'✓' if ok else '✗'} {s.get('label') or s.get('step')}{det}{dur}",
+                  level=("info" if ok else "error"))
+    if status == "done":
+        amt  = entry["amount"] or 0
+        conf = f" · {entry['confidence']}% conf" if entry["confidence"] is not None else ""
+        try:
+            _emit_log(f"    = {cat or '?'} · {entry['vendor'] or '?'} · ${float(amt):.2f}{conf}")
+        except (TypeError, ValueError):
+            _emit_log(f"    = {cat or '?'} · {entry['vendor'] or '?'} · {amt}{conf}")
+    elif error:
+        _emit_log(f"    ! {error}", level="error")
+
+
+def _finalize_run(run: "dict | None", total_seconds: "float | None") -> None:
+    """Close out a run and push it onto the newest-first, capped history."""
+    global _current_run
+    if run is None:
+        return
+    run["ts_end"] = datetime.now().isoformat(timespec="seconds")
+    if total_seconds is not None and run.get("total_seconds") is None:
+        run["total_seconds"] = round(total_seconds, 1)
+    with _runs_lock:
+        _runs.insert(0, run)
+        del _runs[RUNS_MAX_ENTRIES:]
+    with _current_run_lock:
+        if _current_run is run:
+            _current_run = None
+
+
+def _abort_current_run() -> None:
+    """Salvage a half-built run after a worker crash so it isn't stranded."""
+    with _current_run_lock:
+        run = _current_run
+    if run is not None:
+        _finalize_run(run, None)
+
+
+def _format_run_text(run: dict) -> str:
+    """Render a run as a plain-text report for download/review."""
+    instr = run.get("instructions") or {}
+    out: list[str] = []
+    out.append(f"RUN {run.get('id')}")
+    out.append(f"Started: {run.get('ts_start')}   Ended: {run.get('ts_end')}")
+    out.append(f"Receipts: {run.get('count')}   Total: {run.get('total_seconds')}s")
+    out.append("")
+    out.append("=== WHAT WAS SENT TO THE MODEL ===")
+    out.append(f"  Provider:      {instr.get('provider')}")
+    out.append(f"  Endpoint:      {instr.get('endpoint')}")
+    out.append(f"  Distill model: {instr.get('distill_model')}")
+    out.append(f"  OCR model:     {instr.get('ocr_model')}")
+    out.append(f"  Send image:    {instr.get('send_image')}")
+    out.append(f"  Reasoning:     {instr.get('thinking_enabled')}")
+    if instr.get("extra_headers"):
+        out.append(f"  Extra headers: {json.dumps(instr['extra_headers'])}")
+    if instr.get("extra_body"):
+        out.append(f"  Routing body:  {json.dumps(instr['extra_body'])}")
+    for st in instr.get("stages") or []:
+        out.append("")
+        out.append(f"  -- {st.get('stage')} --")
+        out.append(f"     When: {st.get('runs_when')}")
+        out.append(f"     Sends image: {st.get('sends_image')}")
+        if st.get("system"):
+            out.append(f"     System prompt: {st['system']}")
+        out.append("     Instructions:")
+        for ln in (st.get("user") or "").splitlines():
+            out.append(f"       {ln}")
+    out.append("")
+    out.append("=== LOG ===")
+    for ln in run.get("lines") or []:
+        out.append(f"  {ln.get('t','')}  {ln.get('message','')}")
+    out.append("")
+    out.append("=== RECEIPTS ===")
+    for r in run.get("receipts") or []:
+        head = f"  - {r.get('filename')} [{r.get('status')}]"
+        if r.get("new_filename") and r.get("new_filename") != r.get("filename"):
+            head += f" -> {r.get('new_filename')}"
+        out.append(head)
+        if r.get("vendor") or r.get("amount") is not None:
+            try:
+                amt = f"${float(r.get('amount') or 0):.2f}"
+            except (TypeError, ValueError):
+                amt = str(r.get("amount"))
+            out.append(f"      {r.get('category') or '?'} · {r.get('vendor') or '?'} · {amt}")
+        for s in r.get("steps") or []:
+            mark = "ok " if s.get("ok", True) else "ERR"
+            line = f"      [{mark}] {s.get('label') or s.get('step')}"
+            if s.get("detail"):
+                line += f" — {s['detail']}"
+            if s.get("duration_s"):
+                line += f" ({s['duration_s']}s)"
+            out.append(line)
+        if r.get("error"):
+            out.append(f"      error: {r.get('error')}")
+    return "\n".join(out)
 
 
 def _receipts_output_dir() -> Path:
@@ -963,8 +1217,14 @@ def _drain_once() -> bool:
     if not batch:
         return False
 
-    _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
     _batch_t0 = time.perf_counter()
+    # Open a fresh run log BEFORE the first line so the whole batch is captured.
+    run = _begin_run(batch)
+    instr = run["instructions"]
+    _emit_log(f"[worker] Processing {len(batch)} receipt(s)…")
+    _emit_log(f"[run {run['id']}] provider={instr['provider']} · "
+              f"model={instr['distill_model']} · ocr={instr['ocr_model']} · "
+              f"send_image={instr['send_image']} · reasoning={instr['thinking_enabled']}")
     # Build the extraction client for the active provider (local LM Studio or
     # OpenRouter). Snapshotted once per batch — config is stable mid-batch.
     client = _pr.make_client()
@@ -1048,7 +1308,7 @@ def _drain_once() -> bool:
                 data = future.result()
             except Exception as exc:
                 data = None
-                _broadcast({"type": "log", "message": f"[worker] ERROR {fname}: {exc}"})
+                _emit_log(f"[worker] ERROR {fname}: {exc}", level="error")
 
             if data is None or _is_low_confidence(data) or _has_ocr_flag(data):
                 fail_reason = _get_fail_reason(data)
@@ -1080,6 +1340,8 @@ def _drain_once() -> bool:
                     "error":    fail_reason,
                     "steps":    partial.get("_steps", []),
                 })
+                _record_run_receipt(fname, "failed", partial,
+                                    partial.get("_steps", []), error=fail_reason)
                 continue
 
             category = classify_category(data)
@@ -1142,20 +1404,23 @@ def _drain_once() -> bool:
                 "model":    "",
                 "steps":    data.get("_steps", []),
             })
-            _broadcast({
-                "type":    "log",
-                "message": f"[{category.upper()}] {data.get('vendor','?')} — ${data.get('amount', 0):.2f}",
-            })
+            # Stream the full per-receipt breakdown (image-prep → OCR → distill →
+            # classify → audit) into the live log and capture it in the run.
+            _record_run_receipt(fname, "done", data, data.get("_steps", []))
 
     with _results_lock:
         _detect_duplicates(_results)
         n_done = len(_results)
     with _work_lock:
         n_pending = len(_work_queue)
-    bench = _record_benchmark(len(batch), time.perf_counter() - _batch_t0)
+    elapsed = time.perf_counter() - _batch_t0
+    bench = _record_benchmark(len(batch), elapsed)
+    _emit_log(f"[worker] Batch finished — {len(run['receipts'])} receipt(s) in "
+              f"{round(elapsed, 1)}s")
+    _finalize_run(run, elapsed)
     _persist_state()
     _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending,
-                "benchmark": bench})
+                "benchmark": bench, "run_id": run["id"]})
     return True
 
 
@@ -3681,6 +3946,72 @@ async def clear_benchmarks():
     _persist_state()
     return JSONResponse({"ok": True})
 
+
+# ── Run log (full per-batch detail) ────────────────────────────────────────────
+
+@app.get("/runs")
+async def list_runs():
+    """Newest-first summaries of every captured processing run, for the picker."""
+    with _runs_lock:
+        runs = list(_runs)
+    summaries = []
+    for r in runs:
+        instr    = r.get("instructions") or {}
+        receipts = r.get("receipts") or []
+        summaries.append({
+            "id":            r.get("id"),
+            "ts_start":      r.get("ts_start"),
+            "ts_end":        r.get("ts_end"),
+            "count":         r.get("count"),
+            "total_seconds": r.get("total_seconds"),
+            "provider":      instr.get("provider"),
+            "distill_model": instr.get("distill_model"),
+            "send_image":    instr.get("send_image"),
+            "done":          sum(1 for x in receipts if x.get("status") == "done"),
+            "failed":        sum(1 for x in receipts if x.get("status") == "failed"),
+            "lines":         len(r.get("lines") or []),
+        })
+    return JSONResponse({"runs": summaries})
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str):
+    """Full detail for one run: instructions sent, streamed log, per-receipt steps."""
+    with _runs_lock:
+        run = next((r for r in _runs if r.get("id") == run_id), None)
+    if run is None:
+        return JSONResponse({"error": "run not found"}, status_code=404)
+    return JSONResponse(run)
+
+
+@app.get("/runs/{run_id}/download")
+async def download_run(run_id: str):
+    """Download one run as a self-contained plain-text report."""
+    with _runs_lock:
+        run = next((r for r in _runs if r.get("id") == run_id), None)
+    if run is None:
+        return JSONResponse({"error": "run not found"}, status_code=404)
+    text = _format_run_text(run)
+    return Response(
+        text, media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="run_{run_id}.txt"'},
+    )
+
+
+@app.post("/runs/clear")
+async def clear_runs():
+    with _runs_lock:
+        _runs.clear()
+    _persist_state()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/settings/llm-instructions")
+async def get_llm_instructions():
+    """Exactly what the app sends to the LLM right now — the system + user prompt
+    for each pipeline stage, the privacy gate, and the OpenRouter routing/headers.
+    Powers the 'Instructions sent to the model' panel so nothing is hidden."""
+    return JSONResponse(_llm_instructions_payload())
 
 
 # ── Review / approval settings ────────────────────────────────────────────────

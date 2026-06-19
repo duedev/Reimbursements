@@ -45,7 +45,7 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 | File | What lives here |
 |---|---|
-| `server.py` (~4k lines) | FastAPI app: all HTTP/SSE endpoints (82 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints. Imports the pipeline from `process_receipts`. |
+| `server.py` (~4k lines) | FastAPI app: all HTTP/SSE endpoints (87 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
 | `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
 | `templates/index.html` (~5.4k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
@@ -170,6 +170,47 @@ user input, never the placeholder.
   (scoped glob only; never images). UI: Report History card "Clear History" button
   → `loadReports()` refresh.
 
+## Transparency & run log ("what gets sent" + per-run detail)
+
+Goal: surface **all** processing detail and **exactly what instructions are sent**
+to the model — nothing hidden or clipped.
+
+- **`GET /settings/llm-instructions`** → `_llm_instructions_payload()`: a live,
+  self-documenting snapshot of what the app sends to the LLM for the active
+  provider — provider/endpoint/model, the privacy gate (`send_image`), reasoning
+  toggle, OpenRouter `extra_headers` + routing `extra_body`, and the **full system
+  + user prompt for each pipeline stage** (OCR transcription `OLMOCR_RAW_PROMPT`,
+  distillation `_UNIFIED_DISTILLATION_TEMPLATE`, vision rescue `_GEMMA_VISION_TEMPLATE`).
+  UI: the OpenRouter card's collapsible **"Instructions sent to the model"** panel
+  (`toggleInstr()` / `_renderInstructions()`) renders it in scrollable `.instr-pre`
+  blocks (never truncated) — the fix for "the text gets cut off".
+- **Run log = one record per batch ("run").** `_begin_run(batch)` opens it (embeds
+  the instructions snapshot); **every `type:"log"` broadcast is auto-captured** into
+  the active run by a hook inside `_broadcast` (so all ~20 log call sites feed it
+  with no per-site change), capped at `RUN_MAX_LINES`. `_record_run_receipt()` adds
+  each finished receipt (filename→renamed, status, fields, confidence, **full step
+  list incl. image-processing**) AND streams the per-step breakdown into the live
+  log via `_emit_log(msg, level=…)`. `_finalize_run()` pushes it onto `_runs`
+  (newest-first, capped `RUNS_MAX_ENTRIES=25`, persisted in `.app_state.json`);
+  `_abort_current_run()` salvages a partial run on worker crash.
+- **Endpoints:** `GET /runs` (summaries), `GET /runs/{id}` (full detail),
+  `GET /runs/{id}/download` (plain-text report via `_format_run_text`),
+  `POST /runs/clear`. `batch_done` now carries `run_id`.
+- **UI:** the **Run Log** sub-section lives inside the **Processing & Errors** card
+  (`#runlog-section`) — a run picker + detail view (`loadRuns()`/`_showRun()`/
+  `_renderRunDetail()`) showing the run header, a collapsible instructions panel,
+  the full streamed log, and a per-receipt step breakdown (reuses `renderSteps`),
+  with Download/Refresh/Clear. Refreshes on `batch_done` and on page load.
+- **Image-processing steps are logged.** `_extract_receipt_with_status` now records
+  `exif_rotate` / `grayscale` / `autocrop` steps (when each actually changes the
+  file; autocrop shows before→after dims) so the card step-log, the run log, and the
+  live Processing & Errors stream all show what was done to the picture before OCR.
+- **The same stream feeds both places** — `#log` (Processing & Errors) and the run
+  record are the *same* `type:"log"` events, so "route the log into Processing &
+  Errors" is satisfied by construction. The curated **Errors** panel still filters
+  to genuine error *reasons* (so the verbose per-step dump doesn't flood it).
+- Tests: `tests/test_run_log.py` (+17).
+
 ## Config / state / paths
 
 - `OUTPUT_FOLDER` (default `output/`), `RECEIPTS_FOLDER` (default `receipts/`).
@@ -181,7 +222,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **466 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **483 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -219,6 +260,40 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (transparency: "what gets sent" + full per-run log + image-prep steps):**
+  Suite **466 → 483** green. Answers "are you passing instructions?" (yes) and "I want
+  all details" with end-to-end transparency.
+  * **What gets sent** — new `GET /settings/llm-instructions` (`_llm_instructions_payload()`)
+    returns the live system+user prompt for every stage (OCR / distillation / vision),
+    the privacy gate, reasoning toggle, and OpenRouter routing headers/body. The
+    OpenRouter card gained a collapsible **"Instructions sent to the model"** panel
+    (`toggleInstr` / `_renderInstructions`) rendering it in scrollable `.instr-pre`
+    blocks — **the fix for the cut-off text** (removed `white-space:nowrap` on the key
+    status too).
+  * **Run log** — one reviewable record per batch. `_begin_run` embeds the instructions
+    snapshot; a hook in `_broadcast` auto-captures **every** `type:"log"` line into the
+    active run (capped `RUN_MAX_LINES`); `_record_run_receipt` adds each receipt's full
+    detail (incl. steps) and **streams the per-step breakdown into the live log** via
+    `_emit_log(msg, level)`; `_finalize_run` pushes onto `_runs` (newest-first, capped
+    `RUNS_MAX_ENTRIES`, persisted); `_abort_current_run` salvages on crash. Endpoints
+    `GET /runs`, `GET /runs/{id}`, `GET /runs/{id}/download` (`_format_run_text`),
+    `POST /runs/clear`; `batch_done` carries `run_id`.
+  * **UI** — **Run Log** sub-section inside the **Processing & Errors** card
+    (`#runlog-section`: picker + header + collapsible instructions + full log +
+    per-receipt step breakdown, with Download/Refresh/Clear). Refreshes on `batch_done`
+    and page load.
+  * **Image-processing steps logged** — `_extract_receipt_with_status` now records
+    `exif_rotate`/`grayscale`/`autocrop` steps (autocrop shows before→after dims) so
+    image prep shows on the card, in the run log, and in the live stream.
+  * **Same stream, both places** — `#log` and the run record are the identical
+    `type:"log"` events ("route the log into Processing & Errors" is by construction).
+    The curated Errors panel still filters to genuine error reasons.
+  * **Theme** — restored blue where the gunmetal pass had swapped it to steel (besides
+    the page background): pie/donut **misc** category `#8a93a0`→`#3b82f6`, the
+    `.k-cat-misc` chip, and all `rgba(111,143,166,…)` element accent-tints →
+    `rgba(59,130,246,…)` (timeline/vendor bars already used `--accent`/`--accent-2`).
+  * Tests: `tests/test_run_log.py` (+17, incl. an end-to-end `_drain_once` capture).
 
 - **2026-06-19 (merge main into dev + drop the Gemini/Mistral fallback chain):** Merged
   `origin/main` (which had independently added a Gemini → Mistral → LM Studio cloud
