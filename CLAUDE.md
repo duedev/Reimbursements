@@ -87,10 +87,11 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
 8. Back in `server.py` worker: `classify_category`, `audit_amount`, confidence,
    review/approval defaults, job-field defaults, rename, dedup.
 
-**Reasoning is per stage** (`_thinking_body(budget, enabled=...)`):
-- OCR pass → **always** `enabled=False`.
-- Distillation/vision → follow the global toggle `_thinking_enabled` (default **True**),
-  set via `POST /models/thinking`, persisted as `thinking_enabled` in config.
+**Reasoning is OFF** (`_thinking_body(budget, enabled=...)`): `_thinking_enabled`
+defaults **False** and there is **no UI toggle** any more — the OCR pass never
+reasons and distillation/vision run faster (and usually just as accurately)
+without it. The `POST /models/thinking` endpoint still exists (programmatic/test
+use) but nothing in the app turns reasoning on.
 
 ## Models & settings
 
@@ -222,7 +223,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **483 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **496 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -260,6 +261,53 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (AI Model section rework + benchmark steps + scan-app import):** Suite
+  **483 → 496** green.
+  * **Unified mode selector** — the AI Model card replaced the two separate radio
+    groups (Provider local/openrouter **and** LLM Server custom/docker) with ONE 3-way
+    **"Where the model runs"** selector: **On-host LLM** / **Docker bundled LLM** /
+    **OpenRouter**. The shared **Server URL** field auto-populates from the choice —
+    editable on-host (LM Studio default), read-only + auto-filled for docker
+    (`_docker_llm_url()`) and OpenRouter (`openrouter.ai/api/v1`). Frontend-only:
+    `_currentMode()` / `_applyModeUI(mode)` drive section visibility + URL state and map
+    the 3 modes onto the existing `/settings/llm-provider` + `/settings/llm-server`
+    endpoints (no backend change). `loadLLMProvider` derives the mode from
+    `provider` + `local.server_type`.
+  * **"OpenRouter shows no calls" root cause + guard** — the run log had `provider=local`
+    but `endpoint=openrouter.ai`: a cloud URL pasted into the local custom field, so
+    `make_client()` authed with the dummy `"lmstudio"` key (no attribution headers / no
+    routing body) → every request 401s before it counts as a call → silent offline-parser
+    fallback. The mode rework prevents it (URL read-only + key wired in OpenRouter mode);
+    `_updateHostUrlHint()` also warns when a cloud URL is detected in On-host mode.
+  * **Docker controls hidden unless docker** — Start/Stop/Restart/Load (`#llm-docker-controls`,
+    which shell out to `docker compose` and fail elsewhere) now only show in docker mode.
+    Status + Auto-detect + Refresh split into `#llm-conn-row` (on-host & docker).
+  * **"None" model option** — the local model dropdown always offers **None** (value
+    `""`) = built-in OCR + offline parser, no LLM. `_unified_distillation` /
+    `_extract_with_model` short-circuit (return None, no API call) when no model is set;
+    `_distill_text` logs "no AI model selected — built-in OCR + offline parser"; vision
+    rescue is skipped. The dropdown change handler now allows the empty value.
+  * **Reasoning removed** — `_thinking_enabled` default **True → False**; the Reasoning
+    checkbox + listener are gone from the UI (endpoint kept for tests). See the
+    "Reasoning is OFF" note above.
+  * **Loaded-models list scrollable** — `.model-strip` capped at `max-height:168px` +
+    `overflow-y:auto` (design must: a long loaded list can't blow out the card/page).
+  * **Benchmark: all steps + CSV download** — `_record_benchmark(count, seconds,
+    receipts)` now stores a per-step time breakdown via `_aggregate_step_durations`;
+    `_benchmark_insights` adds `step_totals` (time-by-step across all batches, slowest
+    first). New `GET /benchmarks/download` (`_benchmarks_csv`) streams a long-format CSV
+    (one row per batch-step, incl. failures) — UI **⬇ Download CSV** button + a per-batch
+    step sub-row + a "Time by step" insights chart.
+  * **Scan-app (CamScanner) guided import** — `POST /settings/processing/preset {preset}`
+    (`_PROCESSING_PRESETS`: `scanned`/`camscanner` = auto-crop **off** since scan apps
+    already crop/de-skew/enhance, auto-rotate + B&W on; `photo` = full chain @ aggr 85).
+    Add-Receipts card gains an **"Import from a scan app"** button → `#camscanner-modal`
+    (best-export guidance + "apply scanned-document settings" checkbox + file picker that
+    applies the preset then queues via the normal path). Also fixed `addFiles` to accept
+    `.zip` (UI/server already did; the client filter dropped them).
+  * Tests: `tests/test_ai_model_modes.py` (+11), benchmark steps/download in
+    `tests/test_benchmark.py` (+5), `test_proc_time_stats` vision test now sets a model.
 
 - **2026-06-19 (transparency: "what gets sent" + full per-run log + image-prep steps):**
   Suite **466 → 483** green. Answers "are you passing instructions?" (yes) and "I want

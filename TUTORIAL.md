@@ -97,12 +97,28 @@ To change the folder settings later, open Terminal (Mac) or Command Prompt (Wind
 
 **Adding a receipt**
 
-You have two options:
+You have three options:
 
-- **Drag and drop:** Drag an image file (JPEG, PNG, etc.) or a PDF directly onto the blue upload zone on the web page.
+- **Drag and drop:** Drag an image file (JPEG, PNG, etc.), a PDF, or a `.zip` directly onto the blue upload zone on the web page.
 - **Drop folder:** Copy or move receipt photos into the receipts folder you chose in Step 4. The app checks that folder every few seconds and picks them up automatically.
+- **Import from a scan app (CamScanner, Adobe Scan, Genius Scan…):** Click the **📱 Import from a scan app** button in the Add Receipts card. See *"Importing from CamScanner"* just below.
 
 After adding files, click **Add to Queue**.
+
+**Importing from CamScanner (and other scan apps)**
+
+CamScanner, Adobe Scan and Genius Scan already crop, straighten and sharpen each
+page, so the app does **not** crop them again (re-cropping a tidy scan can shave
+off an edge). The **📱 Import from a scan app** button opens a short guide and, when
+you pick your files, automatically applies the best settings for scanned documents
+(auto-crop **off**, auto-rotate and black-&-white **on**).
+
+For the cleanest results, in CamScanner:
+
+- Export as **PDF** (a multi-page PDF becomes **one receipt per page**) or as **JPG** at **HD / original** quality.
+- Use the **"Original"** or **"B&W document"** colour mode — both read well.
+- Keep **one receipt per page**, then share/save straight into this app (or into your receipts folder).
+- A free-tier watermark is fine — it sits in the footer and doesn't change the total.
 
 **Watching the board**
 

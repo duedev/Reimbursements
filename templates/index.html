@@ -699,8 +699,13 @@
     }
     .copy-btn:hover { color: var(--text); border-color: var(--accent); }
 
-    /* Watch card model strip */
-    .model-strip { display: flex; flex-direction: column; gap: 6px; }
+    /* Watch card model strip — capped height + scroll so a long list of loaded
+       models never blows out the card / pushes the page (design must). */
+    .model-strip { display: flex; flex-direction: column; gap: 6px;
+                   max-height: 168px; overflow-y: auto; overscroll-behavior: contain;
+                   padding-right: 4px; }
+    .model-strip::-webkit-scrollbar { width: 8px; }
+    .model-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
     .model-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
     .model-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--border); }
     .model-dot.loaded { background: var(--success); }
@@ -1446,6 +1451,8 @@
     </label>
     <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
       <span class="status-note" id="file-count-note"></span>
+      <button class="btn btn-outline-accent btn-sm" id="camscanner-btn"
+              title="Guided import for CamScanner / Adobe Scan / Genius Scan exports — applies the best settings for already-scanned documents">&#128241; Import from a scan app</button>
       <span class="intake-note hidden" id="intake-row">
         <span><strong id="intake-count">0</strong> waiting in intake folder</span>
         <button class="btn btn-outline-accent btn-sm" id="queue-intake-btn"
@@ -1684,83 +1691,86 @@
       One model reads your receipts — it handles both extraction and (optionally) OCR.
       It's auto-selected and loaded at startup; change it here and it applies to the next receipt, no restart needed.
     </p>
-    <!-- Provider: local private server vs. OpenRouter cloud router -->
+    <!-- Mode: where the model runs. The endpoint URL + model list below both
+         follow this single choice (on-host / docker-bundled / OpenRouter cloud). -->
     <div style="margin-bottom:12px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Provider</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Where the model runs</div>
       <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
         <label class="check-label" style="font-size:12px;gap:6px"
-               title="Run a model locally (LM Studio / llama.cpp / any OpenAI-compatible endpoint). Receipts never leave your machine.">
-          <input type="radio" name="llm-provider" value="local" id="provider-local" checked>
-          🔒 Local server <span style="font-weight:400">(private)</span>
+               title="Run a model locally with LM Studio / llama.cpp / any OpenAI-compatible server. Receipts never leave your machine.">
+          <input type="radio" name="llm-mode" value="host" id="mode-host" checked>
+          🔒 On-host LLM <span style="font-weight:400">(private)</span>
         </label>
         <label class="check-label" style="font-size:12px;gap:6px"
-               title="Use OpenRouter's cloud API and auto-pick the best FREE vision-capable model. Sends receipt data to a third-party cloud.">
-          <input type="radio" name="llm-provider" value="openrouter" id="provider-openrouter">
-          ☁️ OpenRouter <span style="font-weight:400">(cloud · free models)</span>
+               title="Use the LLM server bundled with this app's Docker compose stack (model-server). Start/stop it with the controls below.">
+          <input type="radio" name="llm-mode" value="docker" id="mode-docker">
+          🐳 Docker bundled LLM
+        </label>
+        <label class="check-label" style="font-size:12px;gap:6px"
+               title="Use OpenRouter's cloud API and free, vision-capable models. Sends receipt data to a third-party cloud.">
+          <input type="radio" name="llm-mode" value="openrouter" id="mode-openrouter">
+          ☁️ OpenRouter <span style="font-weight:400">(cloud · free)</span>
         </label>
       </div>
     </div>
 
+    <!-- Endpoint URL — shared across modes; editable only On-host, otherwise
+         auto-populated (Docker bundled URL / OpenRouter cloud URL). -->
+    <div id="llm-server-url-row" style="margin-bottom:12px">
+      <div class="model-section-label">Server URL</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="llm-server-url" placeholder="http://127.0.0.1:1234/v1" style="flex:1;min-width:0">
+        <button class="btn btn-outline-accent btn-sm" id="llm-server-save-btn">Apply</button>
+      </div>
+      <div id="llm-url-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+    </div>
+
     <div id="provider-local-section">
-    <!-- Single consolidated model selector -->
+    <!-- Single consolidated model selector — list is scoped to the selected mode,
+         and "None" runs the built-in OCR + offline parser with no LLM. -->
     <div class="model-grid" style="grid-template-columns:1fr">
       <div>
         <div class="model-section-label">AI Model <span style="font-weight:400;text-transform:none;letter-spacing:0">(used for extraction &amp; audit — and OCR when enabled below)</span></div>
         <div class="model-select-row">
           <div class="model-active-dot" id="distill-model-dot"></div>
-          <select id="distill-model-select" title="The single model used for extraction, audit, and (optionally) OCR. Auto-selected and loaded at startup.">
+          <select id="distill-model-select" title="The model used for extraction, audit, and (optionally) OCR. Only models on the selected server are listed. Pick None to skip the LLM entirely.">
             <option value="">Loading available models…</option>
           </select>
+          <button class="copy-btn" id="refresh-models-btn" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh</button>
         </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Only models on the selected server are shown. Pick <strong>None</strong> to skip the LLM — built-in OCR + offline parser only.</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <label class="check-label" id="ocr-toggle-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower). The OCR pass always runs without reasoning.">
+             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower).">
         <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
         <input type="checkbox" id="ocr-toggle">
         Also use this model for OCR <span style="font-weight:400">(cross-reference — slower)</span>
       </label>
-      <label class="check-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="Let the model reason step-by-step before answering. The OCR pass always runs without reasoning. On by default — turn off for a faster (often just as accurate) pass.">
-        <input type="checkbox" id="reasoning-toggle">
-        Reasoning
-      </label>
-      <button class="copy-btn" id="refresh-models-btn" style="margin-left:auto" title="Refresh model list (auto-refreshes every 30s while Settings is open)">↻ Refresh Models</button>
-    </div>
-    <!-- LLM Server selector — docker bundled vs custom OpenAI-compatible endpoint -->
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">LLM Server</div>
-      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start">
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="radio" name="llm-server-type" value="custom" id="llm-server-custom" checked>
-          Custom / LM Studio URL
-        </label>
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="radio" name="llm-server-type" value="docker" id="llm-server-docker">
-          Docker bundled server
-        </label>
-      </div>
-      <div id="llm-server-url-row" style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <input type="text" id="llm-server-url" placeholder="http://127.0.0.1:1234/v1" style="flex:1;min-width:0">
-        <button class="btn btn-outline-accent btn-sm" id="llm-server-save-btn">Apply</button>
-      </div>
     </div>
 
-    <!-- Docker LLM server controls — only useful when the bundled model-server is in play -->
-    <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+    <!-- Connection status + recovery — for on-host & docker (not OpenRouter cloud) -->
+    <div id="llm-conn-row" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">LLM Server Controls</span>
+        <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Connection</span>
         <span id="llm-status-dot" title="LLM server reachability" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--border);flex-shrink:0"></span>
         <span id="llm-status-label" style="font-size:11px;color:var(--muted)">checking…</span>
       </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-outline-accent btn-sm" id="llm-autodetect-btn" title="Probe known endpoints (LM Studio :1234, bundled server :11434, host.docker.internal) and connect to whichever answers">🔎 Auto-detect</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-status-refresh-btn">↻ Refresh</button>
+      </div>
+    </div>
+
+    <!-- Docker lifecycle controls — only shown for (and only work with) the bundled Docker server -->
+    <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:none">
+      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Docker server controls</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-outline-accent btn-sm" id="llm-start-btn">Start</button>
         <button class="btn btn-cancel btn-sm" id="llm-stop-btn">Stop</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-restart-btn">Restart</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-load-btn">Load Model</button>
-        <button class="btn btn-outline-accent btn-sm" id="llm-autodetect-btn" title="Probe known endpoints (LM Studio :1234, bundled server :11434, host.docker.internal) and connect to whichever answers">🔎 Auto-detect</button>
-        <button class="btn btn-outline-accent btn-sm" id="llm-status-refresh-btn">↻ Refresh</button>
       </div>
     </div>
     <!-- Configure Model dialog trigger -->
@@ -1849,7 +1859,9 @@
     </p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <button class="btn btn-outline-accent btn-sm" id="bench-copy-btn"
-              title="Copy the table as CSV to paste into a spreadsheet">Copy as CSV</button>
+              title="Copy the summary table as CSV to paste into a spreadsheet">Copy as CSV</button>
+      <a class="btn btn-outline-accent btn-sm" id="bench-download-btn" href="/benchmarks/download"
+         title="Download the full history including every per-step timing as a CSV spreadsheet">⬇ Download CSV</a>
       <button class="btn btn-cancel btn-sm" id="bench-clear-btn"
               title="Delete all benchmark history">Clear</button>
     </div>
@@ -2289,6 +2301,38 @@
   </div>
 </div>
 
+<!-- ── Scan-app (CamScanner) guided import ──────────────────────────────────── -->
+<div class="modal-overlay hidden" id="camscanner-modal" role="dialog" aria-modal="true" aria-labelledby="cs-modal-title">
+  <div class="modal-box" style="width:560px">
+    <h3 id="cs-modal-title">&#128241; Import from CamScanner &amp; other scan apps</h3>
+    <p class="modal-sub">CamScanner, Adobe Scan, Genius Scan and similar apps already crop, de-skew
+      and enhance each page — so this app skips its own auto-crop and just reads them.
+      Each PDF page (or photo) becomes one receipt.</p>
+    <div style="background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.6;color:var(--text)">
+      <strong>Best export settings in CamScanner:</strong>
+      <ul style="margin:6px 0 0;padding-left:18px;color:var(--muted)">
+        <li>Export as <strong>PDF</strong> (multi-page = one receipt per page) or <strong>JPG</strong> at <strong>HD / original</strong> quality</li>
+        <li>Color mode <strong>“Original”</strong> or <strong>“B&amp;W document”</strong> — both read well</li>
+        <li>One receipt per page; share or save straight into this app</li>
+        <li>A free-tier watermark is fine — it sits in the footer and doesn't affect the total</li>
+      </ul>
+    </div>
+    <label class="check-label" style="font-size:13px;gap:8px;margin-bottom:6px">
+      <input type="checkbox" id="cs-apply-preset" checked>
+      Apply best settings for scanned documents
+      <span style="color:var(--muted);font-weight:400">(skip auto-crop, keep auto-rotate &amp; B&amp;W)</span>
+    </label>
+    <p style="font-size:11px;color:var(--muted);margin:0 0 14px">Job name/number &amp; employee come from the workspace fields, same as a normal upload.
+      You can also export straight into your intake folder and use <em>Queue intake files</em>.</p>
+    <input type="file" id="camscanner-input" class="sr-only" multiple
+           accept="image/*,.pdf,application/pdf,.zip,application/zip,application/x-zip-compressed">
+    <div class="btn-row" style="margin-top:6px;flex-wrap:wrap;gap:8px">
+      <button class="btn btn-primary" id="cs-choose-btn">&#128193; Choose scan files…</button>
+      <button class="btn btn-cancel" id="cs-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Image lightbox -->
 <div id="img-lightbox" style="display:none" onclick="closeLightbox()" role="dialog" aria-modal="true" aria-label="Receipt image preview">
   <button class="lb-close" onclick="closeLightbox()" title="Close" aria-label="Close image preview">&#10005;</button>
@@ -2536,13 +2580,45 @@ function addFiles(newFiles) {
   const valid = newFiles.filter(f =>
     f.type.startsWith('image/') ||
     f.type === 'application/pdf' ||
-    /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|pdf)$/i.test(f.name)
+    /zip/i.test(f.type) ||
+    /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|pdf|zip)$/i.test(f.name)
   );
   const existing = new Set(selectedFiles.map(f => f.name + f.size));
   valid.forEach(f => { if (!existing.has(f.name + f.size)) selectedFiles.push(f); });
   renderFileList();
   if (selectedFiles.length) _submitQueue();
 }
+
+// ── Scan-app (CamScanner) guided import ───────────────────────────────────────
+// Pre-scanned documents are already cropped/de-skewed/enhanced, so apply the
+// "camscanner" preset (auto-crop OFF) before queueing them through the normal path.
+const camscannerInput = document.getElementById('camscanner-input');
+document.getElementById('camscanner-btn').addEventListener('click', () => {
+  document.getElementById('camscanner-modal').classList.remove('hidden');
+});
+document.getElementById('cs-cancel-btn').addEventListener('click', () => {
+  document.getElementById('camscanner-modal').classList.add('hidden');
+});
+document.getElementById('cs-choose-btn').addEventListener('click', () => camscannerInput.click());
+camscannerInput.addEventListener('change', async () => {
+  const files = [...camscannerInput.files];
+  camscannerInput.value = '';
+  if (!files.length) return;
+  if (document.getElementById('cs-apply-preset').checked) {
+    try {
+      const r = await fetch('/settings/processing/preset', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({preset: 'camscanner'}),
+      });
+      if (r.ok) {
+        showToast('Applied scan-app settings (auto-crop off, B&W + auto-rotate on)', true);
+        if (typeof loadProcessingSettings === 'function') loadProcessingSettings();
+      }
+    } catch (_) {}
+  }
+  document.getElementById('camscanner-modal').classList.add('hidden');
+  addFiles(files);
+});
 
 function renderFileList() {
   fileList.innerHTML = '';
@@ -3967,44 +4043,48 @@ async function loadModels() {
     const activeDistill = data.active_distill || '';
     const llmOcr        = data.llm_ocr === true;
 
-    const think = document.getElementById('reasoning-toggle');
-    if (think) think.checked = data.thinking === true;   // single global toggle, default off
     if (ocrToggle) ocrToggle.checked = llmOcr;
 
     document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
-    document.getElementById('ocr-model-dot').style.background     = llmOcr        ? 'var(--success)' : 'var(--border)';
+    document.getElementById('ocr-model-dot').style.background     = (activeDistill && llmOcr) ? 'var(--success)' : 'var(--border)';
 
     const models = data.models || [];
-    const prevDistill = distillSelect.value;
     distillSelect.innerHTML = '';
-    if (models.length === 0) {
-      distillSelect.innerHTML = '<option value="">No models loaded in LM Studio</option>';
-    } else {
-      models.forEach(id => {
-        const opt = document.createElement('option');
-        opt.value = id; opt.textContent = id;
-        if (id === activeDistill) opt.selected = true;
-        distillSelect.appendChild(opt);
-      });
-      if (!distillSelect.value && prevDistill) distillSelect.value = prevDistill;
+    // Always offer "None" — run on the built-in OCR + offline parser, no LLM.
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = models.length
+      ? 'None — built-in OCR + offline parser'
+      : 'None — no models on this server (built-in OCR + offline parser)';
+    distillSelect.appendChild(noneOpt);
+    models.forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id; opt.textContent = id;
+      distillSelect.appendChild(opt);
+    });
+    // Keep showing the active model even if the server hasn't loaded it yet.
+    if (activeDistill && !models.includes(activeDistill)) {
+      const opt = document.createElement('option');
+      opt.value = activeDistill; opt.textContent = activeDistill + ' (not loaded)';
+      distillSelect.appendChild(opt);
     }
+    distillSelect.value = activeDistill || '';
   } catch (_) {
-    distillSelect.innerHTML = '<option value="">LM Studio unreachable</option>';
+    distillSelect.innerHTML = '<option value="">None — server unreachable (built-in OCR + offline parser)</option>';
   }
 }
 
 distillSelect.addEventListener('change', async () => {
-  const chosen = distillSelect.value;
-  if (!chosen) return;
+  const chosen = distillSelect.value;   // '' = None (no LLM)
   document.getElementById('distill-model-dot').style.background = 'var(--warning)';
   try {
     const res  = await fetch('/models/distill', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model: chosen}) });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('distill-model-dot').style.background = 'var(--success)';
+      document.getElementById('distill-model-dot').style.background = chosen ? 'var(--success)' : 'var(--border)';
       // OCR shares the one model, so its dot follows when the cross-reference is on.
-      document.getElementById('ocr-model-dot').style.background = ocrToggle.checked ? 'var(--success)' : 'var(--border)';
-      showToast(`AI model: ${chosen}`, true);
+      document.getElementById('ocr-model-dot').style.background = (chosen && ocrToggle.checked) ? 'var(--success)' : 'var(--border)';
+      showToast(chosen ? `AI model: ${chosen}` : 'AI model: None — built-in OCR + offline parser', true);
     } else {
       showToast(`Could not set model: ${data.error}`, false);
       document.getElementById('distill-model-dot').style.background = 'var(--danger)';
@@ -4027,20 +4107,6 @@ ocrToggle.addEventListener('change', async () => {
       document.getElementById('ocr-model-dot').style.background = 'var(--danger)';
     }
   } catch (err) { ocrToggle.checked = !enabled; showToast(`Error: ${err.message}`, false); }
-});
-
-document.getElementById('reasoning-toggle').addEventListener('change', async (e) => {
-  const enabled = e.target.checked;
-  try {
-    const res  = await fetch('/models/thinking', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
-    const data = await res.json();
-    if (data.ok) {
-      showToast(`Reasoning mode ${data.thinking ? 'on' : 'off'}`, true);
-    } else {
-      e.target.checked = !enabled;
-      showToast('Could not change reasoning mode', false);
-    }
-  } catch (err) { e.target.checked = !enabled; showToast(`Error: ${err.message}`, false); }
 });
 
 document.getElementById('refresh-models-btn').addEventListener('click', () => {
@@ -4128,42 +4194,89 @@ async function loadLMStudioModels() {
   }
 }
 
-// ── LLM server controls (Feature 11/12) ──────────────────────────────────────
+// ── LLM server / mode controls ────────────────────────────────────────────────
+// Populate the shared Server URL field from the configured local endpoint
+// (host = the saved custom URL, docker = the bundled docker URL).
 async function loadLLMServerSettings() {
   try {
-    const r = await fetch('/settings/llm-server');
-    const d = await r.json();
-    const dockerRadio = document.getElementById('llm-server-docker');
-    const customRadio = document.getElementById('llm-server-custom');
-    const urlInput    = document.getElementById('llm-server-url');
-    if (d.server_type === 'docker') {
-      dockerRadio.checked = true;
-      document.getElementById('llm-server-url-row').style.display = 'none';
-    } else {
-      customRadio.checked = true;
-      urlInput.value = d.base_url || 'http://127.0.0.1:1234/v1';
-    }
+    const d = await (await fetch('/settings/llm-server')).json();
+    const urlInput = document.getElementById('llm-server-url');
+    if (urlInput) urlInput.value = d.base_url || 'http://127.0.0.1:1234/v1';
+    _updateHostUrlHint();
   } catch (_) {}
 }
 
-// ── LLM provider (local private server vs. OpenRouter cloud) ──────────────────
-function _applyProviderUI(provider) {
-  const isOR = provider === 'openrouter';
+// ── LLM mode: on-host / docker-bundled / OpenRouter cloud ─────────────────────
+function _currentMode() {
+  if (document.getElementById('mode-openrouter').checked) return 'openrouter';
+  if (document.getElementById('mode-docker').checked)     return 'docker';
+  return 'host';
+}
+
+// Drive the whole AI Model card off the selected mode: which sections show, the
+// URL field's editability/value, and which controls are relevant.
+function _applyModeUI(mode) {
+  const isOR     = mode === 'openrouter';
+  const isDocker = mode === 'docker';
+  document.getElementById('mode-host').checked       = mode === 'host';
+  document.getElementById('mode-docker').checked     = isDocker;
+  document.getElementById('mode-openrouter').checked = isOR;
+
   const local = document.getElementById('provider-local-section');
   const or    = document.getElementById('provider-openrouter-section');
   if (local) local.style.display = isOR ? 'none' : '';
   if (or)    or.style.display    = isOR ? '' : 'none';
-  const lr = document.getElementById('provider-local');
-  const orr = document.getElementById('provider-openrouter');
-  if (lr)  lr.checked  = !isOR;
-  if (orr) orr.checked = isOR;
+
+  // Docker lifecycle controls only for the bundled docker server; connection
+  // status/auto-detect for host & docker only (not the cloud).
+  const dctl = document.getElementById('llm-docker-controls');
+  if (dctl) dctl.style.display = isDocker ? '' : 'none';
+  const conn = document.getElementById('llm-conn-row');
+  if (conn) conn.style.display = isOR ? 'none' : '';
+
+  // Endpoint URL: editable only on-host; auto-filled + read-only otherwise.
+  const urlInput = document.getElementById('llm-server-url');
+  const applyBtn = document.getElementById('llm-server-save-btn');
+  const hint     = document.getElementById('llm-url-hint');
+  if (urlInput) urlInput.readOnly = !!(isOR || isDocker);
+  if (applyBtn) applyBtn.style.display = (isOR || isDocker) ? 'none' : '';
+  if (hint) hint.style.color = 'var(--muted)';
+  if (isOR) {
+    if (urlInput) urlInput.value = 'https://openrouter.ai/api/v1';
+    if (hint) hint.textContent = 'Cloud endpoint — fixed. Add your OpenRouter API key below.';
+  } else if (isDocker) {
+    if (hint) hint.textContent = 'Bundled Docker model-server endpoint — managed for you.';
+  } else {
+    _updateHostUrlHint();
+  }
+}
+
+// On-host mode sends a placeholder API key, so a cloud URL here fails silently
+// (this is the "OpenRouter shows no calls" trap). Warn when one is detected.
+function _updateHostUrlHint() {
+  if (_currentMode() !== 'host') return;
+  const urlInput = document.getElementById('llm-server-url');
+  const hint = document.getElementById('llm-url-hint');
+  if (!urlInput || !hint) return;
+  if (/openrouter\.ai|api\.openai\.com|anthropic\.com/i.test(urlInput.value || '')) {
+    hint.innerHTML = '&#9888; That looks like a <strong>cloud</strong> endpoint. On-host mode sends a '
+      + 'placeholder API key, so cloud requests fail silently. Switch to <strong>OpenRouter</strong> '
+      + 'mode above to use your API key + free models.';
+    hint.style.color = 'var(--warning)';
+  } else {
+    hint.textContent = 'Any OpenAI-compatible server (LM Studio shown by default). Click Apply after editing.';
+    hint.style.color = 'var(--muted)';
+  }
 }
 
 async function loadLLMProvider() {
   try {
     const d = await (await fetch('/settings/llm-provider')).json();
-    _applyProviderUI(d.provider);
-    if (d.provider === 'openrouter') {
+    const serverType = (d.local && d.local.server_type) || 'custom';
+    const mode = d.provider === 'openrouter' ? 'openrouter'
+               : (serverType === 'docker' ? 'docker' : 'host');
+    _applyModeUI(mode);
+    if (mode === 'openrouter') {
       const or = d.openrouter || {};
       const img = document.getElementById('or-mode-image');
       const txt = document.getElementById('or-mode-text');
@@ -4177,7 +4290,7 @@ async function loadLLMProvider() {
       await loadOpenRouterModels(or.model || 'openrouter/free');
       const dot = document.getElementById('or-model-dot');
       if (dot) dot.style.background = (or.has_key && (or.resolved_model || or.model)) ? 'var(--success)' : 'var(--border)';
-    } else if (typeof loadLLMServerSettings === 'function') {
+    } else {
       loadLLMServerSettings();
     }
   } catch (_) {}
@@ -4211,15 +4324,36 @@ async function _saveProvider(payload) {
   return r.json();
 }
 
-document.querySelectorAll('input[name="llm-provider"]').forEach(radio => {
+document.querySelectorAll('input[name="llm-mode"]').forEach(radio => {
   radio.addEventListener('change', async () => {
-    const provider = document.getElementById('provider-openrouter').checked ? 'openrouter' : 'local';
-    _applyProviderUI(provider);
+    const mode = _currentMode();
+    _applyModeUI(mode);
     try {
-      if (provider === 'local') {
-        await _saveProvider({provider: 'local'});   // re-applies the saved local URL
-        loadModels(); loadLMStudioModels(); checkLLMStatus(); loadLLMServerSettings();
-        showToast('Provider: local server (private)', true);
+      if (mode === 'host') {
+        // Force server_type back to custom (a prior docker selection would otherwise
+        // stick); preserve a previously-saved custom URL when there is one.
+        let saved = '';
+        try { const p = await (await fetch('/settings/llm-provider')).json(); saved = (p.local && p.local.base_url) || ''; } catch (_) {}
+        const r = await fetch('/settings/llm-server', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({server_type: 'custom', base_url: saved}),
+        });
+        const d = await r.json();
+        const urlInput = document.getElementById('llm-server-url');
+        if (urlInput) urlInput.value = d.base_url || 'http://127.0.0.1:1234/v1';
+        _updateHostUrlHint();
+        loadModels(); loadLMStudioModels(); checkLLMStatus();
+        showToast('On-host LLM (private)', true);
+      } else if (mode === 'docker') {
+        const r = await fetch('/settings/llm-server', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({server_type: 'docker', base_url: ''}),
+        });
+        const d = await r.json();
+        const urlInput = document.getElementById('llm-server-url');
+        if (urlInput && d.base_url) urlInput.value = d.base_url;
+        loadModels(); loadLMStudioModels(); checkLLMStatus();
+        showToast(`Docker bundled LLM · ${d.base_url || ''}`, true);
       } else {
         const sendImage = document.getElementById('or-mode-image').checked;
         const model = document.getElementById('or-model').value || 'openrouter/free';
@@ -4280,25 +4414,20 @@ async function checkLLMStatus() {
   }
 }
 
-// Show/hide custom URL row based on radio selection
-document.querySelectorAll('input[name="llm-server-type"]').forEach(r => {
-  r.addEventListener('change', () => {
-    document.getElementById('llm-server-url-row').style.display =
-      document.getElementById('llm-server-docker').checked ? 'none' : '';
-  });
-});
+document.getElementById('llm-server-url').addEventListener('input', _updateHostUrlHint);
 
+// Apply the typed On-host URL (only editable in host mode).
 document.getElementById('llm-server-save-btn').addEventListener('click', async () => {
-  const serverType = document.getElementById('llm-server-docker').checked ? 'docker' : 'custom';
-  const baseUrl    = document.getElementById('llm-server-url').value.trim();
+  const baseUrl = document.getElementById('llm-server-url').value.trim();
   try {
     const r = await fetch('/settings/llm-server', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({server_type: serverType, base_url: baseUrl}),
+      body: JSON.stringify({server_type: 'custom', base_url: baseUrl}),
     });
     const d = await r.json();
     if (d.ok) {
       showToast(`LLM server set to: ${d.base_url}`, true);
+      loadModels();
       loadLMStudioModels();
       checkLLMStatus();
       loadLLMServerSettings();
@@ -4578,7 +4707,25 @@ function _renderBenchInsights(ins) {
     models = `<div class="bench-models"><div class="bench-models-title">Average per receipt, by model</div>${rows}</div>`;
   }
 
-  return `<div class="bench-insights"><div class="bench-tiles">${tiles}</div>${trend}${models}</div>`;
+  // Where the time actually goes — total seconds per pipeline step across all
+  // batches (OCR, distillation, classify, audit, image-prep …).
+  let steps = '';
+  const shown = (ins.step_totals || []).filter(s => (s.total_seconds || 0) > 0).slice(0, 8);
+  if (shown.length) {
+    const max = Math.max(...shown.map(s => s.total_seconds)) || 1;
+    const rows = shown.map(s => {
+      const pct = Math.max(6, Math.round((s.total_seconds / max) * 100));
+      const fail = s.failures ? ` <span style="color:var(--danger)">· ${s.failures}✗</span>` : '';
+      return `<div class="bench-model-row">
+        <span class="bench-model-name" title="${esc(s.label || s.step)}">${esc(s.label || s.step)}</span>
+        <span class="bench-model-bar"><span style="width:${pct}%"></span></span>
+        <span class="bench-model-val">${s.total_seconds}s <span style="color:var(--muted)">/ ${s.count}×${fail}</span></span>
+      </div>`;
+    }).join('');
+    steps = `<div class="bench-models"><div class="bench-models-title">Time by step (all batches)</div>${rows}</div>`;
+  }
+
+  return `<div class="bench-insights"><div class="bench-tiles">${tiles}</div>${trend}${models}${steps}</div>`;
 }
 function _renderBenchmarks() {
   const box = document.getElementById('bench-body');
@@ -4587,6 +4734,15 @@ function _renderBenchmarks() {
     box.innerHTML = '<span class="status-note" style="color:var(--muted)">No runs benchmarked yet — process a batch to record one.</span>';
     return;
   }
+  const stepLine = (b) => {
+    const st = b.steps || [];
+    if (!st.length) return '';
+    const items = st.map(s =>
+      `<span style="display:inline-block;margin-right:12px;white-space:nowrap">${esc(s.label || s.step)}: <b>${s.total_seconds}s</b>`
+      + `${s.failures ? ` <span style="color:var(--danger)">(${s.failures}✗)</span>` : ''}</span>`
+    ).join('');
+    return `<tr><td colspan="6" style="padding:0 0 8px;color:var(--muted);font-size:11px">${items}</td></tr>`;
+  };
   const rows = _benchData.map(b => `
     <tr>
       <td style="padding:4px 10px 4px 0;white-space:nowrap">${esc((b.ts || '').replace('T', ' '))}</td>
@@ -4595,7 +4751,9 @@ function _renderBenchmarks() {
       <td style="padding:4px 10px;text-align:right">${b.avg_seconds}s</td>
       <td style="padding:4px 10px">${esc(b.distill_model || '')}</td>
       <td style="padding:4px 0">${esc(b.ocr_model || '')}</td>
-    </tr>`).join('');
+    </tr>${stepLine(b)}`).join('');
+  const dl = document.getElementById('bench-download-btn');
+  if (dl) dl.style.display = _benchData.length ? '' : 'none';
   box.innerHTML = _renderBenchInsights(_benchInsights)
     + `<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;width:100%">
     <thead><tr style="color:var(--muted)">

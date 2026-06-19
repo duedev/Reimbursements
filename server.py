@@ -1414,7 +1414,7 @@ def _drain_once() -> bool:
     with _work_lock:
         n_pending = len(_work_queue)
     elapsed = time.perf_counter() - _batch_t0
-    bench = _record_benchmark(len(batch), elapsed)
+    bench = _record_benchmark(len(batch), elapsed, run.get("receipts"))
     _emit_log(f"[worker] Batch finished — {len(run['receipts'])} receipt(s) in "
               f"{round(elapsed, 1)}s")
     _finalize_run(run, elapsed)
@@ -1424,9 +1424,50 @@ def _drain_once() -> bool:
     return True
 
 
-def _record_benchmark(count: int, seconds: float) -> dict | None:
+def _aggregate_step_durations(receipts: list | None) -> list[dict]:
+    """Roll a batch's per-receipt step logs into per-step totals.
+
+    Returns one row per distinct pipeline step (OCR, distillation, classify,
+    audit, image-prep …) with how many times it ran, how many failed, and the
+    total + average seconds it took across the batch — so the benchmark shows
+    WHERE the time actually went, not just a single batch total.
+    """
+    agg: dict[str, dict] = {}
+    order: list[str] = []
+    for r in (receipts or []):
+        for s in (r.get("steps") or []):
+            key = s.get("step") or s.get("label") or "?"
+            a = agg.get(key)
+            if a is None:
+                a = agg[key] = {
+                    "step":          key,
+                    "label":         s.get("label") or key,
+                    "count":         0,
+                    "failures":      0,
+                    "total_seconds": 0.0,
+                }
+                order.append(key)
+            a["count"] += 1
+            if not s.get("ok", True):
+                a["failures"] += 1
+            try:
+                a["total_seconds"] += float(s.get("duration_s") or 0)
+            except (TypeError, ValueError):
+                pass
+    rows = []
+    for key in order:
+        a = agg[key]
+        a["total_seconds"] = round(a["total_seconds"], 2)
+        a["avg_seconds"] = round(a["total_seconds"] / a["count"], 2) if a["count"] else 0.0
+        rows.append(a)
+    return rows
+
+
+def _record_benchmark(count: int, seconds: float,
+                      receipts: list | None = None) -> dict | None:
     """Log this batch's wall-time + per-receipt average, tagged with the active
-    models, so a user can compare LLM speed across runs. Returns the entry."""
+    models AND a per-step time breakdown, so a user can compare LLM speed across
+    runs and see which stage dominates. Returns the entry."""
     if count <= 0 or _worker_cancel.is_set():
         return None
     entry = {
@@ -1434,8 +1475,9 @@ def _record_benchmark(count: int, seconds: float) -> dict | None:
         "count":         count,
         "total_seconds": round(seconds, 1),
         "avg_seconds":   round(seconds / count, 2),
-        "distill_model": _pr._active_distill_model or "(auto)",
+        "distill_model": _pr._active_distill_model or "(none)",
         "ocr_model":     _pr._active_ocr_model or "(built-in only)",
+        "steps":         _aggregate_step_durations(receipts),
     }
     with _bench_lock:
         _benchmarks.insert(0, entry)
@@ -1484,6 +1526,27 @@ def _benchmark_insights(entries: list[dict]) -> dict | None:
         models.append(m)
     fastest_model = min(models, key=lambda m: m["avg_seconds"])["model"] if len(models) > 1 else ""
 
+    # Per-step rollup across every batch — total time spent in each pipeline stage
+    # (OCR, distillation, classify, audit, image-prep …), so the slowest stage is
+    # obvious. Newest-first order of first appearance, then sorted by total time.
+    step_agg: dict[str, dict] = {}
+    for e in rows:
+        for s in (e.get("steps") or []):
+            key = s.get("step") or s.get("label") or "?"
+            a = step_agg.setdefault(key, {
+                "step": key, "label": s.get("label") or key,
+                "count": 0, "failures": 0, "total_seconds": 0.0,
+            })
+            a["count"] += int(s.get("count") or 0)
+            a["failures"] += int(s.get("failures") or 0)
+            a["total_seconds"] += float(s.get("total_seconds") or 0)
+    step_totals = []
+    for a in step_agg.values():
+        a["total_seconds"] = round(a["total_seconds"], 2)
+        a["avg_seconds"] = round(a["total_seconds"] / a["count"], 2) if a["count"] else 0.0
+        step_totals.append(a)
+    step_totals.sort(key=lambda a: a["total_seconds"], reverse=True)
+
     return {
         "batches":          len(rows),
         "receipts":         total_receipts,
@@ -1496,6 +1559,7 @@ def _benchmark_insights(entries: list[dict]) -> dict | None:
         "trend":            trend,
         "models":           models,
         "fastest_model":    fastest_model,
+        "step_totals":      step_totals,
     }
 
 
@@ -3896,6 +3960,53 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+# Recommended image-processing presets for common receipt sources. A scan app
+# (CamScanner, Adobe Scan, Genius Scan, …) already perspective-corrects, crops
+# tight to the document edge, and boosts contrast — so re-cropping in this app is
+# at best a no-op and at worst trims the receipt edge. The "scanned" preset
+# therefore turns auto-crop OFF and keeps auto-rotate + B&W (which only help, and
+# are near no-ops on an already-clean scan). "photo" is the opposite: raw phone
+# photos need the full auto-rotate → B&W → aggressive auto-crop chain.
+_PROCESSING_PRESETS: dict[str, dict] = {
+    "scanned": {
+        "autorotate": True,
+        "autocrop":   False,
+        "grayscale":  True,
+    },
+    "photo": {
+        "autorotate":              True,
+        "autocrop":                True,
+        "autocrop_aggressiveness": 85,
+        "grayscale":               True,
+    },
+}
+# CamScanner is the headline scan-app source; alias it to the generic preset.
+_PROCESSING_PRESETS["camscanner"] = _PROCESSING_PRESETS["scanned"]
+
+
+class ProcessingPresetRequest(BaseModel):
+    preset: str
+
+
+@app.post("/settings/processing/preset")
+async def apply_processing_preset(body: ProcessingPresetRequest):
+    """Apply a named image-processing preset (e.g. ``scanned`` for CamScanner /
+    Adobe Scan exports, ``photo`` for raw phone photos) and persist it."""
+    name = (body.preset or "").strip().lower()
+    preset = _PROCESSING_PRESETS.get(name)
+    if preset is None:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown preset: {name!r}",
+             "presets": sorted(_PROCESSING_PRESETS)}, status_code=400)
+    cfg = _load_config()
+    proc = cfg.get("processing") or {}
+    proc.update(preset)
+    cfg["processing"] = proc
+    _save_config(cfg)
+    applied = _apply_processing_config(cfg)
+    return JSONResponse({"ok": True, "preset": name, "preset_values": preset, **applied})
+
+
 class AuditSettingsRequest(BaseModel):
     # Any field may be null/"" to clear (disable) that warning.
     fuel_limit:   float | str | None = None
@@ -3945,6 +4056,51 @@ async def clear_benchmarks():
         _benchmarks.clear()
     _persist_state()
     return JSONResponse({"ok": True})
+
+
+def _benchmarks_csv(entries: list[dict]) -> str:
+    """Render the benchmark history as a long-format CSV — one row per batch step
+    (plus a summary row for step-less batches) so EVERY step taken is downloadable
+    and opens directly in any spreadsheet app."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "when", "receipts", "batch_total_seconds", "batch_avg_seconds",
+        "distill_model", "ocr_model",
+        "step", "step_label", "step_runs", "step_failures",
+        "step_total_seconds", "step_avg_seconds",
+    ])
+    for e in entries:
+        base = [
+            e.get("ts", ""), e.get("count", ""),
+            e.get("total_seconds", ""), e.get("avg_seconds", ""),
+            e.get("distill_model", ""), e.get("ocr_model", ""),
+        ]
+        steps = e.get("steps") or []
+        if not steps:
+            w.writerow(base + ["", "", "", "", "", ""])
+            continue
+        for s in steps:
+            w.writerow(base + [
+                s.get("step", ""), s.get("label", ""),
+                s.get("count", ""), s.get("failures", ""),
+                s.get("total_seconds", ""), s.get("avg_seconds", ""),
+            ])
+    return buf.getvalue()
+
+
+@app.get("/benchmarks/download")
+async def download_benchmarks():
+    """Download the full benchmark history (incl. per-step timings) as a CSV file."""
+    with _bench_lock:
+        entries = list(_benchmarks)
+    csv_text = _benchmarks_csv(entries)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="benchmarks_{stamp}.csv"'},
+    )
 
 
 # ── Run log (full per-batch detail) ────────────────────────────────────────────
