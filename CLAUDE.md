@@ -103,6 +103,32 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
   **auto-refresh** (on opening Settings + every 30s while Settings is visible,
   unless a dropdown is focused).
 
+## LLM provider (local server vs. OpenRouter cloud)
+
+- **One canonical key `provider`** in config (`"local"` default, or `"openrouter"`).
+  `_apply_llm_server_config(cfg)` dispatches: `_apply_local_llm_config` (LM Studio /
+  custom URL / bundled docker, via `llm_server` + legacy `llm_model_config`) or
+  `_apply_openrouter_config` (cloud). Run BEFORE `initialize_models` at startup.
+- **Client seam:** `process_receipts.make_client()` is the SINGLE OpenAI-client
+  factory — reads `LMSTUDIO_BASE_URL` + `LLM_API_KEY` (+ `LLM_EXTRA_HEADERS`). No
+  call site hard-codes `api_key="lmstudio"` any more. For OpenRouter the base URL is
+  `OPENROUTER_BASE_URL` and the key is the user's (secret `openrouter_api_key`).
+- **OpenRouter auto-pick:** `_openrouter_free_vision_models()` filters the catalogue
+  to free (zero prompt+completion price) + image-capable, ranks by family/context;
+  `_openrouter_autopick()` returns the best id. Endpoints: `GET/POST
+  /settings/llm-provider`, `GET /models/openrouter`.
+- **Privacy gate `LLM_ALLOW_IMAGE`** (process_receipts): when False the LLM-OCR pass
+  and the vision rescue are skipped so the receipt IMAGE is never transmitted —
+  OpenRouter's "send OCR text only" mode. "send receipt image" keeps full accuracy.
+- **The "stuck on Docker URL" fix:** the frontend no longer silently calls
+  `/llm-server/autodetect` (that used to persist the docker URL over a custom one);
+  an explicit `server_type:"custom"` is honoured even with a blank URL (→ localhost,
+  never docker); `GET /settings/llm-server` returns the *configured* URL + a separate
+  `effective_base_url` so the UI shows the user's own choice.
+- **Advanced processing tunables** (previously env-only) are now in `/settings/processing`
+  and Settings → Image Processing → *Advanced tuning*: `llm_timeout`,
+  `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`.
+
 ## Job-field placeholders
 
 When a batch has no job name/number, receipts are stamped with the literal
@@ -141,7 +167,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **434 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **455 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -151,6 +177,10 @@ user input, never the placeholder.
   `local_ocr`, `llm_ocr`, `cross_reference`, `distillation`, `vision`).
 - `tests/test_new_features.py` covers per-stage reasoning, dual-OCR cross-ref,
   job defaults, and clear-reports.
+- `tests/test_llm_provider.py` covers the provider rework: the "stuck on Docker URL"
+  regression, OpenRouter free/vision filtering + auto-pick, provider dispatch/apply,
+  the `/settings/llm-provider` + `/models/openrouter` endpoints, and the
+  `LLM_ALLOW_IMAGE` privacy gate.
 
 ## Conventions / gotchas
 
@@ -175,6 +205,44 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (LLM provider rework + OpenRouter + settings completeness + multi-user plan):**
+  Suite **434 → 455** green. Branch consolidated to `dev` (one persistent dev branch
+  instead of a new per-session branch; existing branches left untouched).
+  * **Provider redesign + "stuck on Docker URL" fix** — one canonical config key
+    `provider` (`local`/`openrouter`) dispatches in `_apply_llm_server_config` →
+    `_apply_local_llm_config` / `_apply_openrouter_config`. The local path now honours
+    an explicit `server_type:"custom"` even with a blank URL (→ `127.0.0.1:1234`, never
+    the legacy docker fall-through that stranded users on `:11434`). The **frontend no
+    longer silently POSTs `/llm-server/autodetect`** (the real culprit — it persisted the
+    bundled docker URL over the user's custom one); recovery is the explicit button.
+    `GET /settings/llm-server` now returns the *configured* URL + a separate
+    `effective_base_url` so the UI shows the user's own choice. `set_llm_server` /
+    autodetect also set `provider:"local"`.
+  * **Client seam** — `process_receipts.make_client()` is now the single OpenAI-client
+    factory (base_url + `LLM_API_KEY` + `LLM_EXTRA_HEADERS`); the hard-coded
+    `api_key="lmstudio"` is gone from all 5 call sites (3 in server.py, 2 in
+    process_receipts.py).
+  * **OpenRouter cloud provider (opt-in, off by default)** — `OPENROUTER_BASE_URL`,
+    secret `openrouter_api_key` (via `app_secrets`), `_openrouter_free_vision_models()`
+    (free = zero prompt+completion price, image-capable; ranked by family/context) +
+    `_openrouter_autopick()`. New endpoints `GET/POST /settings/llm-provider`,
+    `GET /models/openrouter`. UI: AI Model card gains a **Provider** toggle
+    (Local / OpenRouter) with an OpenRouter panel (key, model dropdown + Auto, send-mode
+    radios, privacy note). **Privacy gate `LLM_ALLOW_IMAGE`** — "send OCR text only"
+    suppresses the LLM-OCR + vision-rescue image passes so the receipt image never
+    leaves the machine; "send receipt image" keeps full accuracy.
+  * **Settings completeness** — previously env-only tunables surfaced in
+    `/settings/processing` + Settings → Image Processing → *Advanced tuning*:
+    `llm_timeout`, `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`
+    (clamped + persisted). Remaining internal knobs (orientation thresholds, SSE
+    intervals, stall timeouts, archive caps) intentionally stay env-only — noted in
+    `ROADMAP.md`.
+  * **Docs** — new `MULTIUSER.md` (plan-only multi-tenant design + phased migration)
+    and `ROADMAP.md` (forward view; notes GitHub Projects/Milestones/Issues as native
+    tracking options; past changelog stays here).
+  * Tests: `tests/test_llm_provider.py` (+20), advanced-settings round-trip in
+    `tests/test_settings_endpoints.py` (+1).
 
 - **2026-06-16 (docs sync — no code changes):** Brought the Markdown docs back in
   line with the code (no behavior changed):
