@@ -8,9 +8,10 @@ You build the image **on the VM**, so the ARM (`aarch64`) wheels for onnxruntime
 OpenCV, Pillow, and PyMuPDF are pulled automatically — there's nothing to
 cross-compile.
 
-> **The local LM Studio tier is inert in the cloud** (there's no local model to
-> reach), so the extraction chain is effectively **Gemini → Mistral → offline
-> parser**. Set at least one cloud key (both are free tiers) for LLM extraction.
+> **There's no local LM Studio in the cloud** (no local model to reach), so
+> extraction uses the **OpenRouter free router** when `OPENROUTER_API_KEY` is set,
+> and falls through to the **offline parser** otherwise. Set the free-tier
+> OpenRouter key for LLM extraction.
 
 ---
 
@@ -69,14 +70,13 @@ git checkout claude/dazzling-fermat-qkv4dt
 cat > .env <<'EOF'
 APP_AUTH_TOKEN=replace-with-a-long-random-string
 APP_DOMAIN=my-receipts.duckdns.org
-GEMINI_API_KEY=your-free-gemini-key
-MISTRAL_API_KEY=your-free-mistral-key
+OPENROUTER_API_KEY=your-free-openrouter-key
 EOF
 ```
 
-Generate a strong token with `openssl rand -hex 24`. The cloud keys are optional
-but at least one is needed for LLM extraction (both have free tiers — see the
-AI Models settings card for details).
+Generate a strong token with `openssl rand -hex 24`. The OpenRouter key is optional
+but needed for LLM extraction (it has a free tier — see the AI Model settings card
+for details); without it the app falls back to the offline parser.
 
 ## 6. Launch
 
@@ -111,5 +111,5 @@ internet and your receipts — keep it long and secret, and never commit `.env`.
 The `.env` file and the `./config` secrets store stay on the VM only.
 
 **Cost.** Staying within the Always-Free Ampere A1 allowance (≤ 4 OCPU / 24 GB
-RAM / 200 GB block storage, 1 VM) and the cloud LLM **free** tiers keeps this at
+RAM / 200 GB block storage, 1 VM) and the OpenRouter **free** tier keeps this at
 $0/month indefinitely.

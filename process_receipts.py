@@ -47,6 +47,30 @@ GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "")
 GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "")
 GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       "")
 
+# ── LLM provider seam (local server vs. cloud router) ────────────────────────────
+# Every inference call is made through an OpenAI-compatible client pointed at
+# LMSTUDIO_BASE_URL and authenticated with LLM_API_KEY. For a LOCAL server
+# (LM Studio / llama.cpp / any custom OpenAI-compatible endpoint) the key is the
+# throwaway "lmstudio". For a CLOUD router (OpenRouter) it is the user's real API
+# key. Centralising client construction in make_client() means every call site
+# honours whichever provider is currently active — there is no second place that
+# hard-codes the key or URL.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_API_KEY: str = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "lmstudio"
+# Extra HTTP headers sent with every request (OpenRouter uses these for
+# attribution; harmless for local servers). Set when a cloud provider is active.
+LLM_EXTRA_HEADERS: dict = {}
+# Extra per-request JSON body merged into every chat.completions.create call.
+# Carries top-level OpenRouter routing fields — {"provider": {...}, "models": [...]}
+# — used to bias the free router toward quick/reliable providers and to pin a
+# vision-capable fallback list. Empty for a local server (LM Studio ignores it).
+LLM_EXTRA_BODY: dict = {}
+# Privacy gate. When False the pipeline must NOT transmit the receipt IMAGE to
+# the model — the LLM-OCR transcription pass and the direct-vision rescue are
+# both skipped, so only locally-extracted OCR *text* is ever sent. Used by the
+# OpenRouter "send OCR text only" mode so receipt images never leave the machine.
+LLM_ALLOW_IMAGE: bool = True
+
 # Build tag — surfaced in the web UI footer and the workbook footer so you can
 # confirm which build is actually running (handy after a `docker compose up`
 # that may have reused a stale image). Override at build time with BUILD_TAG.
@@ -282,7 +306,7 @@ def _try_load_model(model_id: str) -> bool:
     base = _api_base()
     try:
         req = urllib.request.Request(
-            f"{base}/v1/models", headers={"Authorization": "Bearer lmstudio"},
+            f"{base}/v1/models", headers={"Authorization": f"Bearer {LLM_API_KEY or 'lmstudio'}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -308,7 +332,7 @@ def list_available_models() -> list[str]:
     base = _api_base()
     try:
         req = urllib.request.Request(
-            f"{base}/v1/models", headers={"Authorization": "Bearer lmstudio"},
+            f"{base}/v1/models", headers={"Authorization": f"Bearer {LLM_API_KEY or 'lmstudio'}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -344,12 +368,25 @@ def set_llm_ocr(enabled: bool) -> bool:
     return _llm_ocr_enabled
 
 
-def _make_client() -> OpenAI:
-    """Build an LM Studio (OpenAI-compatible) client with the standard settings."""
-    return OpenAI(
-        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+def make_client() -> OpenAI:
+    """Build the OpenAI-compatible client for the ACTIVE provider/endpoint.
+
+    Reads the module-level LMSTUDIO_BASE_URL + LLM_API_KEY (+ optional
+    LLM_EXTRA_HEADERS) so a switch between a local LM Studio server and a cloud
+    router like OpenRouter is honoured everywhere a client is built — there is no
+    second place that hard-codes ``api_key="lmstudio"``.
+    """
+    kwargs = dict(
+        base_url=LMSTUDIO_BASE_URL, api_key=(LLM_API_KEY or "lmstudio"),
         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
     )
+    if LLM_EXTRA_HEADERS:
+        kwargs["default_headers"] = dict(LLM_EXTRA_HEADERS)
+    return OpenAI(**kwargs)
+
+
+# Backwards-compatible internal alias (older call sites / tests).
+_make_client = make_client
 
 
 def warm_up_model() -> bool:
@@ -408,179 +445,6 @@ def initialize_models(warm: bool = True) -> str:
     if warm and available:
         warm_up_model()
     return _active_distill_model
-
-
-# ── Cloud LLM providers (fallback chain) ─────────────────────────────────────────
-#
-# Extraction can fall back across several OpenAI-compatible endpoints, tried in
-# order. The default chain is:
-#
-#     Gemini Flash-Lite (cloud)  →  Mistral (cloud)  →  local LM Studio
-#
-# A cloud provider is only tried when its API key is set (env var or the Settings
-# UI). LM Studio is ALWAYS the final fallback, so a fully-local install keeps
-# working with no keys at all. If every provider errors, callers fall through to
-# the offline regex parser exactly as before — the chain only changes WHERE the
-# model call goes, not what happens when there's no model.
-#
-# Cloud free tiers rate-limit aggressively; the OpenAI SDK already retries 429 /
-# 5xx with exponential backoff honouring Retry-After (LLM_MAX_RETRIES). When a
-# provider is still exhausted after its retries, the chain moves to the next one.
-
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY",  "")
-# Defaults are the smallest FREE, vision-capable model on each provider's free
-# tier. Gemini 2.5 Flash-Lite is the cheapest/stable free Gemini with image input
-# (highest free request/day allowance); Mistral Small is the smallest maintained
-# free vision model (Pixtral 12B is deprecated). Override per provider as needed.
-GEMINI_MODEL    = os.getenv("GEMINI_MODEL",    "gemini-2.5-flash-lite")
-GEMINI_BASE_URL = os.getenv(
-    "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-
-MISTRAL_API_KEY  = os.getenv("MISTRAL_API_KEY",  "")
-MISTRAL_MODEL    = os.getenv("MISTRAL_MODEL",    "mistral-small-latest")
-MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
-
-# Ordered cloud providers tried before the local model. enabled=False or a blank
-# api_key takes a provider out of the chain. Mutated by configure_providers().
-_CLOUD_PROVIDERS: list[dict] = [
-    {"name": "gemini",  "base_url": GEMINI_BASE_URL,  "api_key": GEMINI_API_KEY,
-     "model": GEMINI_MODEL,  "enabled": True},
-    {"name": "mistral", "base_url": MISTRAL_BASE_URL, "api_key": MISTRAL_API_KEY,
-     "model": MISTRAL_MODEL, "enabled": True},
-]
-
-# Request params the cloud OpenAI-compatible endpoints understand. LM Studio
-# extras (the thinking body + repeat_penalty carried in extra_body, and
-# frequency_penalty) are dropped for cloud providers so they don't 400 on an
-# unknown field.
-_CLOUD_SAFE_PARAMS = {"messages", "temperature", "max_tokens", "response_format"}
-
-
-def _active_cloud_providers() -> list[dict]:
-    """Enabled cloud providers with a non-blank API key + model, in fallback order."""
-    return [p for p in _CLOUD_PROVIDERS
-            if p.get("enabled", True)
-            and (p.get("api_key") or "").strip()
-            and (p.get("model") or "").strip()]
-
-
-def configure_providers(specs: list[dict]) -> None:
-    """Replace cloud-provider settings at runtime (used by the Settings UI).
-
-    Each spec is a dict with ``name`` plus any of base_url/api_key/model/enabled;
-    fields left out keep their current value, and unknown provider names are
-    ignored. Does not touch the local LM Studio fallback.
-    """
-    by_name = {p["name"]: p for p in _CLOUD_PROVIDERS}
-    for spec in specs or []:
-        name = (spec.get("name") or "").strip()
-        cur = by_name.get(name)
-        if cur is None:
-            continue
-        for key in ("base_url", "api_key", "model", "enabled"):
-            if key in spec and spec[key] is not None:
-                cur[key] = spec[key]
-
-
-def provider_status() -> list[dict]:
-    """Fallback chain as the UI sees it — no API keys, just whether each is live."""
-    active = _active_cloud_providers()
-    chain = [{
-        "name":    p["name"],
-        "model":   p.get("model", ""),
-        "enabled": bool(p.get("enabled", True)),
-        "has_key": bool((p.get("api_key") or "").strip()),
-        "active":  p in active,
-    } for p in _CLOUD_PROVIDERS]
-    chain.append({"name": "lmstudio", "model": _active_distill_model or "",
-                  "enabled": True, "has_key": True, "active": True})
-    return chain
-
-
-def active_provider_names() -> list[str]:
-    """Ordered names of every provider that would actually be tried."""
-    return [p["name"] for p in _active_cloud_providers()] + ["lmstudio"]
-
-
-def _sanitize_create_kwargs(kind: str, kwargs: dict) -> dict:
-    """Strip LM-Studio-only params before sending to a cloud provider."""
-    if kind == "lmstudio":
-        return kwargs
-    return {k: v for k, v in kwargs.items() if k in _CLOUD_SAFE_PARAMS}
-
-
-class _FallbackCompletions:
-    """Mimics ``client.chat.completions`` across an ordered provider chain.
-
-    ``create()`` keeps the exact signature the pipeline already uses
-    (``model=…, messages=…, …``). For each provider in turn it substitutes that
-    provider's own model id, sanitises the request, and returns the first
-    success. The caller's ``model`` argument is used only for the local LM Studio
-    provider (whose model is runtime-selected). If every provider errors, the
-    last exception is re-raised so existing ``except Exception`` paths fall back
-    to the offline parser unchanged.
-    """
-
-    def __init__(self, providers: list[dict]):
-        self._providers = providers
-
-    def create(self, **kwargs):
-        requested_model = kwargs.pop("model", None)
-        last_exc: Optional[Exception] = None
-        attempted: list[str] = []
-        for p in self._providers:
-            model = p.get("model") or requested_model
-            if not model:
-                continue
-            call_kwargs = _sanitize_create_kwargs(p["kind"], dict(kwargs))
-            try:
-                resp = p["client"].chat.completions.create(model=model, **call_kwargs)
-                if attempted:
-                    print(f"[llm] '{p['name']}' ({model}) succeeded after "
-                          f"{', '.join(attempted)} failed")
-                return resp
-            except Exception as exc:  # noqa: BLE001 — fall through to the next provider
-                last_exc = exc
-                attempted.append(p["name"])
-                print(f"[llm] provider '{p['name']}' ({model}) failed: "
-                      f"{type(exc).__name__}: {exc}")
-                continue
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("No LLM providers configured")
-
-
-class _FallbackChat:
-    def __init__(self, providers: list[dict]):
-        self.completions = _FallbackCompletions(providers)
-
-
-class _FallbackClient:
-    """Drop-in stand-in for an OpenAI client exposing only ``chat.completions``."""
-
-    def __init__(self, providers: list[dict]):
-        self.chat = _FallbackChat(providers)
-
-
-def make_llm_client():
-    """Build the extraction client.
-
-    When any cloud provider is active, return the fallback chain
-    (cloud… → LM Studio); otherwise return the plain local LM Studio client so a
-    keyless install behaves byte-for-byte as before.
-    """
-    cloud = _active_cloud_providers()
-    if not cloud:
-        return _make_client()
-    providers = [{
-        "name": p["name"], "kind": "openai", "model": (p.get("model") or "").strip(),
-        "client": OpenAI(base_url=p["base_url"], api_key=p["api_key"],
-                         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES),
-    } for p in cloud]
-    providers.append({"name": "lmstudio", "kind": "lmstudio", "model": None,
-                      "client": _make_client()})
-    print(f"[llm] extraction chain: {' → '.join(p['name'] for p in providers)}")
-    return _FallbackClient(providers)
 
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
@@ -1217,7 +1081,7 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
             ]}],
             temperature=0.0, max_tokens=2048,
             frequency_penalty=0.1,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         text = response.choices[0].message.content.strip()
         return text if text else None
@@ -1799,7 +1663,7 @@ def _unified_distillation(
             messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=1024,
             frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -1812,7 +1676,7 @@ def _unified_distillation(
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
                 temperature=0.0, max_tokens=1024,
                 frequency_penalty=0.15,
-                extra_body={**thinking_body, "repeat_penalty": 1.1},
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
@@ -1842,7 +1706,7 @@ def _extract_with_model(
             model=model_id, messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=1024,
             frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1},
+            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse(resp.choices[0].message.content.strip())
         if result is not None:
@@ -1855,7 +1719,7 @@ def _extract_with_model(
                           {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
                 temperature=0.0, max_tokens=1024,
                 frequency_penalty=0.15,
-                extra_body={**thinking_body, "repeat_penalty": 1.1},
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             return _parse(r2.choices[0].message.content.strip())
     except Exception as exc:
@@ -1994,7 +1858,7 @@ def _extract_receipt_with_status(
         # cross-reference both readings of the same receipt. Reasoning is forced
         # off for this transcription pass.
         llm_text = None
-        if _active_ocr_model:
+        if _active_ocr_model and LLM_ALLOW_IMAGE:
             _cb("ocr", model=_active_ocr_model)
             t_llm = time.perf_counter()
             llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
@@ -2031,6 +1895,13 @@ def _extract_receipt_with_status(
 
         # RESCUE: OCR found nothing usable (or distillation was low-confidence) —
         # let a vision-capable LLM read the image directly when one is available.
+        # Suppressed in OCR-text-only privacy mode (LLM_ALLOW_IMAGE off) so the
+        # receipt image is never transmitted — only the locally-extracted text was.
+        if not LLM_ALLOW_IMAGE:
+            _append_step(step_log, "vision", "Vision",
+                         "skipped — image not sent (OCR-text-only mode)",
+                         ok=False)
+            return None
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _extract_with_model(client, image_path, _active_distill_model)
@@ -2683,10 +2554,7 @@ def process_receipts_batch(
     log(f"Found {total} receipt image(s).")
     log(f"  OCR model:    {_active_ocr_model or '(none — direct vision)'}")
     log(f"  Distill model: {_active_distill_model}")
-    client = openai_client if openai_client is not None else OpenAI(
-        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
-        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
-    )
+    client = openai_client if openai_client is not None else make_client()
 
     results: list[dict] = []
     skipped: list[str]  = []

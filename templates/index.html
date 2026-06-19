@@ -1625,6 +1625,24 @@
       One model reads your receipts — it handles both extraction and (optionally) OCR.
       It's auto-selected and loaded at startup; change it here and it applies to the next receipt, no restart needed.
     </p>
+    <!-- Provider: local private server vs. OpenRouter cloud router -->
+    <div style="margin-bottom:12px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Provider</div>
+      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
+        <label class="check-label" style="font-size:12px;gap:6px"
+               title="Run a model locally (LM Studio / llama.cpp / any OpenAI-compatible endpoint). Receipts never leave your machine.">
+          <input type="radio" name="llm-provider" value="local" id="provider-local" checked>
+          🔒 Local server <span style="font-weight:400">(private)</span>
+        </label>
+        <label class="check-label" style="font-size:12px;gap:6px"
+               title="Use OpenRouter's cloud API and auto-pick the best FREE vision-capable model. Sends receipt data to a third-party cloud.">
+          <input type="radio" name="llm-provider" value="openrouter" id="provider-openrouter">
+          ☁️ OpenRouter <span style="font-weight:400">(cloud · free models)</span>
+        </label>
+      </div>
+    </div>
+
+    <div id="provider-local-section">
     <!-- Single consolidated model selector -->
     <div class="model-grid" style="grid-template-columns:1fr">
       <div>
@@ -1670,44 +1688,6 @@
       </div>
     </div>
 
-    <!-- Cloud LLM fallback chain — tried before the local model, in order -->
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Cloud LLM Fallback</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">
-        Receipts are read by the first provider that responds, falling back in order.
-        Leave the keys blank to stay fully local. Free tiers rate-limit, so a 429 just
-        moves to the next provider.
-      </div>
-      <div id="provider-chain" style="font-size:12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-        <span style="color:var(--muted)">Loading chain…</span>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="checkbox" id="gemini-enabled" checked> Gemini (primary)
-        </label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="password" id="gemini-key" placeholder="GEMINI_API_KEY (blank = keep)" autocomplete="off" style="flex:2;min-width:160px">
-          <input type="text" id="gemini-model" placeholder="gemini-2.5-flash-lite" style="flex:1;min-width:140px">
-        </div>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="checkbox" id="mistral-enabled" checked> Mistral (secondary)
-        </label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="password" id="mistral-key" placeholder="MISTRAL_API_KEY (blank = keep)" autocomplete="off" style="flex:2;min-width:160px">
-          <input type="text" id="mistral-model" placeholder="mistral-small-latest" style="flex:1;min-width:140px">
-        </div>
-      </div>
-
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-outline-accent btn-sm" id="providers-save-btn">Save providers</button>
-        <span id="providers-save-msg" style="font-size:11px;color:var(--muted)"></span>
-      </div>
-    </div>
-
     <!-- Docker LLM server controls — only useful when the bundled model-server is in play -->
     <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
@@ -1736,6 +1716,53 @@
       <div class="model-row">
         <div class="model-dot"></div>
         <span style="color:var(--muted);font-size:11px">Querying LLM server…</span>
+      </div>
+    </div>
+    </div><!-- /#provider-local-section -->
+
+    <!-- OpenRouter cloud provider -->
+    <div id="provider-openrouter-section" style="display:none">
+      <div style="font-size:12px;line-height:1.5;color:var(--warning);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.32);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+        ⚠ <strong>Privacy:</strong> OpenRouter is a cloud service — receipt data leaves your machine, and many free models may use submitted data for training. Pick <em>“OCR text only”</em> below to keep the receipt <em>image</em> local and send only extracted text.
+      </div>
+      <div style="margin-bottom:10px">
+        <div class="model-section-label">OpenRouter API key</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="password" id="or-key" placeholder="sk-or-…" autocomplete="off" style="flex:1;min-width:0">
+          <span id="or-key-status" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Get a free key at <strong>openrouter.ai/keys</strong>. Stored locally (never synced to the output folder).</div>
+      </div>
+      <div style="margin-bottom:10px">
+        <div class="model-section-label">Model</div>
+        <div class="model-select-row">
+          <div class="model-active-dot" id="or-model-dot"></div>
+          <select id="or-model" title="“Free router” lets OpenRouter auto-select among free models, steered toward quick, reliable, vision-capable ones. “Auto” lets this app pick one specific best free vision model. Or choose an explicit model. Refresh to fetch the current free list.">
+            <option value="openrouter/free">Free router — auto · prefers fast vision</option>
+            <option value="auto">Auto — best free vision model</option>
+          </select>
+          <button class="copy-btn" id="or-refresh-models" title="Fetch the current free vision models from OpenRouter">↻ Refresh</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">The <strong>free router</strong> auto-selects among free models per request (biased to quick, reliable, image-capable ones, with a vision fallback list). Pick a specific model to pin it.</div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div class="model-section-label">What to send</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label class="check-label" style="font-size:12px;gap:6px"
+                 title="Send the receipt image to the cloud model. Most accurate, but the image leaves your machine.">
+            <input type="radio" name="or-send-mode" value="image" id="or-mode-image" checked>
+            Send receipt image <span style="font-weight:400">(best accuracy)</span>
+          </label>
+          <label class="check-label" style="font-size:12px;gap:6px"
+                 title="Only the locally-extracted OCR text is sent — the receipt image never leaves your machine.">
+            <input type="radio" name="or-send-mode" value="text" id="or-mode-text">
+            Send OCR text only <span style="font-weight:400">(image stays local)</span>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="or-save-btn">Apply OpenRouter settings</button>
+        <span id="or-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
     </div>
   </div>
@@ -1873,6 +1900,31 @@
         </button>
         <input type="file" id="proc-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the full image-processing chain">
         <span id="proc-test-status" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
+            LLM request timeout (s)
+            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
+            LLM max retries
+            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
+            Stored image max side (px)
+            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
+            PDF max pages
+            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
+            Max upload size (MB, 0 = ∞)
+            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
+          </label>
+        </div>
       </div>
     </div>
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
@@ -2274,8 +2326,8 @@ function switchTab(name) {
     loadModels();
     loadLMStudioModels();
     if (typeof loadLLMServerSettings === 'function') loadLLMServerSettings();
+    if (typeof loadLLMProvider === 'function') loadLLMProvider();
     if (typeof checkLLMStatus === 'function') checkLLMStatus();
-    if (typeof loadProviders === 'function') loadProviders();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -3970,20 +4022,6 @@ function _setLmChip(state, text) {
   chip.title = `LLM Server: ${text} — click to open model settings`;
 }
 
-// Throttle the silent auto-recovery probe so a genuinely-offline server isn't
-// hammered on every 30s poll, while still re-trying periodically so the app
-// reconnects on its own once LM Studio (or the bundled server) comes online.
-let _lastLlmAutodetect = 0;
-async function _tryLlmAutodetect() {
-  const now = Date.now();
-  if (now - _lastLlmAutodetect < 15000) return false;
-  _lastLlmAutodetect = now;
-  try {
-    const ad = await (await fetch('/llm-server/autodetect', {method:'POST'})).json();
-    return !!ad.ok;
-  } catch (_) { return false; }
-}
-
 async function loadLMStudioModels() {
   try {
     const res  = await fetch('/models/lmstudio');
@@ -3998,15 +4036,13 @@ async function loadLMStudioModels() {
       strip.innerHTML = '<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">No models loaded</span></div>';
       _setLmChip('warn', 'No models loaded');
     } else {
-      // Unreachable at the configured URL — silently try to auto-recover by
-      // probing the other well-known endpoints, then re-render if it worked.
-      if (await _tryLlmAutodetect()) {
-        checkLLMStatus();
-        loadLLMServerSettings();
-        return loadLMStudioModels();
-      }
+      // Unreachable at the CONFIGURED URL. Do NOT silently auto-detect and
+      // persist a different endpoint here — that used to overwrite the user's
+      // custom URL with the bundled docker URL behind their back (the "stuck on
+      // Docker URL" bug). Surface it instead and let the explicit "Auto-detect"
+      // button recover on demand.
       const urlHint = data.base_url ? ` — tried <code style="font-size:10px">${esc(data.base_url)}</code>` : '';
-      strip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable${urlHint}</span></div>`;
+      strip.innerHTML = `<div class="model-row"><div class="model-dot"></div><span style="color:var(--muted);font-size:11px">LLM server unreachable${urlHint} · use Auto-detect</span></div>`;
       _setLmChip('err', `Offline${data.base_url ? ' · ' + esc(data.base_url) : ''}`);
     }
   } catch (_) {
@@ -4032,6 +4068,121 @@ async function loadLLMServerSettings() {
     }
   } catch (_) {}
 }
+
+// ── LLM provider (local private server vs. OpenRouter cloud) ──────────────────
+function _applyProviderUI(provider) {
+  const isOR = provider === 'openrouter';
+  const local = document.getElementById('provider-local-section');
+  const or    = document.getElementById('provider-openrouter-section');
+  if (local) local.style.display = isOR ? 'none' : '';
+  if (or)    or.style.display    = isOR ? '' : 'none';
+  const lr = document.getElementById('provider-local');
+  const orr = document.getElementById('provider-openrouter');
+  if (lr)  lr.checked  = !isOR;
+  if (orr) orr.checked = isOR;
+}
+
+async function loadLLMProvider() {
+  try {
+    const d = await (await fetch('/settings/llm-provider')).json();
+    _applyProviderUI(d.provider);
+    if (d.provider === 'openrouter') {
+      const or = d.openrouter || {};
+      const img = document.getElementById('or-mode-image');
+      const txt = document.getElementById('or-mode-text');
+      if (or.send_image === false) { if (txt) txt.checked = true; }
+      else { if (img) img.checked = true; }
+      const ks = document.getElementById('or-key-status');
+      if (ks) {
+        ks.textContent = or.has_key ? '✓ key saved' : 'no key set';
+        ks.style.color = or.has_key ? 'var(--success)' : 'var(--warning)';
+      }
+      await loadOpenRouterModels(or.model || 'openrouter/free');
+      const dot = document.getElementById('or-model-dot');
+      if (dot) dot.style.background = (or.has_key && (or.resolved_model || or.model)) ? 'var(--success)' : 'var(--border)';
+    } else if (typeof loadLLMServerSettings === 'function') {
+      loadLLMServerSettings();
+    }
+  } catch (_) {}
+}
+
+async function loadOpenRouterModels(savedChoice) {
+  const sel = document.getElementById('or-model');
+  if (!sel) return;
+  const want = savedChoice || sel.value || 'openrouter/free';
+  try {
+    const d = await (await fetch('/models/openrouter')).json();
+    sel.innerHTML =
+      '<option value="openrouter/free">Free router — auto · prefers fast vision</option>'
+      + '<option value="auto">Auto — best free vision model</option>';
+    (d.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id + (m.context_length ? ` · ${Math.round(m.context_length / 1000)}k ctx` : '');
+      sel.appendChild(opt);
+    });
+    sel.value = want;
+    if (!sel.value) sel.value = 'openrouter/free';
+  } catch (_) {}
+}
+
+async function _saveProvider(payload) {
+  const r = await fetch('/settings/llm-provider', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  return r.json();
+}
+
+document.querySelectorAll('input[name="llm-provider"]').forEach(radio => {
+  radio.addEventListener('change', async () => {
+    const provider = document.getElementById('provider-openrouter').checked ? 'openrouter' : 'local';
+    _applyProviderUI(provider);
+    try {
+      if (provider === 'local') {
+        await _saveProvider({provider: 'local'});   // re-applies the saved local URL
+        loadModels(); loadLMStudioModels(); checkLLMStatus(); loadLLMServerSettings();
+        showToast('Provider: local server (private)', true);
+      } else {
+        const sendImage = document.getElementById('or-mode-image').checked;
+        const model = document.getElementById('or-model').value || 'openrouter/free';
+        const d = await _saveProvider({provider: 'openrouter', model, send_image: sendImage});
+        loadLLMProvider();
+        if (d.warning) showToast(d.warning, false);
+        else showToast(`OpenRouter active${d.resolved_model ? ' · ' + d.resolved_model : ''}`, true);
+      }
+    } catch (e) { showToast('Error: ' + e.message, false); }
+  });
+});
+
+document.getElementById('or-refresh-models').addEventListener('click', () => {
+  const sel = document.getElementById('or-model');
+  loadOpenRouterModels(sel ? sel.value : 'auto');
+});
+
+document.getElementById('or-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('or-save-btn');
+  const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Applying…';
+  try {
+    const key = document.getElementById('or-key').value.trim();
+    const model = document.getElementById('or-model').value || 'openrouter/free';
+    const sendImage = document.getElementById('or-mode-image').checked;
+    const payload = {provider: 'openrouter', model, send_image: sendImage};
+    if (key) payload.api_key = key;
+    const d = await _saveProvider(payload);
+    document.getElementById('or-key').value = '';   // never keep the secret in the DOM
+    const st = document.getElementById('or-status');
+    if (d.ok) {
+      if (st) { st.textContent = `Active · ${d.resolved_model || model}`; st.style.color = 'var(--success)'; }
+      showToast(`OpenRouter active${d.resolved_model ? ' · ' + d.resolved_model : ''}`, true);
+    } else {
+      if (st) { st.textContent = d.warning || 'Not active'; st.style.color = 'var(--warning)'; }
+      showToast(d.warning || 'Could not activate OpenRouter', false);
+    }
+    loadLLMProvider();
+  } catch (e) { showToast('Error: ' + e.message, false); }
+  finally { btn.disabled = false; btn.textContent = prev; }
+});
 
 async function checkLLMStatus() {
   try {
@@ -4080,63 +4231,6 @@ document.getElementById('llm-server-save-btn').addEventListener('click', async (
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
-// ── Cloud LLM fallback chain (Gemini → Mistral → LM Studio) ──────────────────
-async function loadProviders() {
-  try {
-    const d = await (await fetch('/settings/llm-providers')).json();
-    const chain = d.providers || [];
-    chain.forEach(p => {
-      const mEl = document.getElementById(`${p.name}-model`);
-      const eEl = document.getElementById(`${p.name}-enabled`);
-      if (mEl && p.model) mEl.value = p.model;
-      if (eEl) eEl.checked = p.enabled;
-    });
-    const wrap = document.getElementById('provider-chain');
-    if (wrap) {
-      const label = {gemini:'Gemini', mistral:'Mistral', lmstudio:'LM Studio'};
-      wrap.innerHTML = chain.map(p => {
-        const note = (p.name === 'lmstudio' || p.active) ? ''
-                   : (p.enabled ? ' (no key)' : ' (off)');
-        const color = p.active ? 'var(--accent)' : 'var(--muted)';
-        return `<span style="color:${color};font-weight:${p.active?600:400}">`
-             + `${label[p.name] || p.name}${note}</span>`;
-      }).join('<span style="color:var(--muted)"> → </span>');
-    }
-  } catch (e) { /* card not open / offline — ignore */ }
-}
-
-document.getElementById('providers-save-btn').addEventListener('click', async () => {
-  const body = {
-    gemini: {
-      enabled: document.getElementById('gemini-enabled').checked,
-      model:   document.getElementById('gemini-model').value.trim(),
-      api_key: document.getElementById('gemini-key').value.trim(),
-    },
-    mistral: {
-      enabled: document.getElementById('mistral-enabled').checked,
-      model:   document.getElementById('mistral-model').value.trim(),
-      api_key: document.getElementById('mistral-key').value.trim(),
-    },
-  };
-  const msg = document.getElementById('providers-save-msg');
-  try {
-    const d = await (await fetch('/settings/llm-providers', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    })).json();
-    if (d.ok) {
-      // Don't leave the secret on screen or resubmit it as the masked value.
-      document.getElementById('gemini-key').value = '';
-      document.getElementById('mistral-key').value = '';
-      if (msg) { msg.textContent = 'Saved'; setTimeout(() => { msg.textContent = ''; }, 2500); }
-      showToast('Cloud LLM providers saved', true);
-      loadProviders();
-    } else {
-      showToast('Error saving providers', false);
-    }
-  } catch (e) { showToast('Error: ' + e.message, false); }
-});
-
 document.getElementById('llm-start-btn').addEventListener('click', async () => {
   try { const r = await fetch('/llm-server/start',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server starting…':'Start failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
 });
@@ -4154,7 +4248,6 @@ document.getElementById('llm-autodetect-btn').addEventListener('click', async ()
   const prev = btn.textContent;
   btn.disabled = true; btn.textContent = 'Detecting…';
   try {
-    _lastLlmAutodetect = 0;   // bypass the throttle for an explicit click
     const d = await (await fetch('/llm-server/autodetect', {method:'POST'})).json();
     if (d.ok) {
       showToast(`Connected to LLM server at ${d.base_url}`, true);
@@ -4493,6 +4586,12 @@ async function loadProcessingSettings() {
     document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(aggr);
     document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
     document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
+    const _setNum = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    _setNum('proc-llm-timeout', d.llm_timeout != null ? Math.round(d.llm_timeout) : null);
+    _setNum('proc-llm-retries', d.llm_max_retries);
+    _setNum('proc-store-px',    d.store_max_px);
+    _setNum('proc-pdf-pages',   d.pdf_max_pages);
+    _setNum('proc-max-upload',  d.max_upload_mb);
   } catch (_) {}
 }
 
@@ -4514,6 +4613,11 @@ async function saveProcessingSettings() {
     compress:     document.getElementById('proc-compress').checked,
     local_ocr:    document.getElementById('proc-localocr').checked,
     jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
+    llm_timeout:     parseFloat(document.getElementById('proc-llm-timeout').value),
+    llm_max_retries: parseInt(document.getElementById('proc-llm-retries').value, 10),
+    store_max_px:    parseInt(document.getElementById('proc-store-px').value, 10),
+    pdf_max_pages:   parseInt(document.getElementById('proc-pdf-pages').value, 10),
+    max_upload_mb:   parseInt(document.getElementById('proc-max-upload').value, 10),
   };
   try {
     const res = await fetch('/settings/processing', {
@@ -4533,6 +4637,15 @@ async function saveProcessingSettings() {
 
 ['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr'].forEach(id => {
   document.getElementById(id).addEventListener('change', saveProcessingSettings);
+});
+
+// Advanced numeric tunables — debounced save on change.
+['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', () => {
+    clearTimeout(_procSaveTimer);
+    _procSaveTimer = setTimeout(saveProcessingSettings, 150);
+  });
 });
 
 // Auto-crop aggressiveness slider — live label on drag, debounced save on release.
@@ -5490,6 +5603,7 @@ loadRejected();
 loadLMStudioModels();
 checkLLMStatus();
 loadModels();
+if (typeof loadLLMProvider === 'function') loadLLMProvider();
 loadSettings();
 loadSavedFields();
 loadStats();

@@ -103,33 +103,45 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
   **auto-refresh** (on opening Settings + every 30s while Settings is visible,
   unless a dropdown is focused).
 
-### Cloud LLM fallback chain (Gemini → Mistral → LM Studio)
+## LLM provider (local server vs. OpenRouter cloud)
 
-- Extraction can fall back across multiple OpenAI-compatible endpoints, tried in
-  order: **Gemini Flash-Lite → Mistral → local LM Studio**. A cloud provider is
-  only tried when its API key is set; LM Studio is always the final fallback, so a
-  keyless install behaves exactly as before. If every provider errors, callers fall
-  through to the offline regex parser unchanged (the chain only changes *where* the
-  model call goes).
-- `process_receipts.make_llm_client()` builds the chain: returns the plain local
-  client when no cloud provider is active, else a `_FallbackClient` whose
-  `.chat.completions.create(...)` iterates providers, substituting each provider's
-  own model and stripping LM-Studio-only params (`extra_body`/thinking,
-  `frequency_penalty`) for cloud (`_sanitize_create_kwargs`). **The three extraction
-  functions (`_unified_distillation`, `_extract_with_model`, `_extract_raw_ocr`) are
-  unchanged** — the wrapper mimics the OpenAI client. The worker (`server._drain_once`)
-  and `/watch/send-email` call `make_llm_client()`; warm-up still targets LM Studio
-  only (no cloud quota burned).
-- Config: cloud providers are module globals (`_CLOUD_PROVIDERS`, seeded from
-  `GEMINI_API_KEY`/`GEMINI_MODEL`/`MISTRAL_API_KEY`/`MISTRAL_MODEL` env). Runtime:
-  `configure_providers(specs)`, `provider_status()`, `active_provider_names()`.
-  Endpoints `GET/POST /settings/llm-providers`; non-secret settings (model, enabled)
-  persist in `cfg["llm_providers"]`, **API keys go to the secrets store**
-  (`app_secrets`, never the cloud-syncable config). `_apply_provider_config()` restores
-  on startup (in lifespan, before `initialize_models`). UI: "Cloud LLM Fallback"
-  sub-card in the AI Models card (`loadProviders()` / `#providers-save-btn`).
-- 429-aware backoff is the OpenAI SDK's built-in retry (`LLM_MAX_RETRIES`, honours
-  Retry-After); once a provider is exhausted the chain moves to the next.
+- **One canonical key `provider`** in config (`"local"` default, or `"openrouter"`).
+  `_apply_llm_server_config(cfg)` dispatches: `_apply_local_llm_config` (LM Studio /
+  custom URL / bundled docker, via `llm_server` + legacy `llm_model_config`) or
+  `_apply_openrouter_config` (cloud). Run BEFORE `initialize_models` at startup.
+- **Client seam:** `process_receipts.make_client()` is the SINGLE OpenAI-client
+  factory — reads `LMSTUDIO_BASE_URL` + `LLM_API_KEY` (+ `LLM_EXTRA_HEADERS`). No
+  call site hard-codes `api_key="lmstudio"` any more. For OpenRouter the base URL is
+  `OPENROUTER_BASE_URL` and the key is the user's (secret `openrouter_api_key`).
+- **OpenRouter auto-pick:** `_openrouter_free_vision_models()` filters the catalogue
+  to free (zero prompt+completion price) + image-capable, ranks by family → quick
+  (small/fast variants) → context; `_openrouter_autopick()` returns the best id.
+  Endpoints: `GET/POST /settings/llm-provider`, `GET /models/openrouter`.
+- **Free router default `openrouter/free`** (`OPENROUTER_FREE_ROUTER`): the default
+  OpenRouter model is the free router meta-model (OpenRouter auto-selects among free
+  models per request). It's STEERED via `process_receipts.LLM_EXTRA_BODY` — merged
+  into every completion call — to `{"provider": {"sort": "throughput",
+  "allow_fallbacks": True}, "models": [<quick-first free vision fallbacks>]}` so it
+  prefers quick, reliable, image-capable models. `model="auto"` instead uses our own
+  single best pick; an explicit id pins one model.
+- **Privacy gate `LLM_ALLOW_IMAGE`** (process_receipts): when False the LLM-OCR pass
+  and the vision rescue are skipped so the receipt IMAGE is never transmitted —
+  OpenRouter's "send OCR text only" mode. "send receipt image" keeps full accuracy.
+- **The "stuck on Docker URL" fix:** the frontend no longer silently calls
+  `/llm-server/autodetect` (that used to persist the docker URL over a custom one);
+  an explicit `server_type:"custom"` is honoured even with a blank URL (→ localhost,
+  never docker); `GET /settings/llm-server` returns the *configured* URL + a separate
+  `effective_base_url` so the UI shows the user's own choice.
+- **Advanced processing tunables** (previously env-only) are now in `/settings/processing`
+  and Settings → Image Processing → *Advanced tuning*: `llm_timeout`,
+  `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`.
+
+> **Single cloud path = OpenRouter.** The old multi-provider Gemini → Mistral →
+> LM Studio fallback chain was removed (it duplicated the no-cost goal that the
+> OpenRouter free router already meets autonomously). There is now exactly one
+> cloud option — OpenRouter — selected via the `provider` key above; everything
+> goes through `make_client()`. There is no `make_llm_client`, `_CLOUD_PROVIDERS`,
+> `_FallbackClient`, `/settings/llm-providers`, or per-provider keys any more.
 
 ## Job-field placeholders
 
@@ -169,7 +181,7 @@ user input, never the placeholder.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **434 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **466 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -179,6 +191,10 @@ user input, never the placeholder.
   `local_ocr`, `llm_ocr`, `cross_reference`, `distillation`, `vision`).
 - `tests/test_new_features.py` covers per-stage reasoning, dual-OCR cross-ref,
   job defaults, and clear-reports.
+- `tests/test_llm_provider.py` covers the provider rework: the "stuck on Docker URL"
+  regression, OpenRouter free/vision filtering + auto-pick, provider dispatch/apply,
+  the `/settings/llm-provider` + `/models/openrouter` endpoints, and the
+  `LLM_ALLOW_IMAGE` privacy gate.
 
 ## Conventions / gotchas
 
@@ -203,6 +219,82 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (merge main into dev + drop the Gemini/Mistral fallback chain):** Merged
+  `origin/main` (which had independently added a Gemini → Mistral → LM Studio cloud
+  fallback chain) into `dev`, then **removed that chain entirely** — the OpenRouter free
+  router already meets the no-cost goal autonomously, so the multi-provider chain was
+  redundant. There is now **one** cloud option: OpenRouter, via the `provider` key, with
+  everything routed through `process_receipts.make_client()`.
+  * **process_receipts.py** — deleted `make_llm_client`, `_CLOUD_PROVIDERS`,
+    `_CLOUD_SAFE_PARAMS`, `_active_cloud_providers`, `configure_providers`,
+    `provider_status`, `active_provider_names`, `_sanitize_create_kwargs`,
+    `_FallbackCompletions`/`_FallbackChat`/`_FallbackClient`, and the
+    `GEMINI_*`/`MISTRAL_*` globals.
+  * **server.py** — removed `_PROVIDER_ENV`, `_apply_provider_config`,
+    `_persist_provider_config`, the `GET/POST /settings/llm-providers` endpoints, and
+    the lifespan restore call. The worker (`_drain_once`) and `/watch/send-email` now
+    call `make_client()` directly.
+  * **UI** — removed the "Cloud LLM Fallback" sub-card, `loadProviders()`, and the
+    `#providers-save-btn`/`#provider-chain`/`#gemini-*`/`#mistral-*` elements. The
+    OpenRouter provider panel (`loadLLMProvider`) is unchanged.
+  * **Docs/deploy** — `.env.example` and `CLAUDE.md` drop the chain; the Oracle free
+    deploy (`DEPLOY_ORACLE.md` / `docker-compose.prod.yml`) now wires
+    `OPENROUTER_API_KEY` instead of `GEMINI/MISTRAL` keys.
+  * **Tests** — deleted `tests/test_llm_fallback.py` (the chain's 17 tests). Suite
+    **483 → 466** green (merge union was 483; −17 chain tests).
+
+- **2026-06-19 (LLM provider rework + OpenRouter + settings completeness + multi-user plan):**
+  Suite **434 → 455** green. Branch consolidated to `dev` (one persistent dev branch
+  instead of a new per-session branch; existing branches left untouched).
+  * **Provider redesign + "stuck on Docker URL" fix** — one canonical config key
+    `provider` (`local`/`openrouter`) dispatches in `_apply_llm_server_config` →
+    `_apply_local_llm_config` / `_apply_openrouter_config`. The local path now honours
+    an explicit `server_type:"custom"` even with a blank URL (→ `127.0.0.1:1234`, never
+    the legacy docker fall-through that stranded users on `:11434`). The **frontend no
+    longer silently POSTs `/llm-server/autodetect`** (the real culprit — it persisted the
+    bundled docker URL over the user's custom one); recovery is the explicit button.
+    `GET /settings/llm-server` now returns the *configured* URL + a separate
+    `effective_base_url` so the UI shows the user's own choice. `set_llm_server` /
+    autodetect also set `provider:"local"`.
+  * **Client seam** — `process_receipts.make_client()` is now the single OpenAI-client
+    factory (base_url + `LLM_API_KEY` + `LLM_EXTRA_HEADERS`); the hard-coded
+    `api_key="lmstudio"` is gone from all 5 call sites (3 in server.py, 2 in
+    process_receipts.py).
+  * **OpenRouter cloud provider (opt-in, off by default)** — `OPENROUTER_BASE_URL`,
+    secret `openrouter_api_key` (via `app_secrets`), `_openrouter_free_vision_models()`
+    (free = zero prompt+completion price, image-capable; ranked by family/context) +
+    `_openrouter_autopick()`. New endpoints `GET/POST /settings/llm-provider`,
+    `GET /models/openrouter`. UI: AI Model card gains a **Provider** toggle
+    (Local / OpenRouter) with an OpenRouter panel (key, model dropdown + Auto, send-mode
+    radios, privacy note). **Privacy gate `LLM_ALLOW_IMAGE`** — "send OCR text only"
+    suppresses the LLM-OCR + vision-rescue image passes so the receipt image never
+    leaves the machine; "send receipt image" keeps full accuracy.
+  * **Free router default (`openrouter/free`)** — the default OpenRouter model is the
+    free router meta-model, STEERED via `LLM_EXTRA_BODY` (merged into every completion
+    call) toward quick + reliable providers (`provider.sort:"throughput"`,
+    `allow_fallbacks`) with a pinned quick-first free **vision** fallback `models` list
+    so image requests never land on a text-only model. `_openrouter_score` now ranks
+    family → quick (small/fast) → context. Suite **455 → 460**.
+  * **Zero-click first-run OpenRouter** — `_first_run_provider_default()` (lifespan,
+    before `_apply_llm_server_config`): when `OPENROUTER_API_KEY` is set in the env AND
+    the config is fresh (no provider/llm_server/llm_model_config/openrouter keys), it
+    persists `provider:"openrouter"` + the free-router default — never overriding an
+    explicit choice. `_startup_models()` now **skips `initialize_models()` for the
+    openrouter provider** (the local auto-select would otherwise clobber the
+    `openrouter/free` slug) and best-effort pins the vision fallback list off-thread.
+    Suite **460 → 466**.
+  * **Settings completeness** — previously env-only tunables surfaced in
+    `/settings/processing` + Settings → Image Processing → *Advanced tuning*:
+    `llm_timeout`, `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`
+    (clamped + persisted). Remaining internal knobs (orientation thresholds, SSE
+    intervals, stall timeouts, archive caps) intentionally stay env-only — noted in
+    `ROADMAP.md`.
+  * **Docs** — new `MULTIUSER.md` (plan-only multi-tenant design + phased migration)
+    and `ROADMAP.md` (forward view; notes GitHub Projects/Milestones/Issues as native
+    tracking options; past changelog stays here).
+  * Tests: `tests/test_llm_provider.py` (+20), advanced-settings round-trip in
+    `tests/test_settings_endpoints.py` (+1).
 
 - **2026-06-17 (free cloud deploy — Oracle Always Free + Caddy):** Added a
   production deploy path for hosting the Docker image free, 24/7. `docker-compose.prod.yml`
