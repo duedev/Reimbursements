@@ -530,7 +530,11 @@ def _openrouter_api_key() -> str:
 # capable models — "implement using this free router with a preference for quick,
 # reliable, vision models."
 OPENROUTER_FREE_ROUTER = "openrouter/free"
-_OPENROUTER_FALLBACK_N = 5   # how many free vision models to pin as router fallbacks
+# OpenRouter caps the routing `models` fallback array at 3 entries — sending more
+# 400s the request ("'models' array must have 3 items or fewer."), which silently
+# drops every call to the offline parser. Pin at most this many vision fallbacks.
+_OPENROUTER_MODELS_MAX = 3
+_OPENROUTER_FALLBACK_N = _OPENROUTER_MODELS_MAX   # free vision models pinned as router fallbacks
 
 
 def _openrouter_default_cfg() -> dict:
@@ -632,7 +636,10 @@ def _openrouter_extra_body(orc: dict) -> dict:
             "allow_fallbacks": True,          # reliability — fail over if a provider is down
         },
     }
-    fb = orc.get("models_fallback") or []
+    # Cap at OpenRouter's hard limit even if an older config persisted more (a
+    # 4+-item array 400s every request) — truncating here fixes saved configs
+    # without needing a re-Apply.
+    fb = (orc.get("models_fallback") or [])[:_OPENROUTER_MODELS_MAX]
     if fb:
         body["models"] = list(fb)
     return body
@@ -3777,7 +3784,7 @@ async def openrouter_test_connection():
     logs.append(f"Model     : {model}")
     logs.append(f"API key   : set ({'•' * 6}{(_openrouter_api_key() or '')[-4:]})")
     logs.append(f"Headers   : {', '.join(sorted(_pr.LLM_EXTRA_HEADERS)) or '(none)'}")
-    fb = (orc.get("models_fallback") or [])
+    fb = (orc.get("models_fallback") or [])[:_OPENROUTER_MODELS_MAX]
     logs.append(f"Routing   : sort=throughput, fallbacks={len(fb)} vision model(s)")
     logs.append("→ Sending: \"Reply with the single word: OK\"")
 
