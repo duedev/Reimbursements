@@ -142,8 +142,11 @@ _WARMUP_OCR_TEXT = "QUICK MART\n1 Main St\nCoffee 1.00\nTOTAL $1.00\n01/01/2025"
 #   • Distillation / vision extraction → reasoning follows the UI toggle below
 #     and is ON by default. Turning raw OCR text into clean structured fields,
 #     reconciling totals and catching anomalies is where reasoning helps.
-# The UI toggle drives _thinking_enabled (distillation only); OCR ignores it.
-_thinking_enabled: bool = True
+# Reasoning ("thinking") is OFF by default and has no UI toggle any more — the
+# OCR pass never reasons and the distillation pass is consistently faster (and
+# usually just as accurate) without it. The /models/thinking endpoint still
+# exists for programmatic/test use, but nothing in the app turns it on.
+_thinking_enabled: bool = False
 
 
 def _thinking_body(budget: int, *, enabled: Optional[bool] = None) -> dict:
@@ -1649,6 +1652,10 @@ def _unified_distillation(
     client: OpenAI, ocr_text: str, *, _retry: bool = True,
 ) -> Optional[dict]:
     """Stage 2: distillation model extracts fields + summary + flags from OCR text."""
+    # No AI model selected ("None") → skip the doomed API call and let the caller
+    # fall back to the offline regex parser.
+    if not _active_distill_model:
+        return None
     today = date.today().isoformat()
     prompt = _UNIFIED_DISTILLATION_TEMPLATE.format(ocr_text=ocr_text, today=today)
     system_msg = {"role": "system", "content": "You are a receipt data extractor. Respond with valid JSON only."}
@@ -1689,6 +1696,9 @@ def _extract_with_model(
 ) -> Optional[dict]:
     """Direct-vision extraction — used as the sole path when no OCR model is set,
     and as fallback when OCR + distillation yields low-confidence results."""
+    # No AI model selected ("None") → there is nothing to call.
+    if not model_id:
+        return None
     today = date.today().isoformat()
     prompt = _GEMMA_VISION_TEMPLATE.replace("{today}", today)
 
@@ -1820,14 +1830,19 @@ def _extract_receipt_with_status(
         local_used = False
 
         if data is None:
-            # LM Studio distillation unreachable/failed → record failure, try offline parser
-            _append_step(step_log, "distillation", "Distillation",
-                         f"{_active_distill_model} – no response",
-                         ok=False, duration_s=distill_dur)
+            # Either no AI model is selected ("None"), or the model was
+            # unreachable/failed → fall back to the offline regex parser.
+            no_model = not _active_distill_model
+            if not no_model:
+                _append_step(step_log, "distillation", "Distillation",
+                             f"{_active_distill_model} – no response",
+                             ok=False, duration_s=distill_dur)
             data = _local_distill_from_ocr(ocr_text)
             local_used = data is not None
             if local_used:
                 _append_step(step_log, "local_parse", "Local parse",
+                             "no AI model selected — built-in OCR + offline parser"
+                             if no_model else
                              "offline regex parser (LM Studio unavailable)", ok=True)
 
         # Ground the model's amount in the OCR text it was given: a value that
@@ -1928,6 +1943,10 @@ def _extract_receipt_with_status(
             _append_step(step_log, "vision", "Vision",
                          "skipped — image not sent (OCR-text-only mode)",
                          ok=False)
+            return None
+        if not _active_distill_model:
+            _append_step(step_log, "vision", "Vision",
+                         "skipped — no AI model selected", ok=False)
             return None
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()

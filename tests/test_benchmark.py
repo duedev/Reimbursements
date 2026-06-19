@@ -110,3 +110,58 @@ def test_benchmarks_endpoint_includes_insights(client):
     assert d["insights"] is not None
     assert d["insights"]["receipts"] == 3
     assert d["insights"]["avg_per_receipt"] == 2.0
+
+
+# ── Per-step breakdown + CSV download ─────────────────────────────────────────
+
+_RECEIPTS = [
+    {"steps": [
+        {"step": "local_ocr", "label": "OCR (built-in)", "ok": True,  "duration_s": 2.0},
+        {"step": "distillation", "label": "Distillation", "ok": False, "duration_s": 0.1},
+    ]},
+    {"steps": [
+        {"step": "local_ocr", "label": "OCR (built-in)", "ok": True,  "duration_s": 3.0},
+    ]},
+]
+
+
+def test_aggregate_step_durations():
+    rows = server._aggregate_step_durations(_RECEIPTS)
+    by = {r["step"]: r for r in rows}
+    assert by["local_ocr"]["count"] == 2
+    assert by["local_ocr"]["total_seconds"] == 5.0
+    assert by["local_ocr"]["failures"] == 0
+    assert by["distillation"]["count"] == 1
+    assert by["distillation"]["failures"] == 1
+    assert by["distillation"]["total_seconds"] == 0.1
+
+
+def test_record_benchmark_captures_steps():
+    server._benchmarks.clear()
+    server._worker_cancel.clear()
+    e = server._record_benchmark(2, 5.1, _RECEIPTS)
+    steps = {s["step"]: s for s in e["steps"]}
+    assert steps["local_ocr"]["total_seconds"] == 5.0
+    server._benchmarks.clear()
+
+
+def test_benchmark_insights_step_totals():
+    entries = [server._record_benchmark(2, 5.1, _RECEIPTS)]
+    ins = server._benchmark_insights(entries)
+    by = {s["step"]: s for s in ins["step_totals"]}
+    assert by["local_ocr"]["total_seconds"] == 5.0
+    # Sorted slowest-first → OCR (5.0s) before distillation (0.1s).
+    assert ins["step_totals"][0]["step"] == "local_ocr"
+    server._benchmarks.clear()
+
+
+def test_benchmarks_download_csv(client):
+    server._record_benchmark(2, 5.1, _RECEIPTS)
+    r = client.get("/benchmarks/download")
+    assert r.status_code == 200
+    assert "text/csv" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    body = r.text
+    assert "step_total_seconds" in body          # header present
+    assert "local_ocr" in body                   # a per-step row is included
+    server._benchmarks.clear()
