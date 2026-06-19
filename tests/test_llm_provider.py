@@ -442,3 +442,98 @@ def test_startup_runs_initialize_models_for_local(monkeypatch):
     monkeypatch.setattr(server, "initialize_models", lambda *a, **k: called.append(1))
     server._startup_models()
     assert called == [1]
+
+
+# ── get_llm_provider "configured" flag (UI defaults the mode to OpenRouter) ─────
+
+def test_provider_reports_unconfigured_on_fresh_config(client):
+    """A fresh config has no explicit choice → the UI defaults to OpenRouter."""
+    d = client.get("/settings/llm-provider").json()
+    assert d["configured"] is False
+
+
+def test_provider_reports_configured_after_explicit_choice(client):
+    server._save_config({"provider": "local",
+                         "llm_server": {"server_type": "custom", "base_url": ""}})
+    d = client.get("/settings/llm-provider").json()
+    assert d["configured"] is True
+
+
+# ── /llm-server/availability — per-mode probes for the UI indicators + chip ─────
+
+def test_availability_probes_each_mode(client, monkeypatch):
+    monkeypatch.setattr(server, "_in_docker", lambda: False)
+
+    def fake_probe(url, *a, **k):
+        return (True, 2) if "1234" in url else (False, 0)
+    monkeypatch.setattr(server, "_probe_llm_url", fake_probe)
+    monkeypatch.setattr(server, "_openrouter_api_key", lambda: "sk-or-k")
+
+    d = client.get("/llm-server/availability").json()
+    assert d["host"]["reachable"] is True and d["host"]["models"] == 2
+    assert d["docker"]["reachable"] is False
+    assert d["openrouter"]["has_key"] is True
+    assert d["active_mode"] in ("host", "docker", "openrouter")
+
+
+def test_availability_active_mode_follows_provider(client, monkeypatch):
+    monkeypatch.setattr(server, "_probe_llm_url", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(server, "_openrouter_api_key", lambda: "")
+    server._save_config({"provider": "openrouter"})
+    d = client.get("/llm-server/availability").json()
+    assert d["active_mode"] == "openrouter"
+
+
+# ── /settings/openrouter/test — full send → receive round-trip + logs ──────────
+
+def test_openrouter_test_requires_active_provider(client):
+    server._save_config({"provider": "local"})
+    d = client.post("/settings/openrouter/test").json()
+    assert d["ok"] is False
+    assert "not the active provider" in d["error"].lower()
+
+
+def test_openrouter_test_requires_key(client, monkeypatch):
+    monkeypatch.setattr(server, "_openrouter_api_key", lambda: "")
+    server._save_config({"provider": "openrouter",
+                         "openrouter": {"model": "openrouter/free"}})
+    d = client.post("/settings/openrouter/test").json()
+    assert d["ok"] is False
+    assert "key" in d["error"].lower()
+
+
+def test_openrouter_test_round_trip_ok(client, monkeypatch):
+    monkeypatch.setattr(server, "_openrouter_api_key", lambda: "sk-or-k")
+    server._save_config({"provider": "openrouter",
+                         "openrouter": {"model": "openrouter/free",
+                                        "resolved_model": "openrouter/free"}})
+
+    fake_client = MagicMock()
+    msg = MagicMock(); msg.content = "OK"
+    choice = MagicMock(); choice.message = msg
+    resp = MagicMock(); resp.choices = [choice]; resp.model = "x/y:free"
+    fake_client.chat.completions.create.return_value = resp
+    monkeypatch.setattr(pr, "make_client", lambda: fake_client)
+
+    d = client.post("/settings/openrouter/test").json()
+    assert d["ok"] is True
+    assert d["response_text"] == "OK"
+    assert d["model_used"] == "x/y:free"
+    assert any("round-trip succeeded" in line.lower() for line in d["logs"])
+
+
+def test_openrouter_test_reports_failure_with_hint(client, monkeypatch):
+    monkeypatch.setattr(server, "_openrouter_api_key", lambda: "sk-or-bad")
+    server._save_config({"provider": "openrouter",
+                         "openrouter": {"model": "openrouter/free"}})
+
+    def boom():
+        raise RuntimeError("Error code: 401 - invalid api key")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = lambda **k: boom()
+    monkeypatch.setattr(pr, "make_client", lambda: fake_client)
+
+    d = client.post("/settings/openrouter/test").json()
+    assert d["ok"] is False
+    assert "401" in d["error"]
+    assert "authentication" in (d.get("hint") or "").lower()
