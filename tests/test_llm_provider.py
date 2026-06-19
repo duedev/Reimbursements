@@ -348,6 +348,15 @@ def test_extra_body_biases_quick_reliable_and_pins_vision_fallback():
     assert "models" not in server._openrouter_extra_body({})   # none → no key
 
 
+def test_extra_body_caps_models_at_openrouter_limit():
+    """OpenRouter 400s a `models` array longer than 3 — cap it (also fixes an
+    older config that persisted more) so requests don't silently 400 → offline."""
+    over = [f"m{i}/v:free" for i in range(6)]
+    body = server._openrouter_extra_body({"models_fallback": over})
+    assert len(body["models"]) <= 3
+    assert body["models"] == over[:3]
+
+
 def test_score_prefers_quick_variant_same_family(monkeypatch):
     sample = [
         {"id": "google/gemini-pro-vision:free", "pricing": {"prompt": "0", "completion": "0"},
