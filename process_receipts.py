@@ -47,6 +47,25 @@ GEMMA_SMALL_MODEL_ID = os.getenv("GEMMA_SMALL_MODEL_ID", "")
 GEMMA_LARGE_MODEL_ID = os.getenv("GEMMA_LARGE_MODEL_ID", "")
 GEMMA_MODEL_ID       = os.getenv("GEMMA_MODEL_ID",       "")
 
+# ── LLM provider seam (local server vs. cloud router) ────────────────────────────
+# Every inference call is made through an OpenAI-compatible client pointed at
+# LMSTUDIO_BASE_URL and authenticated with LLM_API_KEY. For a LOCAL server
+# (LM Studio / llama.cpp / any custom OpenAI-compatible endpoint) the key is the
+# throwaway "lmstudio". For a CLOUD router (OpenRouter) it is the user's real API
+# key. Centralising client construction in make_client() means every call site
+# honours whichever provider is currently active — there is no second place that
+# hard-codes the key or URL.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_API_KEY: str = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "lmstudio"
+# Extra HTTP headers sent with every request (OpenRouter uses these for
+# attribution; harmless for local servers). Set when a cloud provider is active.
+LLM_EXTRA_HEADERS: dict = {}
+# Privacy gate. When False the pipeline must NOT transmit the receipt IMAGE to
+# the model — the LLM-OCR transcription pass and the direct-vision rescue are
+# both skipped, so only locally-extracted OCR *text* is ever sent. Used by the
+# OpenRouter "send OCR text only" mode so receipt images never leave the machine.
+LLM_ALLOW_IMAGE: bool = True
+
 # Build tag — surfaced in the web UI footer and the workbook footer so you can
 # confirm which build is actually running (handy after a `docker compose up`
 # that may have reused a stale image). Override at build time with BUILD_TAG.
@@ -282,7 +301,7 @@ def _try_load_model(model_id: str) -> bool:
     base = _api_base()
     try:
         req = urllib.request.Request(
-            f"{base}/v1/models", headers={"Authorization": "Bearer lmstudio"},
+            f"{base}/v1/models", headers={"Authorization": f"Bearer {LLM_API_KEY or 'lmstudio'}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -308,7 +327,7 @@ def list_available_models() -> list[str]:
     base = _api_base()
     try:
         req = urllib.request.Request(
-            f"{base}/v1/models", headers={"Authorization": "Bearer lmstudio"},
+            f"{base}/v1/models", headers={"Authorization": f"Bearer {LLM_API_KEY or 'lmstudio'}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -344,12 +363,25 @@ def set_llm_ocr(enabled: bool) -> bool:
     return _llm_ocr_enabled
 
 
-def _make_client() -> OpenAI:
-    """Build an LM Studio (OpenAI-compatible) client with the standard settings."""
-    return OpenAI(
-        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
+def make_client() -> OpenAI:
+    """Build the OpenAI-compatible client for the ACTIVE provider/endpoint.
+
+    Reads the module-level LMSTUDIO_BASE_URL + LLM_API_KEY (+ optional
+    LLM_EXTRA_HEADERS) so a switch between a local LM Studio server and a cloud
+    router like OpenRouter is honoured everywhere a client is built — there is no
+    second place that hard-codes ``api_key="lmstudio"``.
+    """
+    kwargs = dict(
+        base_url=LMSTUDIO_BASE_URL, api_key=(LLM_API_KEY or "lmstudio"),
         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
     )
+    if LLM_EXTRA_HEADERS:
+        kwargs["default_headers"] = dict(LLM_EXTRA_HEADERS)
+    return OpenAI(**kwargs)
+
+
+# Backwards-compatible internal alias (older call sites / tests).
+_make_client = make_client
 
 
 def warm_up_model() -> bool:
@@ -1821,7 +1853,7 @@ def _extract_receipt_with_status(
         # cross-reference both readings of the same receipt. Reasoning is forced
         # off for this transcription pass.
         llm_text = None
-        if _active_ocr_model:
+        if _active_ocr_model and LLM_ALLOW_IMAGE:
             _cb("ocr", model=_active_ocr_model)
             t_llm = time.perf_counter()
             llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
@@ -1858,6 +1890,13 @@ def _extract_receipt_with_status(
 
         # RESCUE: OCR found nothing usable (or distillation was low-confidence) —
         # let a vision-capable LLM read the image directly when one is available.
+        # Suppressed in OCR-text-only privacy mode (LLM_ALLOW_IMAGE off) so the
+        # receipt image is never transmitted — only the locally-extracted text was.
+        if not LLM_ALLOW_IMAGE:
+            _append_step(step_log, "vision", "Vision",
+                         "skipped — image not sent (OCR-text-only mode)",
+                         ok=False)
+            return None
         _cb("distilling", model=_active_distill_model)
         t_distill = time.perf_counter()
         data = _extract_with_model(client, image_path, _active_distill_model)
@@ -2510,10 +2549,7 @@ def process_receipts_batch(
     log(f"Found {total} receipt image(s).")
     log(f"  OCR model:    {_active_ocr_model or '(none — direct vision)'}")
     log(f"  Distill model: {_active_distill_model}")
-    client = openai_client if openai_client is not None else OpenAI(
-        base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
-        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
-    )
+    client = openai_client if openai_client is not None else make_client()
 
     results: list[dict] = []
     skipped: list[str]  = []

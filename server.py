@@ -405,6 +405,10 @@ def _ensure_llm_reachable() -> None:
     wins on a clean start. ``POST /llm-server/autodetect`` persists when the user
     asks for it explicitly.
     """
+    # OpenRouter is a cloud endpoint with its own auth/reachability; the
+    # localhost autodetect candidates don't apply, so never override it here.
+    if (_load_config().get("provider") or "local").strip() == "openrouter":
+        return
     current = getattr(_pr, "LMSTUDIO_BASE_URL", "") or ""
     if current and _probe_llm_url(current)[0]:
         return
@@ -426,17 +430,136 @@ def _startup_models() -> None:
     initialize_models()
 
 
-def _apply_llm_server_config(cfg: dict | None = None) -> None:
-    """Restore the persisted LLM server URL into process_receipts.LMSTUDIO_BASE_URL.
+# ── OpenRouter (cloud LLM router) integration ────────────────────────────────
+# OpenRouter exposes an OpenAI-compatible API, so the existing pipeline/clients
+# work unchanged — we just point the base URL there and authenticate with the
+# user's key. It is OPT-IN and OFF by default: selecting it sends receipt data to
+# a third-party cloud, which breaks the app's local-only default, so it is never
+# chosen automatically. The user picks it in Settings and supplies an API key.
 
-    Handles both the legacy ``llm_model_config`` key (POST /settings/llm-model)
-    and the canonical ``llm_server`` key (POST /settings/llm-server).  The
-    ``llm_server`` key wins when both are present.  Run BEFORE initialize_models
-    so the right endpoint is used on the very first model query.
+OPENROUTER_ATTR_HEADERS = {
+    "HTTP-Referer": "https://github.com/duedev/reimbursements",
+    "X-Title":      "Reimbursements",
+}
+# Token families that read receipts well and tend to ship usable free tiers —
+# used only to RANK the free vision models, never to exclude any.
+_OPENROUTER_PREFERRED = ("gemini", "qwen", "llama", "mistral", "gemma",
+                         "internvl", "pixtral", "phi")
+
+
+def _openrouter_api_key() -> str:
+    """The user's OpenRouter API key (secrets file → legacy → env)."""
+    return app_secrets.get_secret("openrouter_api_key", env="OPENROUTER_API_KEY")
+
+
+def _openrouter_default_cfg() -> dict:
+    return {"model": "auto", "send_image": True, "free_only": True,
+            "resolved_model": ""}
+
+
+def _fetch_openrouter_models(timeout: float = 6.0) -> list[dict]:
+    """GET the OpenRouter model catalogue. Returns the raw model list (or [])."""
+    headers = {"Accept": "application/json", **OPENROUTER_ATTR_HEADERS}
+    key = _openrouter_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    url = _pr.OPENROUTER_BASE_URL.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return []
+            data = json.loads(resp.read() or b"{}")
+            return data.get("data") or []
+    except Exception:
+        return []
+
+
+def _model_is_free(m: dict) -> bool:
+    """Free = zero prompt AND completion token cost (image/request cost ignored)."""
+    pricing = m.get("pricing") or {}
+    def _zero(v) -> bool:
+        try:
+            return float(v) == 0.0
+        except (TypeError, ValueError):
+            return False
+    return _zero(pricing.get("prompt")) and _zero(pricing.get("completion"))
+
+
+def _model_is_vision(m: dict) -> bool:
+    """True when the model accepts image input (needed to read receipt photos)."""
+    arch = m.get("architecture") or {}
+    mods = arch.get("input_modalities") or []
+    if isinstance(mods, list) and any("image" in str(x).lower() for x in mods):
+        return True
+    return "image" in str(arch.get("modality") or "").lower()
+
+
+def _openrouter_score(m: dict) -> tuple:
+    """Sort key (higher first): preferred family, then larger context window."""
+    mid = str(m.get("id") or "").lower()
+    ctx = m.get("context_length") or (m.get("top_provider") or {}).get("context_length") or 0
+    try:
+        ctx = int(ctx)
+    except (TypeError, ValueError):
+        ctx = 0
+    fam = 0
+    for i, tag in enumerate(_OPENROUTER_PREFERRED):
+        if tag in mid:
+            fam = len(_OPENROUTER_PREFERRED) - i
+            break
+    return (fam, ctx)
+
+
+def _openrouter_free_vision_models() -> list[dict]:
+    """Free, image-capable OpenRouter models, best first. [] when offline/no key."""
+    models = _fetch_openrouter_models()
+    free_vision = [m for m in models if _model_is_free(m) and _model_is_vision(m)]
+    free_vision.sort(key=_openrouter_score, reverse=True)
+    return free_vision
+
+
+def _openrouter_autopick() -> str:
+    """Resolve the single best free vision model id (or '' if none reachable)."""
+    cands = _openrouter_free_vision_models()
+    return str(cands[0].get("id") or "") if cands else ""
+
+
+def _reset_local_llm_runtime() -> None:
+    """Restore local-server client defaults: no cloud key/headers, image allowed."""
+    _pr.LLM_API_KEY = os.getenv("LLM_API_KEY") or "lmstudio"
+    _pr.LLM_EXTRA_HEADERS = {}
+    _pr.LLM_ALLOW_IMAGE = True
+
+
+def _apply_openrouter_config(cfg: dict) -> None:
+    """Point the inference client at OpenRouter for this session (per cfg)."""
+    orc = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
+    key = _openrouter_api_key()
+    _pr.LMSTUDIO_BASE_URL = _pr.OPENROUTER_BASE_URL
+    _pr.LLM_API_KEY       = key or "lmstudio"
+    _pr.LLM_EXTRA_HEADERS = dict(OPENROUTER_ATTR_HEADERS)
+    _pr.LLM_ALLOW_IMAGE   = bool(orc.get("send_image", True))
+    model = (orc.get("resolved_model") or "").strip()
+    if not model:
+        chosen = str(orc.get("model") or "").strip()
+        if chosen and chosen != "auto":
+            model = chosen
+    if model:
+        _pr.set_active_model(model)
+
+
+def _apply_local_llm_config(cfg: dict) -> None:
+    """Restore the persisted LOCAL server URL into process_receipts.LMSTUDIO_BASE_URL.
+
+    Handles the legacy ``llm_model_config`` key (Configure Model dialog) and the
+    canonical ``llm_server`` key (LLM Server card); ``llm_server`` wins. An
+    EXPLICIT ``server_type: custom`` selection is always honoured — even with a
+    blank URL it resolves to the localhost default, NEVER silently to the bundled
+    docker URL. (That old fall-through is what stranded users on :11434.)
     """
-    cfg = cfg if cfg is not None else _load_config()
+    _reset_local_llm_runtime()
 
-    # Legacy key written by POST /settings/llm-model
     llm_model_cfg = cfg.get("llm_model_config") or {}
     if llm_model_cfg.get("model_id"):
         _pr.set_active_model(str(llm_model_cfg["model_id"]))
@@ -446,14 +569,33 @@ def _apply_llm_server_config(cfg: dict | None = None) -> None:
     elif llm_model_cfg.get("base_url"):
         _legacy_url = _normalize_llm_url(str(llm_model_cfg["base_url"]))
 
-    # Canonical key written by POST /settings/llm-server (overrides legacy)
-    llm_srv = cfg.get("llm_server") or {}
-    if llm_srv.get("server_type") == "docker":
+    llm_srv  = cfg.get("llm_server") or {}
+    srv_type = llm_srv.get("server_type")
+    if srv_type == "docker":
         _pr.LMSTUDIO_BASE_URL = _docker_llm_url()
+    elif srv_type == "custom":
+        _pr.LMSTUDIO_BASE_URL = (_normalize_llm_url(str(llm_srv["base_url"]))
+                                 if llm_srv.get("base_url")
+                                 else "http://127.0.0.1:1234/v1")
     elif llm_srv.get("base_url"):
         _pr.LMSTUDIO_BASE_URL = _normalize_llm_url(str(llm_srv["base_url"]))
     elif _legacy_url:
         _pr.LMSTUDIO_BASE_URL = _legacy_url
+
+
+def _apply_llm_server_config(cfg: dict | None = None) -> None:
+    """Restore the active LLM provider/endpoint before any model query.
+
+    Dispatches on ``cfg['provider']`` — ``"local"`` (default: LM Studio / custom
+    URL / bundled docker) or ``"openrouter"`` (cloud router). Kept under this name
+    because the startup path and the test-suite call it. Run BEFORE
+    initialize_models so the very first query uses the right endpoint + key.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    if (cfg.get("provider") or "local").strip() == "openrouter":
+        _apply_openrouter_config(cfg)
+    else:
+        _apply_local_llm_config(cfg)
 
 
 def _persist_model_config() -> None:
@@ -698,8 +840,7 @@ def _drain_once() -> bool:
 
     _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
     _batch_t0 = time.perf_counter()
-    client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
-                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
+    client = _pr.make_client()
 
     def _gated_extract(*args):
         # The pool is sized to a fixed ceiling; this gate enforces the live
@@ -2770,30 +2911,32 @@ async def kanban_remove(body: RetryRequest):
 
 @app.get("/models/available")
 async def get_available_models():
-    """List all models loaded in LM Studio — for the model selector UI."""
+    """List models for the local model selector UI.
+
+    For the OpenRouter provider the catalogue is hundreds of entries and lives in
+    its own selector (``/models/openrouter``), so here we just echo the resolved
+    active model rather than flooding the local dropdown.
+    """
+    provider = (_load_config().get("provider") or "local").strip()
+    base = {
+        "active_distill": _pr._active_distill_model,
+        "active_ocr":     _pr._active_ocr_model,
+        "llm_ocr":        _pr._llm_ocr_enabled,
+        "thinking":       _pr._thinking_enabled,
+        "provider":       provider,
+    }
+    if provider == "openrouter":
+        active = _pr._active_distill_model
+        return JSONResponse({**base, "models": [active] if active else [], "ok": True})
+
     def _fetch():
         return list_available_models()
 
     try:
         models = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return JSONResponse({
-            "models":         models,
-            "active_distill": _pr._active_distill_model,
-            "active_ocr":     _pr._active_ocr_model,
-            "llm_ocr":        _pr._llm_ocr_enabled,
-            "thinking":       _pr._thinking_enabled,
-            "ok":             True,
-        })
+        return JSONResponse({**base, "models": models, "ok": True})
     except Exception as exc:
-        return JSONResponse({
-            "models":         [],
-            "active_distill": _pr._active_distill_model,
-            "active_ocr":     _pr._active_ocr_model,
-            "llm_ocr":        _pr._llm_ocr_enabled,
-            "thinking":       _pr._thinking_enabled,
-            "ok":             False,
-            "error":          str(exc),
-        })
+        return JSONResponse({**base, "models": [], "ok": False, "error": str(exc)})
 
 
 class ModelSwapRequest(BaseModel):
@@ -2849,8 +2992,7 @@ async def set_thinking(body: ThinkingRequest):
 @app.get("/models/lmstudio")
 async def get_lmstudio_models():
     def _fetch():
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
-                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
+        client = _pr.make_client()
         response = client.models.list()
         return [m.id for m in response.data]
 
@@ -2895,20 +3037,39 @@ async def set_llm_model_config(request: Request):
 
 @app.get("/settings/llm-server")
 async def get_llm_server_settings():
-    """Return current LLM server configuration."""
+    """Return the current LOCAL LLM server configuration.
+
+    ``base_url`` is the CONFIGURED endpoint (what the user saved) so the UI shows
+    the user's own choice — not whatever session-only fallback the startup probe
+    may have adopted. ``effective_base_url`` is the in-memory endpoint actually in
+    use, returned separately for transparency (they differ only when the saved
+    server was unreachable at startup and a temporary fallback was adopted).
+    """
     cfg = _load_config()
     llm_srv = cfg.get("llm_server") or {}
+    server_type = llm_srv.get("server_type", "custom")
+    if server_type == "docker":
+        configured = _docker_llm_url()
+    elif llm_srv.get("base_url"):
+        configured = _normalize_llm_url(str(llm_srv["base_url"]))
+    else:
+        configured = "http://127.0.0.1:1234/v1"
     return JSONResponse({
-        "server_type": llm_srv.get("server_type", "custom"),
-        # Always return the effective (normalized) URL so the UI reflects
-        # what the server is actually using, not the raw stored value.
-        "base_url":    getattr(_pr, "LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
+        "server_type":        server_type,
+        "base_url":           configured,
+        "effective_base_url": getattr(_pr, "LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
+        "provider":           (cfg.get("provider") or "local").strip(),
     })
 
 
 @app.post("/settings/llm-server")
 async def set_llm_server(request: Request):
-    """Update the LLM server URL used for model queries and inference."""
+    """Update the LOCAL LLM server URL used for model queries and inference.
+
+    Choosing a local URL also switches the active provider back to ``local`` (off
+    any cloud provider). The saved value is what the user typed; reachability is
+    probed and returned so the UI can warn WITHOUT silently rewriting the choice.
+    """
     body = await request.json()
     server_type = str(body.get("server_type", "custom")).strip()
     base_url    = str(body.get("base_url", "")).strip()
@@ -2920,12 +3081,125 @@ async def set_llm_server(request: Request):
     else:
         effective_url = "http://127.0.0.1:1234/v1"
 
+    _reset_local_llm_runtime()
     _pr.LMSTUDIO_BASE_URL = effective_url
 
     cfg = _load_config()
+    cfg["provider"]   = "local"
     cfg["llm_server"] = {"server_type": server_type, "base_url": base_url}
     _save_config(cfg)
-    return JSONResponse({"ok": True, "base_url": effective_url})
+    reachable = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _probe_llm_url(effective_url)[0])
+    return JSONResponse({"ok": True, "base_url": effective_url,
+                         "reachable": reachable})
+
+
+# ── Unified LLM provider settings (local server vs. OpenRouter cloud) ──────────
+
+@app.get("/settings/llm-provider")
+async def get_llm_provider():
+    """Return the full LLM-provider configuration for the Settings UI."""
+    cfg      = _load_config()
+    provider = (cfg.get("provider") or "local").strip()
+    orc      = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
+    llm_srv  = cfg.get("llm_server") or {}
+    return JSONResponse({
+        "provider": provider,
+        "local": {
+            "server_type": llm_srv.get("server_type", "custom"),
+            "base_url":    llm_srv.get("base_url", "") or "",
+        },
+        "openrouter": {
+            "model":          orc.get("model", "auto"),
+            "resolved_model": orc.get("resolved_model", ""),
+            "send_image":     bool(orc.get("send_image", True)),
+            "free_only":      bool(orc.get("free_only", True)),
+            "has_key":        bool(_openrouter_api_key()),
+        },
+        "effective_base_url": getattr(_pr, "LMSTUDIO_BASE_URL", ""),
+        "active_model":       _pr._active_distill_model,
+    })
+
+
+@app.post("/settings/llm-provider")
+async def set_llm_provider(request: Request):
+    """Switch the active LLM provider and persist its settings.
+
+    ``provider`` is ``"local"`` or ``"openrouter"``. For OpenRouter, an optional
+    ``api_key`` is stored as a secret (blank keeps the existing key), and a
+    ``model`` of ``"auto"`` is resolved to the best free vision-capable model.
+    The ``send_image`` flag chooses between sending the receipt image (better
+    accuracy) and OCR-text-only (the image never leaves the machine).
+    """
+    body     = await request.json()
+    provider = (str(body.get("provider", "local")).strip() or "local")
+    cfg      = _load_config()
+    cfg["provider"] = provider
+
+    # OpenRouter API key is a secret; a blank/absent value keeps the saved one.
+    if "api_key" in body:
+        key = str(body.get("api_key") or "").strip()
+        if key:
+            app_secrets.save_secret("openrouter_api_key", key)
+
+    if provider != "openrouter":
+        _save_config(cfg)
+        _apply_local_llm_config(cfg)
+        return JSONResponse({"ok": True, "provider": "local",
+                             "base_url": _pr.LMSTUDIO_BASE_URL})
+
+    orc = {**_openrouter_default_cfg(), **(cfg.get("openrouter") or {})}
+    if "model" in body:
+        orc["model"] = (str(body.get("model") or "auto").strip() or "auto")
+    if "send_image" in body:
+        orc["send_image"] = bool(body.get("send_image"))
+    if "free_only" in body:
+        orc["free_only"] = bool(body.get("free_only"))
+
+    if orc["model"] == "auto":
+        orc["resolved_model"] = await asyncio.get_event_loop().run_in_executor(
+            None, _openrouter_autopick)
+    else:
+        orc["resolved_model"] = orc["model"]
+
+    cfg["openrouter"] = orc
+    _save_config(cfg)
+    _apply_openrouter_config(cfg)
+
+    has_key = bool(_openrouter_api_key())
+    warning = None
+    if not has_key:
+        warning = "No OpenRouter API key set — add your key to use the cloud provider."
+    elif orc["model"] == "auto" and not orc["resolved_model"]:
+        warning = "Could not reach OpenRouter to auto-select a model — check your key/connection."
+    return JSONResponse({
+        "ok":             has_key,
+        "provider":       "openrouter",
+        "resolved_model": orc["resolved_model"],
+        "send_image":     orc["send_image"],
+        "free_only":      orc["free_only"],
+        "has_key":        has_key,
+        "warning":        warning,
+        "base_url":       _pr.LMSTUDIO_BASE_URL,
+    })
+
+
+@app.get("/models/openrouter")
+async def get_openrouter_models():
+    """List free, image-capable OpenRouter models (best first) for the selector."""
+    loop   = asyncio.get_event_loop()
+    models = await loop.run_in_executor(None, _openrouter_free_vision_models)
+    out = [{
+        "id":             m.get("id"),
+        "name":           m.get("name") or m.get("id"),
+        "context_length": m.get("context_length"),
+    } for m in models if m.get("id")]
+    return JSONResponse({
+        "ok":       True,
+        "has_key":  bool(_openrouter_api_key()),
+        "count":    len(out),
+        "models":   out,
+    })
 
 
 # ── LLM server control endpoints (Feature 11) ─────────────────────────────────
@@ -2971,8 +3245,10 @@ async def llm_server_autodetect():
             "base_url": getattr(_pr, "LMSTUDIO_BASE_URL", ""),
             "tried":    _candidate_llm_urls(),
         })
+    _reset_local_llm_runtime()
     _pr.LMSTUDIO_BASE_URL = found
     cfg = _load_config()
+    cfg["provider"]   = "local"
     cfg["llm_server"] = {"server_type": "custom", "base_url": found}
     _save_config(cfg)
     # Re-adopt a model now that we have a live endpoint (best-effort, off-thread).
@@ -3952,8 +4228,7 @@ async def watch_send_email():
     try:
         from watch_mode import load_state, send_report
         state  = load_state()
-        client = OpenAI(base_url=_pr.LMSTUDIO_BASE_URL, api_key="lmstudio",
-                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
+        client = _pr.make_client()
         result = send_report(state, client=client)
         status = 200 if result.get("ok") else 503
         return JSONResponse(result, status_code=status)
