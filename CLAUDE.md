@@ -103,6 +103,34 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
   **auto-refresh** (on opening Settings + every 30s while Settings is visible,
   unless a dropdown is focused).
 
+### Cloud LLM fallback chain (Gemini → Mistral → LM Studio)
+
+- Extraction can fall back across multiple OpenAI-compatible endpoints, tried in
+  order: **Gemini Flash-Lite → Mistral → local LM Studio**. A cloud provider is
+  only tried when its API key is set; LM Studio is always the final fallback, so a
+  keyless install behaves exactly as before. If every provider errors, callers fall
+  through to the offline regex parser unchanged (the chain only changes *where* the
+  model call goes).
+- `process_receipts.make_llm_client()` builds the chain: returns the plain local
+  client when no cloud provider is active, else a `_FallbackClient` whose
+  `.chat.completions.create(...)` iterates providers, substituting each provider's
+  own model and stripping LM-Studio-only params (`extra_body`/thinking,
+  `frequency_penalty`) for cloud (`_sanitize_create_kwargs`). **The three extraction
+  functions (`_unified_distillation`, `_extract_with_model`, `_extract_raw_ocr`) are
+  unchanged** — the wrapper mimics the OpenAI client. The worker (`server._drain_once`)
+  and `/watch/send-email` call `make_llm_client()`; warm-up still targets LM Studio
+  only (no cloud quota burned).
+- Config: cloud providers are module globals (`_CLOUD_PROVIDERS`, seeded from
+  `GEMINI_API_KEY`/`GEMINI_MODEL`/`MISTRAL_API_KEY`/`MISTRAL_MODEL` env). Runtime:
+  `configure_providers(specs)`, `provider_status()`, `active_provider_names()`.
+  Endpoints `GET/POST /settings/llm-providers`; non-secret settings (model, enabled)
+  persist in `cfg["llm_providers"]`, **API keys go to the secrets store**
+  (`app_secrets`, never the cloud-syncable config). `_apply_provider_config()` restores
+  on startup (in lifespan, before `initialize_models`). UI: "Cloud LLM Fallback"
+  sub-card in the AI Models card (`loadProviders()` / `#providers-save-btn`).
+- 429-aware backoff is the OpenAI SDK's built-in retry (`LLM_MAX_RETRIES`, honours
+  Retry-After); once a provider is exhausted the chain moves to the next.
+
 ## Job-field placeholders
 
 When a batch has no job name/number, receipts are stamped with the literal
@@ -175,6 +203,35 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-17 (free cloud deploy — Oracle Always Free + Caddy):** Added a
+  production deploy path for hosting the Docker image free, 24/7. `docker-compose.prod.yml`
+  is an overlay (`-f docker-compose.yml -f docker-compose.prod.yml`) that adds a
+  **Caddy** reverse-proxy service for automatic Let's Encrypt HTTPS in front of the
+  app (only Caddy's 80/443 are public; the app stays on the internal compose network
+  as `receipt-processor:8000`), forces `APP_AUTH_TOKEN` (`:?` guard), and wires the
+  cloud LLM keys. `Caddyfile` proxies with `flush_interval -1` so SSE streams
+  unbuffered. `DEPLOY_ORACLE.md` is the step-by-step for an Oracle Cloud Always-Free
+  Ampere A1 (ARM) VM — build happens on the VM so aarch64 wheels are pulled natively;
+  the LM Studio tier is inert in cloud (chain = Gemini → Mistral → offline parser).
+  Docs/compose only — no app code or tests changed.
+
+- **2026-06-17 (cloud LLM fallback chain — Gemini → Mistral → LM Studio):** Extraction
+  can now fall back across multiple OpenAI-compatible providers instead of only the
+  local LM Studio endpoint. `process_receipts.make_llm_client()` returns a
+  `_FallbackClient` that mimics the OpenAI client (`.chat.completions.create`) and
+  tries each active provider in order — substituting that provider's own model and
+  stripping LM-Studio-only params for cloud (`_sanitize_create_kwargs`) — so the three
+  extraction functions are **unchanged**. Cloud providers (`_CLOUD_PROVIDERS`, seeded
+  from `GEMINI_*`/`MISTRAL_*` env) are only tried when their API key is set; LM Studio
+  is always last, and an all-fail still drops to the offline parser. New
+  `GET/POST /settings/llm-providers` (`configure_providers`/`provider_status`,
+  `_apply_provider_config`/`_persist_provider_config`, restored in lifespan); **API
+  keys persist in the secrets store**, model/enabled in `cfg["llm_providers"]`. The
+  worker and `/watch/send-email` call `make_llm_client()`; warm-up stays LM-Studio-only.
+  UI: "Cloud LLM Fallback" sub-card in the AI Models card (`loadProviders()`).
+  429-aware backoff = the OpenAI SDK's built-in retry. `tests/test_llm_fallback.py`
+  (+17). `.env.example` documents `GEMINI_API_KEY`/`MISTRAL_API_KEY`. Suite now **451**.
 
 - **2026-06-16 (docs sync — no code changes):** Brought the Markdown docs back in
   line with the code (no behavior changed):
