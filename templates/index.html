@@ -1688,44 +1688,6 @@
       </div>
     </div>
 
-    <!-- Cloud LLM fallback chain — tried before the local model, in order -->
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Cloud LLM Fallback</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">
-        Receipts are read by the first provider that responds, falling back in order.
-        Leave the keys blank to stay fully local. Free tiers rate-limit, so a 429 just
-        moves to the next provider.
-      </div>
-      <div id="provider-chain" style="font-size:12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-        <span style="color:var(--muted)">Loading chain…</span>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="checkbox" id="gemini-enabled" checked> Gemini (primary)
-        </label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="password" id="gemini-key" placeholder="GEMINI_API_KEY (blank = keep)" autocomplete="off" style="flex:2;min-width:160px">
-          <input type="text" id="gemini-model" placeholder="gemini-2.5-flash-lite" style="flex:1;min-width:140px">
-        </div>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">
-        <label class="check-label" style="font-size:12px;gap:6px">
-          <input type="checkbox" id="mistral-enabled" checked> Mistral (secondary)
-        </label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="password" id="mistral-key" placeholder="MISTRAL_API_KEY (blank = keep)" autocomplete="off" style="flex:2;min-width:160px">
-          <input type="text" id="mistral-model" placeholder="mistral-small-latest" style="flex:1;min-width:140px">
-        </div>
-      </div>
-
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-outline-accent btn-sm" id="providers-save-btn">Save providers</button>
-        <span id="providers-save-msg" style="font-size:11px;color:var(--muted)"></span>
-      </div>
-    </div>
-
     <!-- Docker LLM server controls — only useful when the bundled model-server is in play -->
     <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
@@ -2366,7 +2328,6 @@ function switchTab(name) {
     if (typeof loadLLMServerSettings === 'function') loadLLMServerSettings();
     if (typeof loadLLMProvider === 'function') loadLLMProvider();
     if (typeof checkLLMStatus === 'function') checkLLMStatus();
-    if (typeof loadProviders === 'function') loadProviders();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -4268,63 +4229,6 @@ document.getElementById('llm-server-save-btn').addEventListener('click', async (
       showToast(`Error: ${d.error || 'unknown'}`, false);
     }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
-});
-
-// ── Cloud LLM fallback chain (Gemini → Mistral → LM Studio) ──────────────────
-async function loadProviders() {
-  try {
-    const d = await (await fetch('/settings/llm-providers')).json();
-    const chain = d.providers || [];
-    chain.forEach(p => {
-      const mEl = document.getElementById(`${p.name}-model`);
-      const eEl = document.getElementById(`${p.name}-enabled`);
-      if (mEl && p.model) mEl.value = p.model;
-      if (eEl) eEl.checked = p.enabled;
-    });
-    const wrap = document.getElementById('provider-chain');
-    if (wrap) {
-      const label = {gemini:'Gemini', mistral:'Mistral', lmstudio:'LM Studio'};
-      wrap.innerHTML = chain.map(p => {
-        const note = (p.name === 'lmstudio' || p.active) ? ''
-                   : (p.enabled ? ' (no key)' : ' (off)');
-        const color = p.active ? 'var(--accent)' : 'var(--muted)';
-        return `<span style="color:${color};font-weight:${p.active?600:400}">`
-             + `${label[p.name] || p.name}${note}</span>`;
-      }).join('<span style="color:var(--muted)"> → </span>');
-    }
-  } catch (e) { /* card not open / offline — ignore */ }
-}
-
-document.getElementById('providers-save-btn').addEventListener('click', async () => {
-  const body = {
-    gemini: {
-      enabled: document.getElementById('gemini-enabled').checked,
-      model:   document.getElementById('gemini-model').value.trim(),
-      api_key: document.getElementById('gemini-key').value.trim(),
-    },
-    mistral: {
-      enabled: document.getElementById('mistral-enabled').checked,
-      model:   document.getElementById('mistral-model').value.trim(),
-      api_key: document.getElementById('mistral-key').value.trim(),
-    },
-  };
-  const msg = document.getElementById('providers-save-msg');
-  try {
-    const d = await (await fetch('/settings/llm-providers', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    })).json();
-    if (d.ok) {
-      // Don't leave the secret on screen or resubmit it as the masked value.
-      document.getElementById('gemini-key').value = '';
-      document.getElementById('mistral-key').value = '';
-      if (msg) { msg.textContent = 'Saved'; setTimeout(() => { msg.textContent = ''; }, 2500); }
-      showToast('Cloud LLM providers saved', true);
-      loadProviders();
-    } else {
-      showToast('Error saving providers', false);
-    }
-  } catch (e) { showToast('Error: ' + e.message, false); }
 });
 
 document.getElementById('llm-start-btn').addEventListener('click', async () => {

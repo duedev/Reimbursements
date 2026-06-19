@@ -12,12 +12,11 @@
 # never public).
 #
 # Required host env (put them in a `.env` file next to this one):
-#   APP_AUTH_TOKEN  — long random string; every request must present it
-#   APP_DOMAIN      — the hostname pointed at this VM (e.g. a free DuckDNS subdomain)
-#   GEMINI_API_KEY  — optional; free-tier key enables the Gemini fallback
-#   MISTRAL_API_KEY — optional; free-tier key enables the Mistral fallback
-# (The local LM Studio tier is inert in the cloud, so the chain is effectively
-#  Gemini → Mistral → offline parser.)
+#   APP_AUTH_TOKEN     — long random string; every request must present it
+#   APP_DOMAIN         — the hostname pointed at this VM (e.g. a free DuckDNS subdomain)
+#   OPENROUTER_API_KEY — optional; free-tier key enables OpenRouter cloud extraction
+# (There's no local LM Studio in the cloud, so extraction uses the OpenRouter free
+#  router when a key is set, and falls through to the offline parser otherwise.)
 
 services:
   receipt-processor:
@@ -25,11 +24,9 @@ services:
       # REQUIRED before exposing to the internet — the :? makes compose refuse to
       # start if it's unset, so you can't accidentally publish an open instance.
       - APP_AUTH_TOKEN=${APP_AUTH_TOKEN:?set APP_AUTH_TOKEN in .env before deploying}
-      # Cloud LLM fallback keys (free tiers). Blank = that provider is skipped.
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash-lite}
-      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
-      - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-small-latest}
+      # OpenRouter cloud key (free tier). Blank = no cloud LLM (offline parser only).
+      # On a fresh install this zero-click selects the OpenRouter free router.
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
 
   caddy:
     image: caddy:2-alpine

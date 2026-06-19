@@ -136,38 +136,12 @@ Order matters (see `BLUEPRINT.md` §5). Current flow:
   and Settings → Image Processing → *Advanced tuning*: `llm_timeout`,
   `llm_max_retries`, `store_max_px`, `pdf_max_pages`, `max_upload_mb`.
 
-### Cloud LLM fallback chain (Gemini → Mistral → LM Studio)
-
-- **Relationship to the provider seam above:** the fallback chain and the
-  local/OpenRouter provider selection coexist. `make_llm_client()` builds the cloud
-  chain when any cloud provider (Gemini/Mistral) is configured, and its **final tier
-  is `make_client()`** — so the chain ends at whichever local/OpenRouter provider is
-  active. With no cloud provider configured it returns `make_client()` directly, so a
-  keyless install behaves exactly as before. The worker and `/watch/send-email` call
-  `make_llm_client()`.
-- Extraction can fall back across multiple OpenAI-compatible endpoints, tried in
-  order: **Gemini Flash-Lite → Mistral → local (make_client)**. A cloud provider is
-  only tried when its API key is set. If every provider errors, callers fall
-  through to the offline regex parser unchanged (the chain only changes *where* the
-  model call goes).
-- `process_receipts.make_llm_client()` builds the chain: returns the plain
-  `make_client()` client when no cloud provider is active, else a `_FallbackClient`
-  whose `.chat.completions.create(...)` iterates providers, substituting each
-  provider's own model and stripping LM-Studio-only params (`extra_body`/thinking,
-  `frequency_penalty`) for cloud (`_sanitize_create_kwargs`). **The three extraction
-  functions (`_unified_distillation`, `_extract_with_model`, `_extract_raw_ocr`) are
-  unchanged** — the wrapper mimics the OpenAI client. Warm-up still targets the local
-  endpoint only (no cloud quota burned).
-- Config: cloud providers are module globals (`_CLOUD_PROVIDERS`, seeded from
-  `GEMINI_API_KEY`/`GEMINI_MODEL`/`MISTRAL_API_KEY`/`MISTRAL_MODEL` env). Runtime:
-  `configure_providers(specs)`, `provider_status()`, `active_provider_names()`.
-  Endpoints `GET/POST /settings/llm-providers`; non-secret settings (model, enabled)
-  persist in `cfg["llm_providers"]`, **API keys go to the secrets store**
-  (`app_secrets`, never the cloud-syncable config). `_apply_provider_config()` restores
-  on startup (in lifespan, before `initialize_models`). UI: "Cloud LLM Fallback"
-  sub-card in the AI Models card (`loadProviders()` / `#providers-save-btn`).
-- 429-aware backoff is the OpenAI SDK's built-in retry (`LLM_MAX_RETRIES`, honours
-  Retry-After); once a provider is exhausted the chain moves to the next.
+> **Single cloud path = OpenRouter.** The old multi-provider Gemini → Mistral →
+> LM Studio fallback chain was removed (it duplicated the no-cost goal that the
+> OpenRouter free router already meets autonomously). There is now exactly one
+> cloud option — OpenRouter — selected via the `provider` key above; everything
+> goes through `make_client()`. There is no `make_llm_client`, `_CLOUD_PROVIDERS`,
+> `_FallbackClient`, `/settings/llm-providers`, or per-provider keys any more.
 
 ## Job-field placeholders
 
@@ -245,6 +219,30 @@ user input, never the placeholder.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-19 (merge main into dev + drop the Gemini/Mistral fallback chain):** Merged
+  `origin/main` (which had independently added a Gemini → Mistral → LM Studio cloud
+  fallback chain) into `dev`, then **removed that chain entirely** — the OpenRouter free
+  router already meets the no-cost goal autonomously, so the multi-provider chain was
+  redundant. There is now **one** cloud option: OpenRouter, via the `provider` key, with
+  everything routed through `process_receipts.make_client()`.
+  * **process_receipts.py** — deleted `make_llm_client`, `_CLOUD_PROVIDERS`,
+    `_CLOUD_SAFE_PARAMS`, `_active_cloud_providers`, `configure_providers`,
+    `provider_status`, `active_provider_names`, `_sanitize_create_kwargs`,
+    `_FallbackCompletions`/`_FallbackChat`/`_FallbackClient`, and the
+    `GEMINI_*`/`MISTRAL_*` globals.
+  * **server.py** — removed `_PROVIDER_ENV`, `_apply_provider_config`,
+    `_persist_provider_config`, the `GET/POST /settings/llm-providers` endpoints, and
+    the lifespan restore call. The worker (`_drain_once`) and `/watch/send-email` now
+    call `make_client()` directly.
+  * **UI** — removed the "Cloud LLM Fallback" sub-card, `loadProviders()`, and the
+    `#providers-save-btn`/`#provider-chain`/`#gemini-*`/`#mistral-*` elements. The
+    OpenRouter provider panel (`loadLLMProvider`) is unchanged.
+  * **Docs/deploy** — `.env.example` and `CLAUDE.md` drop the chain; the Oracle free
+    deploy (`DEPLOY_ORACLE.md` / `docker-compose.prod.yml`) now wires
+    `OPENROUTER_API_KEY` instead of `GEMINI/MISTRAL` keys.
+  * **Tests** — deleted `tests/test_llm_fallback.py` (the chain's 17 tests). Suite
+    **483 → 466** green (merge union was 483; −17 chain tests).
 
 - **2026-06-19 (LLM provider rework + OpenRouter + settings completeness + multi-user plan):**
   Suite **434 → 455** green. Branch consolidated to `dev` (one persistent dev branch

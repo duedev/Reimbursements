@@ -132,9 +132,10 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 `docker-compose.prod.yml` overlays a **Caddy** reverse proxy (automatic Let's
 Encrypt certificates) in front of the app — only Caddy's 80/443 are public — and
 forces `APP_AUTH_TOKEN`. Building on the ARM VM pulls the `aarch64` wheels
-natively, so there's nothing to cross-compile. In the cloud the local LM Studio
-tier is inert, so extraction runs the **Gemini → Mistral → offline parser** chain
-(set at least one free cloud key). **Full step-by-step: [`DEPLOY_ORACLE.md`](DEPLOY_ORACLE.md).**
+natively, so there's nothing to cross-compile. In the cloud there's no local LM
+Studio, so extraction uses the **OpenRouter** free router (set `OPENROUTER_API_KEY`);
+without a key it falls through to the **offline parser**. **Full step-by-step:
+[`DEPLOY_ORACLE.md`](DEPLOY_ORACLE.md).**
 
 ---
 

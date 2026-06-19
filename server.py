@@ -338,46 +338,6 @@ def _apply_model_config(cfg: dict | None = None) -> None:
         _pr.set_active_model(str(models["active"]))
 
 
-# Cloud provider env-var names, keyed by provider name. API keys resolve via the
-# secrets store first (set in the UI), then these env vars — never from the
-# (possibly cloud-synced) app config.
-_PROVIDER_ENV = {"gemini": "GEMINI_API_KEY", "mistral": "MISTRAL_API_KEY"}
-
-
-def _apply_provider_config(cfg: dict | None = None) -> None:
-    """Restore the cloud LLM fallback chain (Gemini → Mistral → LM Studio).
-
-    Non-secret settings (model id, enabled flag) come from the app config; the
-    API keys come from the secrets store or environment, never from the config
-    file. Run BEFORE initialize_models so a saved chain is live for the first batch.
-    """
-    cfg = cfg if cfg is not None else _load_config()
-    prov = cfg.get("llm_providers") or {}
-    specs = []
-    for name, env in _PROVIDER_ENV.items():
-        block = prov.get(name) or {}
-        spec = {"name": name}
-        if "model" in block:
-            spec["model"] = str(block["model"]).strip()
-        if "enabled" in block:
-            spec["enabled"] = bool(block["enabled"])
-        key = app_secrets.get_secret(f"{name}_api_key", env=env)
-        if key:
-            spec["api_key"] = key
-        specs.append(spec)
-    _pr.configure_providers(specs)
-
-
-def _persist_provider_config() -> None:
-    """Save the non-secret part of the cloud fallback chain (models + toggles)."""
-    cfg = _load_config()
-    cfg["llm_providers"] = {
-        p["name"]: {"model": p.get("model", ""), "enabled": bool(p.get("enabled", True))}
-        for p in _pr._CLOUD_PROVIDERS
-    }
-    _save_config(cfg)
-
-
 def _normalize_llm_url(url: str) -> str:
     """Ensure the URL ends with /v1 (OpenAI-compatible path)."""
     url = url.rstrip("/")
@@ -1005,11 +965,9 @@ def _drain_once() -> bool:
 
     _broadcast({"type": "log", "message": f"[worker] Processing {len(batch)} receipt(s)…"})
     _batch_t0 = time.perf_counter()
-    # Extraction goes through the cloud fallback chain (Gemini → Mistral → …)
-    # when any cloud provider is configured; its final tier is make_client(),
-    # which itself honours the active local/OpenRouter provider selection.
-    # Snapshotted once per batch — config is stable mid-batch.
-    client = _pr.make_llm_client()
+    # Build the extraction client for the active provider (local LM Studio or
+    # OpenRouter). Snapshotted once per batch — config is stable mid-batch.
+    client = _pr.make_client()
 
     def _gated_extract(*args):
         # The pool is sized to a fixed ceiling; this gate enforces the live
@@ -1616,7 +1574,6 @@ async def lifespan(app: FastAPI):
     _first_run_provider_default()  # zero-click OpenRouter free router if a key is set & nothing chosen
     _apply_llm_server_config()   # restore LLM server URL before any model query
     _apply_model_config()        # restore saved single-model choice before auto-select
-    _apply_provider_config()     # restore cloud LLM fallback chain (keys from secrets/env)
     # Session-start housekeeping: sweep away empty, non-active orphaned folders
     # (collapsed dated/job subfolders, leftover _pdf_*/_upload_* staging) left
     # behind by a previous run before the new session starts handing out work.
@@ -3378,45 +3335,6 @@ async def get_openrouter_models():
     })
 
 
-# ── Cloud LLM provider fallback chain (Gemini → Mistral → LM Studio) ───────────
-
-@app.get("/settings/llm-providers")
-async def get_llm_providers():
-    """Report the extraction fallback chain (no API keys — just live/configured)."""
-    return JSONResponse({"providers": _pr.provider_status()})
-
-
-@app.post("/settings/llm-providers")
-async def set_llm_providers(request: Request):
-    """Update the cloud fallback chain. Body: {gemini:{api_key,model,enabled}, mistral:{…}}.
-
-    API keys are written to the secrets store (never the cloud-syncable config);
-    a blank/omitted api_key leaves the stored key unchanged. Model + enabled flag
-    persist in the config and apply immediately to the next batch.
-    """
-    body = await request.json()
-    specs = []
-    for name, env in _PROVIDER_ENV.items():
-        block = body.get(name)
-        if not isinstance(block, dict):
-            continue
-        spec = {"name": name}
-        if "model" in block:
-            spec["model"] = str(block.get("model") or "").strip()
-        if "enabled" in block:
-            spec["enabled"] = bool(block.get("enabled"))
-        # Only touch the key when a non-blank one is supplied, so submitting the
-        # form with an empty (masked) field doesn't wipe an already-saved key.
-        key = str(block.get("api_key") or "").strip()
-        if key:
-            app_secrets.save_secret(f"{name}_api_key", key)
-            spec["api_key"] = key
-        specs.append(spec)
-    _pr.configure_providers(specs)
-    _persist_provider_config()
-    return JSONResponse({"ok": True, "providers": _pr.provider_status()})
-
-
 # ── LLM server control endpoints (Feature 11) ─────────────────────────────────
 
 @app.get("/llm-server/status")
@@ -4458,7 +4376,7 @@ async def watch_send_email():
     try:
         from watch_mode import load_state, send_report
         state  = load_state()
-        client = _pr.make_llm_client()
+        client = _pr.make_client()
         result = send_report(state, client=client)
         status = 200 if result.get("ok") else 503
         return JSONResponse(result, status_code=status)
