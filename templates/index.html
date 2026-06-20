@@ -1733,6 +1733,22 @@
       <div id="llm-url-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
     </div>
 
+    <!-- LLM-OCR cross-reference toggle — lives in the COMMON area (above the
+         per-mode sections) so it's available in OpenRouter, On-host AND Docker. -->
+    <div id="ocr-toggle-row" style="margin-bottom:12px;display:flex;flex-direction:column;gap:5px">
+      <label class="check-label" id="ocr-toggle-label" style="font-size:12px;color:var(--muted);gap:7px"
+             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower).">
+        <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
+        <input type="checkbox" id="ocr-toggle">
+        Also use this model for OCR <span style="font-weight:400">(cross-reference — slower)</span>
+      </label>
+      <div style="font-size:11px;line-height:1.5;color:var(--muted);padding-left:26px">
+        Off by default. A manual <strong>Retry</strong> in the review window turns this on for that one
+        receipt — useful for fringe receipts the built-in OCR misreads (logo-only vendors, unusual fonts).
+        In OpenRouter mode it needs ‘Send receipt image’.
+      </div>
+    </div>
+
     <div id="provider-local-section" style="display:none">
     <!-- Single consolidated model selector — list is scoped to the selected mode,
          and "None" runs the built-in OCR + offline parser with no LLM. -->
@@ -1758,14 +1774,6 @@
         </div>
       </div>
     </div>
-    <div style="margin-top:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <label class="check-label" id="ocr-toggle-label" style="font-size:12px;color:var(--muted);gap:7px"
-             title="When on, the same AI model also transcribes each receipt and cross-references its reading with the built-in OCR engine. More accurate on hard receipts, but doubles the per-receipt model calls (slower).">
-        <div class="model-active-dot" id="ocr-model-dot" style="background:var(--border)"></div>
-        <input type="checkbox" id="ocr-toggle">
-        Also use this model for OCR <span style="font-weight:400">(cross-reference — slower)</span>
-      </label>
-    </div>
 
     <!-- Connection status + recovery — for on-host & docker (not OpenRouter cloud) -->
     <div id="llm-conn-row" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
@@ -1788,6 +1796,12 @@
         <button class="btn btn-cancel btn-sm" id="llm-stop-btn">Stop</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-restart-btn">Restart</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-load-btn">Load Model</button>
+      </div>
+      <div style="font-size:11px;line-height:1.5;color:var(--muted);margin-top:8px">
+        First time? The bundled LLM runs as the <code style="font-family:ui-monospace,monospace;font-size:10px">model-server</code>
+        compose service (port 11434, weights baked in, fully offline). If the buttons can't reach it, start it with
+        <code style="font-family:ui-monospace,monospace;font-size:10px">docker compose --profile bundled-llm up -d</code>.
+        See <strong>Info → Using the Docker bundled LLM</strong> for the full how-to.
       </div>
     </div>
     <!-- Configure Model dialog trigger -->
@@ -1861,6 +1875,17 @@
           Yes — every receipt is sent with a fixed system + extraction prompt (plus OpenRouter routing headers). Click to read the full text — nothing is hidden or trimmed.
         </div>
         <div id="or-instr-body" style="display:none;margin-top:10px"></div>
+      </div>
+      <!-- Cloud "connection" affordance — the equivalent of the on-host/docker
+           Auto-detect+Refresh row. No destructive autodetect for the cloud: a key
+           check + a real send→receive Test connection instead. -->
+      <div id="or-conn-row" style="margin-bottom:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Connection</span>
+          <span id="or-avail-inline" style="font-size:11px;color:var(--muted)">checking…</span>
+        </div>
+        <button class="btn btn-outline-accent btn-sm" id="or-recheck-btn"
+                title="Re-check OpenRouter availability (key + reachability). Cloud mode has no auto-detect — use Test connection below for a full round-trip.">↻ Re-check</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="or-save-btn">Apply OpenRouter settings</button>
@@ -2042,6 +2067,42 @@
             Max requests / min
             <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
           </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="When the essential extraction call is rate-limited, wait for the free-tier bucket to refill (bounded) and retry instead of dropping to the offline parser.">
+            Wait out a rate-limit (429), then retry
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-429-wait-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Upper bound on how long to wait for the free-tier bucket to refill before giving up (and falling back to the offline parser).">
+            Max wait for refill (s)
+            <input type="number" id="proc-429-max-wait" min="0" max="120" step="5" style="width:100%">
+          </label>
+        </div>
+        <!-- Rate-limit sweet spots + one-click presets -->
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:11px;line-height:1.6;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+            <strong>Sweet spots.</strong> OpenRouter's free models allow about <strong>20 requests/min</strong>
+            and <strong>50 requests/day</strong>; bursting past either returns a 429 the pipeline can only show
+            as failed receipts. Keep the per-minute cap a little under 20 and let “wait out a 429” ride out the
+            short bucket refill. On a local / Docker server there's no quota — turn both off so nothing throttles.
+            <br><br>
+            Adding $10 of credit to OpenRouter raises the free-model daily cap from 50 to 1000 requests/day —
+            those 1000 are still free (credit only pays for non-free models). The per-minute cap stays ~20.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-free"
+                    title="OpenRouter free tier (no credits): ~12/min, wait out 429s up to 30s, daily cap 50/day. Keep LLM-OCR off.">
+              OpenRouter free (no credits)
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-credit"
+                    title="OpenRouter with $10 credit: ~20/min, wait out 429s up to 30s. Still free per request; daily cap rises 50 → 1000/day.">
+              OpenRouter +$10 credits
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-local"
+                    title="Local / Docker server: no per-minute or daily quota — turn rate-limiting and 429-wait off.">
+              Local / Docker (no limit)
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -2206,6 +2267,45 @@
   </div>
 
   <div class="card">
+    <div class="card-title">Using the Docker bundled LLM</div>
+    <p style="font-size:14px;line-height:1.65;color:var(--text)">
+      A fully-local, private, OpenAI-compatible LLM (llama.cpp serving a vision GGUF) ships with this app as the
+      <code class="inline-code">model-server</code> service in <code class="inline-code">docker-compose</code>,
+      under the <strong>bundled-llm</strong> profile, on port <strong>11434</strong>. The model weights are
+      baked into the image (~2–3&nbsp;GB), so it works completely offline — nothing leaves your machine.
+    </p>
+
+    <div class="section-heading" style="margin-top:6px">1. Start it</div>
+    <div id="info-bundled-cmds" style="display:flex;flex-direction:column;gap:8px;margin:6px 0 4px"></div>
+    <p style="font-size:13px;line-height:1.6;color:var(--muted);margin:4px 0 0">
+      When <strong>🐳 Docker bundled LLM</strong> is selected in Settings → AI Model you can also use the
+      Start / Stop / Restart / Load buttons there instead of the command line.
+    </p>
+
+    <div class="section-heading" style="margin-top:14px">2. Wire it up</div>
+    <ol style="font-size:13px;line-height:1.7;color:var(--text);padding-left:20px;margin:6px 0 0">
+      <li>Settings → <strong>AI Model</strong> → pick <strong>🐳 Docker bundled LLM</strong>.</li>
+      <li>The <strong>Server URL</strong> auto-fills — <code class="inline-code">http://model-server:11434/v1</code>
+          inside Docker, or <code class="inline-code">http://127.0.0.1:11434/v1</code> on the host.</li>
+      <li>Click <strong>↻ Refresh</strong> on the model list, then select the model.</li>
+    </ol>
+
+    <div class="section-heading" style="margin-top:14px">3. Swap the model</div>
+    <p style="font-size:13px;line-height:1.6;color:var(--muted);margin:6px 0 0">
+      Rebuild the image with build args <code class="inline-code">MODEL_URL</code> /
+      <code class="inline-code">MMPROJ_URL</code> (default alias
+      <code class="inline-code">qwen3-vl-2b-instruct</code>) to bake in a different vision GGUF.
+    </p>
+
+    <div class="section-heading" style="margin-top:14px">Troubleshooting</div>
+    <p style="font-size:13px;line-height:1.6;color:var(--muted);margin:6px 0 0">
+      If it shows as unreachable: make sure the <strong>bundled-llm</strong> profile is up
+      (<code class="inline-code">docker compose ps</code>), click <strong>🔎 Auto-detect</strong> in the
+      AI Model card, and check the model-server logs.
+    </p>
+  </div>
+
+  <div class="card">
     <div class="card-title">Keyboard Shortcuts</div>
     <table style="font-size:13px;border-collapse:collapse;width:100%">
       <tbody>
@@ -2226,14 +2326,70 @@
   </div>
 
   <div class="card">
-    <div class="card-title">Pipeline Overview</div>
-    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
-      <li><strong>Auto-rotate</strong> — corrects photo orientation</li>
-      <li><strong>Grayscale + crop</strong> — cleans up and trims background</li>
-      <li><strong>OCR</strong> — built-in text recognition (RapidOCR)</li>
-      <li><strong>AI distillation</strong> — local LLM extracts vendor, date, amount</li>
-      <li><strong>Review</strong> — you verify and correct</li>
-      <li><strong>Export</strong> — polished Excel workbook with charts</li>
+    <div class="card-title">What happens to each receipt (full pipeline)</div>
+    <p style="font-size:13px;line-height:1.6;color:var(--muted);margin:0 0 12px">
+      Every receipt runs through the same ordered steps. Each is tagged with how it works:
+      <span class="pl-tag pl-rules">rules-based</span> = no AI, runs offline;
+      <span class="pl-tag pl-ai">AI / model</span> = a model call;
+      <span class="pl-tag pl-priv-local">image stays local</span> /
+      <span class="pl-tag pl-priv-sends">sends the image</span> shows whether the picture leaves your machine.
+    </p>
+    <style>
+      .pl-tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-radius:5px;padding:1px 6px;vertical-align:middle;white-space:nowrap}
+      .pl-rules{background:rgba(45,212,130,0.14);color:var(--success);border:1px solid rgba(45,212,130,0.35)}
+      .pl-ai{background:rgba(168,85,247,0.14);color:#a855f7;border:1px solid rgba(168,85,247,0.35)}
+      .pl-priv-local{background:rgba(59,130,246,0.12);color:var(--accent);border:1px solid rgba(59,130,246,0.32)}
+      .pl-priv-sends{background:rgba(245,158,11,0.12);color:var(--warning);border:1px solid rgba(245,158,11,0.32)}
+      .pl-steps li{margin-bottom:11px}
+      .pl-steps li > .pl-tags{display:inline-flex;gap:5px;flex-wrap:wrap;margin-left:4px}
+      .pl-steps li .pl-why{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+    </style>
+    <ol class="pl-steps" style="font-size:14px;line-height:1.55;color:var(--text);padding-left:22px">
+      <li><strong>Upload &amp; queue</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Files are staged to a working folder and obvious duplicates are detected before processing.</span></li>
+      <li><strong>Auto-rotate (EXIF)</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Bakes the camera's orientation tag into the actual pixels so the receipt is upright.</span></li>
+      <li><strong>Grayscale</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Converts to high-contrast black &amp; white for cleaner, more reliable reading.</span></li>
+      <li><strong>Auto-crop</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Trims the uniform photo border around the receipt (skipped for scan-app imports, which are already cropped).</span></li>
+      <li><strong>OCR-guided rotation check</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Tries the three 90° rotations and keeps whichever the OCR engine reads best — no model involved.</span></li>
+      <li><strong>Built-in OCR (RapidOCR)</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">The primary text reader, running fully offline — produces the text plus per-line boxes. The image never leaves your machine.</span></li>
+      <li><strong>LLM-OCR cross-reference</strong> <span style="color:var(--muted);font-weight:400">(optional)</span>
+        <span class="pl-tags"><span class="pl-tag pl-ai">AI / model</span><span class="pl-tag pl-priv-sends">sends the image</span></span>
+        <span class="pl-why">A vision model also transcribes the receipt so the extractor can cross-check both readings. Turn it on with the “Also use this model for OCR” toggle, or force it for one receipt with <strong>Retry with AI OCR</strong>. Skipped or bounded automatically under rate-limits.</span></li>
+      <li><strong>Distillation</strong>
+        <span class="pl-tags"><span class="pl-tag pl-ai">AI / model</span><span class="pl-tag pl-priv-local">text only — no image</span></span>
+        <span class="pl-why">Turns the OCR text into structured fields (vendor, date, amount, category, summary) and grounds the amount in the printed TOTAL. On a transient rate-limit (429) it waits for the bucket to refill (bounded) before giving up.</span></li>
+      <li><strong>Offline fallback parser</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">A regex parser fills the fields when the model is unavailable or throttled, so a receipt is never lost.</span></li>
+      <li><strong>Vision rescue</strong> <span style="color:var(--muted);font-weight:400">(last resort)</span>
+        <span class="pl-tags"><span class="pl-tag pl-ai">AI / model</span><span class="pl-tag pl-priv-sends">sends the image</span></span>
+        <span class="pl-why">Only when the OCR text is missing or low-confidence: a vision model reads the receipt image directly.</span></li>
+      <li><strong>Field markup</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Maps the final vendor / date / amount back to the OCR line each came from — these are the colour boxes drawn on the image in review.</span></li>
+      <li><strong>Classify, audit &amp; score</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Assigns the category, audits the amount against the OCR text, scores confidence, and de-duplicates.</span></li>
+      <li><strong>Rename</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">The file is renamed <code style="font-family:ui-monospace,monospace;font-size:12px">category_date_vendor</code> for a tidy archive.</span></li>
+      <li><strong>Review &amp; approve</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">you</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">You verify and correct each field in the review window, then approve.</span></li>
+      <li><strong>Export</strong>
+        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
+        <span class="pl-why">Builds a multi-sheet Excel workbook with charts and per-category receipt images. Image compression happens here — never before OCR, so reading always uses full-resolution images.</span></li>
     </ol>
   </div>
 
@@ -2306,7 +2462,7 @@
         <button class="btn btn-success" id="mr-approve-btn" style="display:none">&#10003; Approve</button>
         <button class="btn btn-primary" id="mr-save-btn">Save Changes</button>
         <button class="btn btn-neutral btn-md" id="mr-next-btn" style="display:none" title="Open the next completed receipt without approving this one">Next &#8594;</button>
-        <button class="btn btn-outline-amber btn-md" id="mr-retry-btn" style="display:none" title="Re-queue this receipt for reprocessing">&#8635; Retry</button>
+        <button class="btn btn-outline-amber btn-md" id="mr-retry-btn" style="display:none" title="Re-queue and read this receipt with the AI vision model (cross-reference) to fix misreads">&#8635; Retry with AI OCR</button>
         <button class="btn btn-cancel" id="mr-cancel-btn">Cancel</button>
       </div>
       <p class="mr-kbd-hint">
@@ -3377,10 +3533,11 @@ resetBtn.addEventListener('click', async () => {
 // ── Retry ─────────────────────────────────────────────────────────────────────
 window.retryReceipt = async function(filename) {
   try {
+    // force_llm_ocr is the backend default too; sent explicitly for clarity.
     const res = await fetch('/retry-receipt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }),
+      body: JSON.stringify({ filename, force_llm_ocr: true }),
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -3814,16 +3971,18 @@ document.getElementById('mr-retry-btn').addEventListener('click', async () => {
   const btn = document.getElementById('mr-retry-btn');
   btn.disabled = true;
   try {
+    // force_llm_ocr: re-read THIS receipt with the AI vision cross-reference even
+    // when the batch toggle is off (skipped server-side if image-sending is disabled).
     const res = await fetch('/retry-receipt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: fn }),
+      body: JSON.stringify({ filename: fn, force_llm_ocr: true }),
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) {
       showToast(`Retry failed: ${d.error || res.status}`, false);
     } else {
-      showToast(`${fn} re-queued`, true);
+      showToast(`${fn} re-queued with AI OCR`, true);
       if (!_loadNextAny(fn)) _closeReviewModal();
     }
   } catch (err) {
@@ -4087,19 +4246,40 @@ async function _saveFields() {
 }
 
 // ── Model selectors ───────────────────────────────────────────────────────────
-async function loadModels() {
+// opts.autoSelect: when the active distill model is a stale slug that's NOT on the
+// current (non-OpenRouter) server — e.g. an "openrouter/free" left over after
+// switching to On-host — pick the first real model and persist it, so the dropdown
+// never gets stuck on "…(not loaded)". Periodic/refresh callers omit it so they
+// never silently change the user's choice.
+async function loadModels(opts = {}) {
   try {
     const res  = await fetch('/models/available');
     const data = await res.json();
-    const activeDistill = data.active_distill || '';
+    let activeDistill   = data.active_distill || '';
     const llmOcr        = data.llm_ocr === true;
+    const models        = data.models || [];
 
     if (ocrToggle) ocrToggle.checked = llmOcr;
+
+    // Auto-recover from a stale cloud slug after a mode switch.
+    if (opts.autoSelect && data.provider !== 'openrouter'
+        && activeDistill && !models.includes(activeDistill)) {
+      const chosen = models.length ? models[0] : '';
+      activeDistill = chosen;
+      try {
+        await fetch('/models/distill', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: chosen }),
+        });
+        showToast(chosen
+          ? `AI model auto-selected: ${chosen}`
+          : 'No models on this server — using None (built-in OCR + offline parser)', true);
+      } catch (_) {}
+    }
 
     document.getElementById('distill-model-dot').style.background = activeDistill ? 'var(--success)' : 'var(--border)';
     document.getElementById('ocr-model-dot').style.background     = (activeDistill && llmOcr) ? 'var(--success)' : 'var(--border)';
 
-    const models = data.models || [];
     distillSelect.innerHTML = '';
     // Always offer "None" — run on the built-in OCR + offline parser, no LLM.
     const noneOpt = document.createElement('option');
@@ -4305,6 +4485,13 @@ function _renderModeAvailability(d) {
   set('openrouter', 'avail-openrouter', or.has_key
       ? '<span class="av-ok">● key set</span>'
       : '<span class="av-warn">○ needs free key</span>');
+  // Mirror the OpenRouter status inside its own card (cloud has no conn-row).
+  const orInline = document.getElementById('or-avail-inline');
+  if (orInline) {
+    orInline.innerHTML = or.has_key
+      ? '<span class="av-ok">● key set — use Test connection to verify the round-trip</span>'
+      : '<span class="av-warn">○ no key yet — paste your free OpenRouter key above</span>';
+  }
 }
 
 // ── LLM server / mode controls ────────────────────────────────────────────────
@@ -4458,7 +4645,8 @@ document.querySelectorAll('input[name="llm-mode"]').forEach(radio => {
         const urlInput = document.getElementById('llm-server-url');
         if (urlInput) urlInput.value = d.base_url || 'http://127.0.0.1:1234/v1';
         _updateHostUrlHint();
-        loadModels(); loadLMStudioModels(); checkLLMStatus();
+        // autoSelect: drop a stale cloud slug and pick an on-host model if one's loaded.
+        loadModels({autoSelect: true}); loadLMStudioModels(); checkLLMStatus();
         showToast('On-host LLM (private)', true);
       } else if (mode === 'docker') {
         const r = await fetch('/settings/llm-server', {
@@ -4468,17 +4656,17 @@ document.querySelectorAll('input[name="llm-mode"]').forEach(radio => {
         const d = await r.json();
         const urlInput = document.getElementById('llm-server-url');
         if (urlInput && d.base_url) urlInput.value = d.base_url;
-        loadModels(); loadLMStudioModels(); checkLLMStatus();
+        loadModels({autoSelect: true}); loadLMStudioModels(); checkLLMStatus();
         showToast(`Docker bundled LLM · ${d.base_url || ''}`, true);
       } else {
         const sendImage = document.getElementById('or-mode-image').checked;
         const model = document.getElementById('or-model').value || 'openrouter/free';
         const d = await _saveProvider({provider: 'openrouter', model, send_image: sendImage});
-        loadLLMProvider();
+        loadLLMProvider();              // refreshes the OpenRouter model list + key status
         if (d.warning) showToast(d.warning, false);
         else showToast(`OpenRouter active${d.resolved_model ? ' · ' + d.resolved_model : ''}`, true);
       }
-      refreshLLMOverview();
+      refreshLLMOverview();   // re-probe host/docker/openrouter + header chip for the new mode
     } catch (e) { showToast('Error: ' + e.message, false); }
   });
 });
@@ -4486,6 +4674,14 @@ document.querySelectorAll('input[name="llm-mode"]').forEach(radio => {
 document.getElementById('or-refresh-models').addEventListener('click', () => {
   const sel = document.getElementById('or-model');
   loadOpenRouterModels(sel ? sel.value : 'auto');
+});
+
+// OpenRouter "Re-check" — non-destructive: re-probe availability + refresh the
+// key/model status (the cloud counterpart of host/docker Auto-detect, minus the
+// URL persistence that the cloud must never do).
+document.getElementById('or-recheck-btn').addEventListener('click', () => {
+  refreshLLMOverview();
+  loadLLMProvider();
 });
 
 document.getElementById('or-save-btn').addEventListener('click', async () => {
@@ -4770,6 +4966,42 @@ async function saveAuditSettings() {
     { cmd: 'docker compose down -v',                                  desc: 'Reset all data' },
   ];
   const box = document.getElementById('info-docker-cmds');
+  if (!box) return;
+  cmds.forEach(({ cmd, desc }) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border)';
+    const codeEl = document.createElement('code');
+    codeEl.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:13px;color:var(--text);word-break:break-all';
+    codeEl.textContent = cmd;
+    const descEl = document.createElement('span');
+    descEl.style.cssText = 'flex-shrink:0;font-size:12px;color:var(--muted);min-width:140px;text-align:right';
+    descEl.textContent = desc;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-outline-accent btn-sm';
+    btn.style.flexShrink = '0';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(cmd).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      });
+    });
+    row.appendChild(codeEl);
+    row.appendChild(descEl);
+    row.appendChild(btn);
+    box.appendChild(row);
+  });
+})();
+
+// ── Info tab — Docker bundled-LLM commands (same copy-button pattern) ───────────
+(function() {
+  const cmds = [
+    { cmd: 'docker compose --profile bundled-llm up -d',   desc: 'Start bundled LLM' },
+    { cmd: 'docker compose ps',                            desc: 'Check status' },
+    { cmd: 'docker compose --profile bundled-llm down',    desc: 'Stop bundled LLM' },
+    { cmd: 'docker compose logs -f model-server',          desc: 'View LLM logs' },
+  ];
+  const box = document.getElementById('info-bundled-cmds');
   if (!box) return;
   cmds.forEach(({ cmd, desc }) => {
     const row = document.createElement('div');
@@ -5131,6 +5363,9 @@ async function loadProcessingSettings() {
     const _re = document.getElementById('proc-rate-enabled');
     if (_re) _re.checked = d.rate_limit_enabled !== false;
     _setNum('proc-rate-rpm',    d.rate_limit_per_min);
+    const _ww = document.getElementById('proc-429-wait-enabled');
+    if (_ww) _ww.checked = d.llm_429_wait_enabled !== false;
+    _setNum('proc-429-max-wait', d.llm_429_max_wait);
   } catch (_) {}
 }
 
@@ -5159,6 +5394,8 @@ async function saveProcessingSettings() {
     max_upload_mb:   parseInt(document.getElementById('proc-max-upload').value, 10),
     rate_limit_enabled: document.getElementById('proc-rate-enabled').checked,
     rate_limit_per_min: parseInt(document.getElementById('proc-rate-rpm').value, 10),
+    llm_429_wait_enabled: document.getElementById('proc-429-wait-enabled').checked,
+    llm_429_max_wait: parseFloat(document.getElementById('proc-429-max-wait').value),
   };
   try {
     const res = await fetch('/settings/processing', {
@@ -5176,19 +5413,39 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr', 'proc-rate-enabled'].forEach(id => {
+['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr', 'proc-rate-enabled', 'proc-429-wait-enabled'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', saveProcessingSettings);
 });
 
 // Advanced numeric tunables — debounced save on change.
-['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload', 'proc-rate-rpm'].forEach(id => {
+['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload', 'proc-rate-rpm', 'proc-429-max-wait'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => {
     clearTimeout(_procSaveTimer);
     _procSaveTimer = setTimeout(saveProcessingSettings, 150);
   });
 });
+
+// Rate-limit / 429-wait presets — fill the form fields then save (debounced).
+function _applyRatePreset({ rate, rpm, wait, maxWait }) {
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  const chk = (id, on) => { const el = document.getElementById(id); if (el) el.checked = on; };
+  chk('proc-rate-enabled', rate);
+  if (rpm != null) set('proc-rate-rpm', rpm);
+  chk('proc-429-wait-enabled', wait);
+  if (maxWait != null) set('proc-429-max-wait', maxWait);
+  clearTimeout(_procSaveTimer);
+  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
+}
+{
+  const _orFree   = document.getElementById('proc-preset-or-free');
+  const _orCredit = document.getElementById('proc-preset-or-credit');
+  const _local    = document.getElementById('proc-preset-local');
+  if (_orFree)   _orFree.addEventListener('click',   () => { _applyRatePreset({ rate: true,  rpm: 12, wait: true,  maxWait: 30 }); showToast('Preset: OpenRouter free (no credits)', true); });
+  if (_orCredit) _orCredit.addEventListener('click', () => { _applyRatePreset({ rate: true,  rpm: 20, wait: true,  maxWait: 30 }); showToast('Preset: OpenRouter +$10 credits', true); });
+  if (_local)    _local.addEventListener('click',    () => { _applyRatePreset({ rate: false, wait: false }); showToast('Preset: Local / Docker (no limit)', true); });
+}
 
 // Auto-crop aggressiveness slider — live label on drag, debounced save on release.
 document.getElementById('proc-autocrop-aggr').addEventListener('input', (e) => {
