@@ -26,6 +26,7 @@ def client(tmp_path, monkeypatch):
              pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
              pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS,
              pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED)
+    saved_429 = (pr.LLM_429_WAIT_ENABLED, pr.LLM_429_MAX_WAIT)
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
@@ -40,6 +41,7 @@ def client(tmp_path, monkeypatch):
      pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED) = saved
     pr.set_rate_limit(per_min=pr.LLM_RATE_LIMIT_PER_MIN,
                       enabled=pr.LLM_RATE_LIMIT_ENABLED)
+    (pr.LLM_429_WAIT_ENABLED, pr.LLM_429_MAX_WAIT) = saved_429
 
 
 def test_processing_round_trip(client):

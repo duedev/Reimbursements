@@ -225,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **542 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **567 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -307,6 +307,85 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (OpenRouter daily-cap live counter + queried cap):** Suite **557 → 567**
+  green. Shows how much of the free-tier *daily* quota is left, live.
+  * **Live local daily counter** — `process_receipts` tallies every request sent while
+    pointed at OpenRouter (`_note_openrouter_request`, called inside `_llm_call` per
+    create attempt, so **failures count too** — matching OpenRouter, which counts failed
+    attempts against the quota). Per-UTC-day, resets at midnight UTC; `_is_openrouter_endpoint`
+    gates it off for a local server. `get_/set_/reset_openrouter_usage()`; persisted in
+    `.app_state.json` (`_persist_state`/`_restore_state`) so the count survives a restart
+    within the same day (a stale day is dropped on restore). conftest resets it per test.
+  * **Query the cap from OpenRouter** — the per-minute `X-RateLimit-*` headers are only the
+    ~20/min window, so the *daily* cap (50 vs 1000) is inferred from lifetime credits via
+    `GET /credits` (`server._fetch_openrouter_credits` → `total_credits`): ≥ $10 ⇒ 1000/day
+    else 50/day (`_openrouter_cap_info`, cached `_OR_CAP_TTL`=300s; the live count is always
+    fresh). New `GET /settings/openrouter/usage` → `{has_key, date, count, cap, remaining,
+    per_min, total_credits, total_usage, credits_known}` (`?force=1` bypasses the cap cache).
+  * **UI** — the OpenRouter card's Connection block gains a "Free quota today" readout +
+    progress bar (`#or-usage` / `#or-usage-bar`, `refreshOpenRouterUsage()`): `N / cap
+    requests today · M left · ~20/min` with a tier hint ("add $10 for 1000/day"), tinted
+    amber ≥80% and red at 0 left. Refreshes on provider load, on the Re-check button
+    (forces a fresh cap query), after every `batch_done`, and on the Settings overview timer.
+  * Tests: `tests/test_openrouter_usage.py` (+10 — counter gating/rollover/restore, failed-
+    attempt counting, cap inference from credits, the usage endpoint with/without a key).
+
+- **2026-06-20 (free-tier 429 resilience + AI-Model UX batch):** Suite **542 → 557**
+  green. Driven by another OpenRouter free-tier run (every LLM-OCR pass 429'd; one
+  distillation fell to the offline parser) plus a batch of AI-Model UX requests.
+  * **Force LLM-OCR on retry** — the optional vision OCR cross-reference is off by
+    default in batch (spares the free-tier quota), but a manual **Retry** from the
+    review screen now runs it for that ONE receipt even when the batch toggle is off —
+    to rescue fringe cases RapidOCR mangles (logo-only vendors like the Home Depot
+    "How doers get more done." header, glyph confusions like `7-ELEVEN`→`7-ELEUEN`).
+    `_extract_receipt_with_status(..., force_llm_ocr=)` borrows `_active_distill_model`
+    when the batch OCR alias is empty, **bypasses and does not poison** the per-batch
+    throttle breaker, and is gated on `LLM_ALLOW_IMAGE` (so OpenRouter "send OCR text
+    only" still can't leak the image). `POST /retry-receipt` gained `force_llm_ocr`
+    (default **true**); the worker (`_drain_once`) threads it through `_gated_extract`.
+  * **Wait for the bucket to refill** — when the *essential* distillation / vision
+    call 429s (free-tier per-minute bucket drained externally — e.g. a prior run in
+    the same minute, the exact log the user hit), `_llm_call(..., wait_on_throttle=True)`
+    now honours the provider's reset hint (`_retry_after_seconds`: `Retry-After`
+    header → `X-RateLimit-Reset` epoch-ms on the response headers or the error body's
+    `metadata.headers`), waits (bounded by `LLM_429_MAX_WAIT`, default 30s, via
+    `_interruptible_sleep`) and retries — instead of dropping straight to the offline
+    parser. The **optional LLM-OCR never waits** (it's skipped under throttling). Knobs
+    `LLM_429_WAIT_ENABLED` / `LLM_429_MAX_WAIT` + `set_429_wait()`; surfaced in
+    `/settings/processing` as `llm_429_wait_enabled` / `llm_429_max_wait` (0–120).
+  * **AI Model card — mode switch auto-selects a model** — switching OpenRouter ⇄
+    On-host/Docker used to leave the model dropdown stuck on `openrouter/free (not
+    loaded)` (a stale cloud slug not on the local server). `loadModels(opts)` gained
+    `opts.autoSelect`: on a mode switch (host/docker branches) it drops a stale
+    non-local active model and picks `models[0]` (or None), `POST /models/distill`.
+  * **"Also use this model for OCR" toggle in ALL modes** — relocated out of
+    `#provider-local-section` into the common area (`#ocr-toggle-row`, ids unchanged) so
+    it shows for OpenRouter too, with a note that Retry forces it per-receipt.
+  * **Rate-limit + 429-wait settings, presets & explanation** — Advanced tuning gains
+    `proc-429-wait-enabled` / `proc-429-max-wait` plus a sweet-spots note (incl. "$10 of
+    OpenRouter credit raises the free daily cap 50 → 1000/day — still free; per-minute
+    stays ~20") and three one-click presets (`proc-preset-or-free` / `-or-credit` /
+    `-local`).
+  * **Availability on every mode change** — each mode reloads its model list + a
+    non-destructive availability probe (`refreshLLMOverview`); OpenRouter gained an
+    in-card Connection row (`#or-conn-row` / `#or-recheck-btn`). `/llm-server/autodetect`
+    stays strictly behind the explicit button (it persists a URL — prior bug).
+  * **Info tab** — the "Pipeline Overview" card replaced with a 15-step plain-English
+    walkthrough (each step tagged rules-based vs AI, image-stays-local vs sends-image),
+    and a new **"Using the Docker bundled LLM"** how-to card (what it is, start/stop
+    commands with copy buttons `#info-bundled-cmds`, wire-up, model swap, troubleshooting).
+  * **OpenRouter free-model ranking is deterministic** (answer to "how does it know
+    which are quick/reliable/image-capable?"): free = zero prompt+completion price and
+    image-capable = `architecture.input_modalities` contains "image" are **hard facts**
+    from the `/models` catalogue; "quick" is a name heuristic (`flash/mini/8b/…`) and
+    "reliable" is a proxy (preferred families, reasoning-models-last) + delegating live
+    provider throughput/uptime to OpenRouter's router (`provider.sort:"throughput"`).
+    No live benchmarking. See `server._openrouter_score` / `_openrouter_free_vision_models`.
+  * Tests: `tests/test_llm_429_wait.py` (+8), `tests/test_force_llm_ocr.py` (+7);
+    `tests/test_settings_endpoints.py` fixture + `test_run_log.py` /
+    `test_worker_pipeline_order.py` stubs updated for the new worker arg. Frontend is
+    `templates/index.html` only.
 
 - **2026-06-20 (free-tier 429 cleanup — readable reasons + LLM-OCR breaker):** Suite
   **534 → 542** green. Driven by a run (`run_202606200149020002`) where OpenRouter's

@@ -106,6 +106,16 @@ LLM_MAX_RETRIES      = int(os.getenv("LLM_MAX_RETRIES", "2"))
 # LLM_RATE_LIMIT_ENABLED=0 — to turn it off.
 LLM_RATE_LIMIT_ENABLED = os.getenv("LLM_RATE_LIMIT_ENABLED", "1").lower() not in ("0", "false", "no")
 LLM_RATE_LIMIT_PER_MIN = int(os.getenv("LLM_RATE_LIMIT_PER_MIN", "20"))
+# When the *essential* distillation / vision call still 429s (the free-tier
+# per-minute bucket was drained externally — e.g. a previous run in the same
+# minute), wait for the bucket to refill and retry instead of immediately
+# dropping the receipt to the lower-accuracy offline parser. OpenRouter returns
+# the refill time (X-RateLimit-Reset epoch-ms / Retry-After seconds); we honour it
+# but cap the wait at LLM_429_MAX_WAIT so a batch can't hang. Only the calls that
+# matter wait — the optional LLM-OCR cross-reference never does (it's pure upside
+# we skip under throttling). Tunable in Settings → Advanced tuning.
+LLM_429_WAIT_ENABLED = os.getenv("LLM_429_WAIT_ENABLED", "1").lower() not in ("0", "false", "no")
+LLM_429_MAX_WAIT     = float(os.getenv("LLM_429_MAX_WAIT", "30"))
 # Client-side model fallback ladder. When a free model "bounces" a request with a
 # SOFT failure (empty / unparseable reply) — the case OpenRouter's own server-side
 # routing won't retry, since it counts an empty 200 as a success — walk to the next
@@ -483,6 +493,82 @@ def set_rate_limit(per_min=None, enabled=None) -> None:
                             enabled=LLM_RATE_LIMIT_ENABLED)
 
 
+def set_429_wait(enabled=None, max_wait=None) -> None:
+    """Reconfigure the wait-for-bucket-refill behaviour (settings endpoint)."""
+    global LLM_429_WAIT_ENABLED, LLM_429_MAX_WAIT
+    if enabled is not None:
+        LLM_429_WAIT_ENABLED = bool(enabled)
+    if max_wait is not None:
+        LLM_429_MAX_WAIT = max(0.0, float(max_wait))
+
+
+# ── OpenRouter daily free-request counter ────────────────────────────────────────
+# OpenRouter's :free models are capped per UTC day (50/day under $10 of lifetime
+# credits, 1000/day at/over) on top of the ~20 req/min cap. Failed attempts count
+# too. We keep a live local tally of every request sent while pointed at OpenRouter
+# so the UI can show "N used today" against the cap; the cap itself (50 vs 1000) is
+# queried from OpenRouter's /credits endpoint in server.py. Resets at UTC midnight.
+_or_usage_lock = threading.Lock()
+_or_daily_date = ""     # UTC "YYYY-MM-DD" the count belongs to
+_or_daily_count = 0
+
+
+def _utc_day() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _is_openrouter_endpoint() -> bool:
+    """True when the inference client is pointed at OpenRouter (vs a local server)."""
+    base = (LMSTUDIO_BASE_URL or "").rstrip("/")
+    return base == OPENROUTER_BASE_URL.rstrip("/") or "openrouter.ai" in base
+
+
+def _note_openrouter_request() -> None:
+    """Count one outbound OpenRouter request toward today's free-tier daily cap.
+    Resets when the UTC day rolls over. No-op for a local server."""
+    if not _is_openrouter_endpoint():
+        return
+    global _or_daily_date, _or_daily_count
+    today = _utc_day()
+    with _or_usage_lock:
+        if _or_daily_date != today:
+            _or_daily_date = today
+            _or_daily_count = 0
+        _or_daily_count += 1
+
+
+def get_openrouter_usage() -> dict:
+    """{date, count} of OpenRouter requests sent today (UTC); count=0 on a new day."""
+    today = _utc_day()
+    with _or_usage_lock:
+        count = _or_daily_count if _or_daily_date == today else 0
+        return {"date": today, "count": count}
+
+
+def set_openrouter_usage(date, count) -> None:
+    """Restore the persisted daily counter (server calls this on startup). A snapshot
+    from an earlier UTC day is dropped (the daily quota has since reset)."""
+    global _or_daily_date, _or_daily_count
+    with _or_usage_lock:
+        if date == _utc_day():
+            _or_daily_date = date
+            try:
+                _or_daily_count = max(0, int(count))
+            except (TypeError, ValueError):
+                _or_daily_count = 0
+        else:
+            _or_daily_date = _utc_day()
+            _or_daily_count = 0
+
+
+def reset_openrouter_usage() -> None:
+    """Clear the daily counter (used between tests)."""
+    global _or_daily_date, _or_daily_count
+    with _or_usage_lock:
+        _or_daily_date = ""
+        _or_daily_count = 0
+
+
 # ── Per-batch LLM-OCR throttle breaker ───────────────────────────────────────────
 # The optional LLM-OCR pass (a vision transcription that the distiller cross-checks
 # against RapidOCR) and the *essential* distillation call share ONE free-tier
@@ -610,24 +696,97 @@ def _describe_llm_error(exc: Exception) -> str:
     return f"{name}: {msg}" if msg else name
 
 
-def _llm_call(client: OpenAI, **kwargs):
+def _retry_after_seconds(exc: Exception) -> float:
+    """How long to wait for a 429'd request's rate-limit bucket to refill.
+
+    Prefers the provider's own hints — a ``Retry-After`` header (seconds) or
+    OpenRouter's ``X-RateLimit-Reset`` (epoch milliseconds), found either on the
+    response headers or inside the error body's ``metadata.headers`` — and returns
+    a sane, bounded number of seconds. Returns 0 when no usable hint is present
+    (caller then falls back to a small default)."""
+    # 1. Response headers (httpx response on the SDK exception).
+    headers = {}
+    resp = getattr(exc, "response", None)
+    raw_headers = getattr(resp, "headers", None)
+    if raw_headers:
+        try:
+            headers = {str(k).lower(): v for k, v in dict(raw_headers).items()}
+        except Exception:
+            headers = {}
+    ra = headers.get("retry-after")
+    if ra:
+        try:
+            return max(0.0, float(ra))
+        except (TypeError, ValueError):
+            pass
+    reset = headers.get("x-ratelimit-reset")
+    # 2. Fall back to the reset epoch embedded in the structured error body.
+    if not reset:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            meta = (body.get("error") or {}).get("metadata") or {}
+            reset = (meta.get("headers") or {}).get("X-RateLimit-Reset")
+    if reset:
+        try:
+            delta = float(reset) / 1000.0 - time.time()
+            # Guard against a stale/garbage epoch (negative or absurdly large).
+            if 0 < delta <= 120:
+                return delta
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _llm_call(client: OpenAI, *, wait_on_throttle: bool = False, **kwargs):
     """Single seam for every ``chat.completions.create`` call.
 
     1. Paces the request through the shared rate limiter (free-tier 429 guard).
-    2. Records a concrete failure reason on the thread-local channel before
+    2. When ``wait_on_throttle`` (set for the *essential* distillation / vision
+       calls, never the optional LLM-OCR), a 429 doesn't immediately fail: we wait
+       for the bucket to refill (honouring the provider's reset hint, capped at
+       ``LLM_429_MAX_WAIT``) and retry, so a momentarily-drained free tier
+       degrades to "slower" rather than "fell back to the offline parser".
+    3. Records a concrete failure reason on the thread-local channel before
        re-raising, so callers can surface *why* a stage fell back. Success clears
        the channel. This is the project's default practice for LLM calls — add new
        model calls through here, not directly on the client, so failures stay
        diagnosable.
     """
-    _RATE_LIMITER.acquire()
-    try:
-        resp = client.chat.completions.create(**kwargs)
-        _set_llm_error(None)
-        return resp
-    except Exception as exc:
-        _set_llm_error(_describe_llm_error(exc))
-        raise
+    waited_total = 0.0
+    while True:
+        _RATE_LIMITER.acquire()
+        # Count every attempt toward the OpenRouter daily cap (failures count too).
+        _note_openrouter_request()
+        try:
+            resp = client.chat.completions.create(**kwargs)
+            _set_llm_error(None)
+            return resp
+        except Exception as exc:
+            _set_llm_error(_describe_llm_error(exc))
+            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+            if not (wait_on_throttle and LLM_429_WAIT_ENABLED
+                    and status == 429 and LLM_429_MAX_WAIT > 0):
+                raise
+            # Decide how long to wait: the provider's hint, else a small default.
+            wait = _retry_after_seconds(exc) or min(8.0, LLM_429_MAX_WAIT)
+            wait += 0.5  # small buffer so the window has definitely rolled over
+            remaining = LLM_429_MAX_WAIT - waited_total
+            if wait > remaining:
+                # The bucket won't refill within our budget — don't burn the time.
+                raise
+            _interruptible_sleep(wait)
+            waited_total += wait
+            # Loop and retry the same call once the bucket has refilled.
+
+
+def _interruptible_sleep(seconds: float) -> None:
+    """Sleep in short slices so a shutdown / config change is honoured promptly."""
+    end = time.monotonic() + max(0.0, seconds)
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.5))
 
 
 def _fallback_model_chain(model_id: str) -> list:
@@ -1963,9 +2122,12 @@ def _unified_distillation(
     single = len(chain) == 1
 
     def _attempt(cl, mid):
+        # Distillation is the essential call — wait out a transient free-tier 429
+        # (bounded) rather than dropping straight to the offline parser.
         resp = _llm_call(
             cl, model=mid, messages=[system_msg, user_msg],
             temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
+            wait_on_throttle=True,
             extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse((resp.choices[0].message.content or "").strip())
@@ -2020,9 +2182,12 @@ def _extract_with_model(
         single = len(chain) == 1
 
         def _attempt(cl, mid):
+            # Vision rescue is a last-resort essential read — wait out a transient
+            # free-tier 429 (bounded) instead of giving up on the receipt.
             resp = _llm_call(
                 cl, model=mid, messages=[system_msg, user_msg],
                 temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
+                wait_on_throttle=True,
                 extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             result = _parse((resp.choices[0].message.content or "").strip())
@@ -2064,6 +2229,7 @@ def _extract_receipt_with_status(
     image_path: Path,
     status_cb: Optional[Callable],  # (status, data, model) → None
     step_log: Optional[list] = None,
+    force_llm_ocr: bool = False,
 ) -> Optional[dict]:
     """
     OCR-first pipeline with Kanban status callbacks and per-item step logging:
@@ -2210,37 +2376,45 @@ def _extract_receipt_with_status(
             _append_step(step_log, "local_ocr", "OCR (built-in)",
                          "no text extracted", ok=False, duration_s=ocr_seconds)
 
-        # SECONDARY (optional): when a dedicated OCR model is selected, also
-        # transcribe with the vision LLM so the distillation model can
-        # cross-reference both readings of the same receipt. Reasoning is forced
-        # off for this transcription pass.
+        # SECONDARY (optional): the vision-LLM transcription that the distillation
+        # model cross-references against RapidOCR. Two ways it runs:
+        #   • batch toggle — "Also use this model for OCR" sets _active_ocr_model so
+        #     EVERY receipt gets it (best for an unmetered local server);
+        #   • force_llm_ocr — a manual *Retry* from the review screen turns it on for
+        #     this one receipt even when the batch toggle is off, to rescue fringe
+        #     cases RapidOCR mangles (logo-only vendors, glyph confusions like
+        #     "7-ELEVEN" → "7-ELEUEN"). It borrows the active distill model for the
+        #     pass and is NOT subject to the per-batch throttle breaker.
+        # Reasoning is forced off for this transcription pass.
         llm_text = None
-        if _active_ocr_model and LLM_ALLOW_IMAGE and _llm_ocr_suspended():
+        ocr_model = _active_ocr_model or (_active_distill_model if force_llm_ocr else "")
+        if ocr_model and LLM_ALLOW_IMAGE and not force_llm_ocr and _llm_ocr_suspended():
             # Skip the redundant vision pass: it was rate-limited earlier this batch
             # and the free tier won't serve it again until the bucket resets. Doing
             # so frees the shared quota for the essential distillation call.
             _append_step(
                 step_log, "llm_ocr", "OCR (LLM)",
-                f"{_active_ocr_model} – skipped (rate-limited earlier this batch; "
+                f"{ocr_model} – skipped (rate-limited earlier this batch; "
                 "built-in OCR is sufficient)",
                 ok=False,
             )
-        elif _active_ocr_model and LLM_ALLOW_IMAGE:
-            _cb("ocr", model=_active_ocr_model)
+        elif ocr_model and LLM_ALLOW_IMAGE:
+            _cb("ocr", model=ocr_model)
             t_llm = time.perf_counter()
-            llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
+            llm_text = _extract_raw_ocr(client, image_path, ocr_model)
             llm_secs = time.perf_counter() - t_llm
             ocr_seconds += llm_secs
             if llm_text:
-                llm_detail = _active_ocr_model
+                llm_detail = ocr_model + (" (forced by retry)" if force_llm_ocr else "")
             else:
                 # Surface the real cause (429 / no provider / timeout / empty reply)
                 # captured by _llm_call instead of an opaque "no text".
                 reason = _get_llm_error() or "no text"
-                llm_detail = f"{_active_ocr_model} – {reason}"
+                llm_detail = f"{ocr_model} – {reason}"
                 # Trip the per-batch breaker on a throttle so we stop wasting the
-                # shared free-tier quota on a pass RapidOCR already covers.
-                if _reason_is_throttle(reason):
+                # shared free-tier quota on a pass RapidOCR already covers — but a
+                # forced one-off retry must not poison the breaker for the batch.
+                if not force_llm_ocr and _reason_is_throttle(reason):
                     _note_llm_ocr_throttle()
             _append_step(
                 step_log, "llm_ocr", "OCR (LLM)", llm_detail,

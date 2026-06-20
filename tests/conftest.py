@@ -35,6 +35,9 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     # can't pre-suspend the vision pass in the next.
     if pr_mod is not None and hasattr(pr_mod, "reset_batch_llm_state"):
         pr_mod.reset_batch_llm_state()
+    # Clear the OpenRouter daily-request tally so counts don't bleed across tests.
+    if pr_mod is not None and hasattr(pr_mod, "reset_openrouter_usage"):
+        pr_mod.reset_openrouter_usage()
     if request.node.get_closest_marker("no_path_isolation"):
         yield
         return
