@@ -24,6 +24,13 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     with no ``output/`` dir would even fail). Tests that need a specific path
     still override these in their own fixtures (last setattr wins).
     """
+    # The LLM rate limiter is a module-global singleton with a shared sliding
+    # window — clear it each test so request counts from a prior test can't bleed
+    # in and make a real LLM call (rare; most pipeline tests mock the extractors)
+    # block on the limit.
+    pr_mod = sys.modules.get("process_receipts")
+    if pr_mod is not None and getattr(pr_mod, "_RATE_LIMITER", None) is not None:
+        pr_mod._RATE_LIMITER.reset()
     if request.node.get_closest_marker("no_path_isolation"):
         yield
         return

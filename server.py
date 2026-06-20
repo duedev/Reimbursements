@@ -267,6 +267,8 @@ def _processing_settings() -> dict:
         "store_max_px":            _pr.STORE_MAX_PX,
         "pdf_max_pages":           _pr.PDF_MAX_PAGES,
         "max_upload_mb":           (MAX_UPLOAD_BYTES // (1024 * 1024)) if MAX_UPLOAD_BYTES else 0,
+        "rate_limit_enabled":      _pr.LLM_RATE_LIMIT_ENABLED,
+        "rate_limit_per_min":      _pr.LLM_RATE_LIMIT_PER_MIN,
     }
 
 
@@ -333,6 +335,17 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     if proc.get("max_upload_mb") is not None:
         try:
             MAX_UPLOAD_BYTES = max(0, min(2000, int(proc["max_upload_mb"]))) * 1024 * 1024
+        except (TypeError, ValueError):
+            pass
+    # LLM request-rate cap (free-tier 429 guard). Either key may be set alone.
+    rl_enabled = proc.get("rate_limit_enabled")
+    rl_per_min = proc.get("rate_limit_per_min")
+    if rl_enabled is not None or rl_per_min is not None:
+        try:
+            _pr.set_rate_limit(
+                per_min=(max(1, min(1000, int(rl_per_min))) if rl_per_min is not None else None),
+                enabled=(bool(rl_enabled) if rl_enabled is not None else None),
+            )
         except (TypeError, ValueError):
             pass
     return _processing_settings()
@@ -580,9 +593,27 @@ def _model_is_vision(m: dict) -> bool:
     return "image" in str(arch.get("modality") or "").lower()
 
 
+# Reasoning/thinking models spend their token budget on hidden reasoning and
+# routinely return EMPTY content for a plain transcription/extraction — a poor OCR
+# / vision pick (and the likely source of the "OCR (LLM) – no text" failures). We
+# don't exclude them (a free vision list can be thin), just rank them LAST so the
+# fallback chain only loops back to a reasoning model after the non-reasoning ones
+# are exhausted.
+_REASONING_MARKERS = ("reasoning", "thinking", "-think", ":think", "qwq",
+                      "-r1", "r1-", ":r1", "/r1", "o1-", "o3-", "deepseek-r")
+
+
+def _model_is_reasoning(m: dict) -> bool:
+    """True for a reasoning-first model (id/name marker), which tends to emit an
+    empty answer on a transcription/extraction task."""
+    blob = f"{m.get('id') or ''} {m.get('name') or ''}".lower()
+    return any(t in blob for t in _REASONING_MARKERS)
+
+
 def _openrouter_score(m: dict) -> tuple:
-    """Sort key (higher first): preferred family, then 'quick' (small/fast)
-    variants, then larger context. Biases the pick toward quick, reliable vision."""
+    """Sort key (higher first): non-reasoning first, then preferred family, then
+    'quick' (small/fast) variants, then larger context. Biases the pick toward
+    quick, reliable, *non-reasoning* vision models."""
     mid = str(m.get("id") or "").lower()
     ctx = m.get("context_length") or (m.get("top_provider") or {}).get("context_length") or 0
     try:
@@ -598,7 +629,9 @@ def _openrouter_score(m: dict) -> tuple:
     fast = 1 if any(t in mid for t in
                     ("flash", "mini", "lite", "small", "nano", "fast",
                      "8b", "7b", "4b", "3b", "2b", "1b")) else 0
-    return (fam, fast, ctx)
+    # Most significant: reasoning models sort to the very end of the chain.
+    not_reasoning = 0 if _model_is_reasoning(m) else 1
+    return (not_reasoning, fam, fast, ctx)
 
 
 def _openrouter_free_vision_models() -> list[dict]:
@@ -4073,6 +4106,8 @@ class ProcessingSettingsRequest(BaseModel):
     store_max_px:            int | None = None
     pdf_max_pages:           int | None = None
     max_upload_mb:           int | None = None
+    rate_limit_enabled:      bool | None = None
+    rate_limit_per_min:      int | None = None
 
 
 @app.get("/settings/processing")
@@ -4106,6 +4141,10 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
             proc["pdf_max_pages"] = max(1, min(200, int(body.pdf_max_pages)))
         if body.max_upload_mb is not None:
             proc["max_upload_mb"] = max(0, min(2000, int(body.max_upload_mb)))
+        if body.rate_limit_enabled is not None:
+            proc["rate_limit_enabled"] = bool(body.rate_limit_enabled)
+        if body.rate_limit_per_min is not None:
+            proc["rate_limit_per_min"] = max(1, min(1000, int(body.rate_limit_per_min)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)

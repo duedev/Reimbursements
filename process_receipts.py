@@ -24,7 +24,7 @@ import concurrent.futures
 import threading
 import urllib.request
 import urllib.error
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, date
 from pathlib import Path
 from typing import Callable, Optional
@@ -75,14 +75,15 @@ LLM_ALLOW_IMAGE: bool = True
 # confirm which build is actually running (handy after a `docker compose up`
 # that may have reused a stale image). Override at build time with BUILD_TAG.
 APP_VERSION = os.getenv("BUILD_TAG", "2026.06.11")
-# Concurrency cap for the batch worker. The local LM Studio model is the
-# bottleneck and serves one model instance: flooding it with the ThreadPoolExecutor
-# default (~min(32, cpu+4)) does not speed anything up and routinely pushes
-# per-request latency past LLM_TIMEOUT, so receipts silently fall back to the
-# lower-accuracy offline parser. A small fixed pool overlaps one receipt's OCR
-# (CPU) with another's LLM call without VRAM thrash. Raise only when LM Studio is
-# configured for true parallelism with VRAM headroom. 0 = no cap (legacy default).
-MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "3"))
+# Concurrency cap for the batch worker. The model is the bottleneck and serves one
+# instance: flooding it with the ThreadPoolExecutor default (~min(32, cpu+4)) does
+# not speed anything up and routinely pushes per-request latency past LLM_TIMEOUT,
+# so receipts silently fall back to the lower-accuracy offline parser. The default
+# is **1** (fully serial) — the safest setting for both a single local model and a
+# free cloud tier, whose per-minute request cap is tripped fastest by parallel
+# bursts (see LLM_RATE_LIMIT_* below). Raise it only with a parallel-capable
+# server + headroom. 0 = no cap (legacy).
+MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "1"))
 
 # Optional, user-configurable audit warnings — all OFF by default (None = no
 # warning). Set from Settings → "Spending & date warnings" and applied
@@ -95,6 +96,25 @@ MAX_RECEIPT_AGE_DAYS = None                                  # flag receipts old
 # transient drops. Override via LLM_TIMEOUT.
 LLM_TIMEOUT          = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_MAX_RETRIES      = int(os.getenv("LLM_MAX_RETRIES", "2"))
+# Outbound LLM request-rate cap (sliding window, shared across worker threads).
+# Free cloud tiers throttle hard — OpenRouter's :free models allow ~20 requests
+# per minute and answer a burst past that with 429s the pipeline can only surface
+# as failed receipts. Enabled by default and set to that documented free-tier
+# ceiling so a batch self-paces *under* the limit instead of tripping it. Harmless
+# for a local server (one model rarely sustains 20 req/min anyway) and fully
+# tunable in Settings → Advanced tuning. Set the count to 0 — or
+# LLM_RATE_LIMIT_ENABLED=0 — to turn it off.
+LLM_RATE_LIMIT_ENABLED = os.getenv("LLM_RATE_LIMIT_ENABLED", "1").lower() not in ("0", "false", "no")
+LLM_RATE_LIMIT_PER_MIN = int(os.getenv("LLM_RATE_LIMIT_PER_MIN", "20"))
+# Client-side model fallback ladder. When a free model "bounces" a request with a
+# SOFT failure (empty / unparseable reply) — the case OpenRouter's own server-side
+# routing won't retry, since it counts an empty 200 as a success — walk to the next
+# free model pinned in LLM_EXTRA_BODY["models"] (already ranked non-reasoning-first,
+# so the chain only loops back to a reasoning model once the others are exhausted).
+# This is the total number of models tried for one logical call, bounded so a run
+# of empties can't fan out unboundedly against the rate limit. For a local server
+# (no routing body) the chain is just the one selected model — behaviour unchanged.
+LLM_FALLBACK_MAX = int(os.getenv("LLM_FALLBACK_MAX", "3"))
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
 
@@ -390,6 +410,205 @@ def make_client() -> OpenAI:
 
 # Backwards-compatible internal alias (older call sites / tests).
 _make_client = make_client
+
+
+# ── Rate limiting + LLM call seam ────────────────────────────────────────────────
+# Everything below funnels through _llm_call(): one place that (1) paces requests
+# under the provider's per-minute limit and (2) records *why* a call failed so the
+# UI never has to show a bare "no text" / "no response" again.
+
+class _RateLimiter:
+    """App-wide sliding-window cap on outbound LLM requests.
+
+    Free cloud tiers throttle aggressively (OpenRouter's :free models ~20 req/min)
+    and answer a burst past the limit with 429s that the pipeline can only surface
+    as failed receipts. This paces every chat.completions call so a batch
+    self-throttles just under the limit instead of tripping it. Shared across the
+    worker threads; disabled (``enabled=False`` or ``max_requests<=0``) for an
+    unmetered local server where pacing would only add latency.
+    """
+
+    def __init__(self, max_requests: int, window_s: float = 60.0,
+                 enabled: bool = True) -> None:
+        self.max_requests = int(max_requests)
+        self.window_s = float(window_s)
+        self.enabled = bool(enabled)
+        self._hits: deque = deque()
+        self._lock = threading.Lock()
+
+    def configure(self, *, max_requests=None, enabled=None, window_s=None) -> None:
+        with self._lock:
+            if max_requests is not None:
+                self.max_requests = int(max_requests)
+            if enabled is not None:
+                self.enabled = bool(enabled)
+            if window_s is not None:
+                self.window_s = float(window_s)
+
+    def reset(self) -> None:
+        """Forget the recent-request window (used between tests)."""
+        with self._lock:
+            self._hits.clear()
+
+    def acquire(self) -> None:
+        """Block — in short, cancellable slices — until a request slot is free."""
+        while True:
+            with self._lock:
+                if not self.enabled or self.max_requests <= 0:
+                    return
+                now = time.monotonic()
+                cutoff = now - self.window_s
+                hits = self._hits
+                while hits and hits[0] <= cutoff:
+                    hits.popleft()
+                if len(hits) < self.max_requests:
+                    hits.append(now)
+                    return
+                wait = hits[0] + self.window_s - now
+            # Sleep in <=1s slices so a config change / shutdown is honoured promptly.
+            time.sleep(max(0.01, min(wait, 1.0)))
+
+
+_RATE_LIMITER = _RateLimiter(LLM_RATE_LIMIT_PER_MIN, 60.0, LLM_RATE_LIMIT_ENABLED)
+
+
+def set_rate_limit(per_min=None, enabled=None) -> None:
+    """Reconfigure the shared LLM rate limiter (called by the settings endpoint)."""
+    global LLM_RATE_LIMIT_PER_MIN, LLM_RATE_LIMIT_ENABLED
+    if per_min is not None:
+        LLM_RATE_LIMIT_PER_MIN = int(per_min)
+    if enabled is not None:
+        LLM_RATE_LIMIT_ENABLED = bool(enabled)
+    _RATE_LIMITER.configure(max_requests=LLM_RATE_LIMIT_PER_MIN,
+                            enabled=LLM_RATE_LIMIT_ENABLED)
+
+
+# Per-thread channel for the last LLM failure reason. A worker sets it via
+# _llm_call (on exception) or explicitly (empty/unparseable reply) and the
+# step-logger reads it right after each stage, so the reason is surfaced without
+# threading an extra return value through every extraction function.
+_llm_error_local = threading.local()
+
+
+def _set_llm_error(reason: Optional[str]) -> None:
+    _llm_error_local.reason = (reason or None)
+
+
+def _get_llm_error() -> str:
+    return getattr(_llm_error_local, "reason", None) or ""
+
+
+def _describe_llm_error(exc: Exception) -> str:
+    """Human-readable, troubleshooting-oriented reason for a failed LLM call.
+
+    Project default practice: never let a model-call failure surface as a bare
+    "no text" / "no response". Map the exception to a concrete cause — HTTP status
+    (429 throttle, 404 no-provider, 401/403 auth, 5xx), timeout, or connection —
+    so the step log and run log say *why* a receipt fell back to the offline parser.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    # Pull the provider's own error message out of the response body when present
+    # (OpenRouter/OpenAI return {"error": {"message": ...}}).
+    detail = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            detail = str(err.get("message") or "").strip()
+        elif isinstance(err, str):
+            detail = err.strip()
+    if not detail:
+        detail = str(getattr(exc, "message", "") or "").strip()
+
+    def _with(base: str, fallback: str) -> str:
+        return f"{base} — {detail}" if detail else f"{base} — {fallback}"
+
+    if status == 429:
+        return _with("rate-limited (HTTP 429)",
+                     "provider throttling — lower the rate limit / concurrency or add credits")
+    if status == 404:
+        return _with("no available provider (HTTP 404)",
+                     "no free endpoint served this request (often: no free vision provider right now)")
+    if status in (401, 403):
+        return _with(f"auth rejected (HTTP {status})", "check the API key")
+    if isinstance(status, int) and 500 <= status < 600:
+        return _with(f"provider error (HTTP {status})", "upstream model error")
+    name = type(exc).__name__
+    low = f"{name} {exc}".lower()
+    if "timeout" in low or "timed out" in low:
+        return f"request timed out after {LLM_TIMEOUT:.0f}s"
+    if "connection" in low or "connecterror" in low:
+        return "could not reach the model endpoint"
+    if detail:
+        return f"{name}: {detail[:160]}"
+    msg = str(exc).strip()
+    return f"{name}: {msg[:160]}" if msg else name
+
+
+def _llm_call(client: OpenAI, **kwargs):
+    """Single seam for every ``chat.completions.create`` call.
+
+    1. Paces the request through the shared rate limiter (free-tier 429 guard).
+    2. Records a concrete failure reason on the thread-local channel before
+       re-raising, so callers can surface *why* a stage fell back. Success clears
+       the channel. This is the project's default practice for LLM calls — add new
+       model calls through here, not directly on the client, so failures stay
+       diagnosable.
+    """
+    _RATE_LIMITER.acquire()
+    try:
+        resp = client.chat.completions.create(**kwargs)
+        _set_llm_error(None)
+        return resp
+    except Exception as exc:
+        _set_llm_error(_describe_llm_error(exc))
+        raise
+
+
+def _fallback_model_chain(model_id: str) -> list:
+    """Ordered models to try for one logical call: the primary, then the ranked
+    free fallbacks pinned in ``LLM_EXTRA_BODY['models']`` (reasoning models last),
+    de-duplicated and capped at ``LLM_FALLBACK_MAX``. For a local server (no
+    routing body) this is just ``[model_id]`` — no behaviour change."""
+    primary = model_id or _active_distill_model
+    chain = [primary] if primary else []
+    for mid in (LLM_EXTRA_BODY.get("models") or []):
+        if len(chain) >= LLM_FALLBACK_MAX:
+            break
+        if mid and mid not in chain:
+            chain.append(mid)
+    return chain
+
+
+def _should_advance_model(exc: Exception) -> bool:
+    """Whether a HARD failure warrants trying the next model in the chain.
+
+    Only a 404 ("no endpoint/provider for this model right now") — pinning a
+    different model id can still succeed. NOT a 429 (the free tier shares one
+    per-minute bucket, so the next free model throttles too — pace, don't pile on)
+    and not auth/5xx/timeout (already retried by the SDK + server-side routing)."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return status == 404
+
+
+def _run_model_chain(client: OpenAI, chain: list, attempt: Callable):
+    """Drive ``attempt(client, model)`` down the fallback chain.
+
+    ``attempt`` returns the extracted value, or ``None`` for a SOFT failure
+    (empty / unparseable reply — reason already recorded). Advances to the next
+    model on a soft failure or an advanceable hard error (404); otherwise re-raises
+    so the caller's ``except`` records the stop reason. First non-None value wins."""
+    for idx, mid in enumerate(chain):
+        is_last = (idx + 1 >= len(chain))
+        try:
+            value = attempt(client, mid)
+        except Exception as exc:
+            if not is_last and _should_advance_model(exc):
+                continue
+            raise
+        if value is not None:
+            return value
+    return None
 
 
 def warm_up_model() -> bool:
@@ -1076,18 +1295,29 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
     try:
         b64, mime = encode_image(image_path)
         thinking_body = _thinking_body(4096, enabled=False)  # OCR never reasons
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                {"type": "text", "text": OLMOCR_RAW_PROMPT},
-            ]}],
-            temperature=0.0, max_tokens=2048,
-            frequency_penalty=0.1,
-            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
-        )
-        text = response.choices[0].message.content.strip()
-        return text if text else None
+        content = [
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            {"type": "text", "text": OLMOCR_RAW_PROMPT},
+        ]
+
+        def _attempt(cl, mid):
+            response = _llm_call(
+                cl, model=mid,
+                messages=[{"role": "user", "content": content}],
+                temperature=0.0, max_tokens=2048, frequency_penalty=0.1,
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
+            )
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                return text
+            # 200 OK but nothing back — common on free reasoning models that spend
+            # the budget on hidden reasoning, or a vision provider that dropped the
+            # image. Name it (so the step log differs from a 429/timeout) and let
+            # the chain fall through to the next free model.
+            _set_llm_error("model returned an empty response (no transcription)")
+            return None
+
+        return _run_model_chain(client, _fallback_model_chain(model_id), _attempt)
     except Exception as exc:
         print(f"[ocr] Extraction failed for {image_path.name}: {exc}")
         return None
@@ -1664,28 +1894,37 @@ def _unified_distillation(
     _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
-    try:
-        resp = client.chat.completions.create(
-            model=_active_distill_model,
-            messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=1024,
-            frequency_penalty=0.15,
+    chain = _fallback_model_chain(_active_distill_model) if _retry else [_active_distill_model]
+    single = len(chain) == 1
+
+    def _attempt(cl, mid):
+        resp = _llm_call(
+            cl, model=mid, messages=[system_msg, user_msg],
+            temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
             extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
-        result = _parse(resp.choices[0].message.content.strip())
+        result = _parse((resp.choices[0].message.content or "").strip())
         if result is not None:
             return result
-        if _retry:
+        # Local single-model: re-ask the SAME model for clean JSON. With a cloud
+        # fallback chain the *next* model is the better retry, so skip the reprompt.
+        if single and _retry:
             print(f"[distill] JSON parse failed, retrying…")
-            r2 = client.chat.completions.create(
-                model=_active_distill_model,
+            r2 = _llm_call(
+                cl, model=mid,
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
-                temperature=0.0, max_tokens=1024,
-                frequency_penalty=0.15,
+                temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
                 extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
-            return _parse(r2.choices[0].message.content.strip())
+            result = _parse((r2.choices[0].message.content or "").strip())
+            if result is not None:
+                return result
+        _set_llm_error("model replied but the text was not valid JSON")
+        return None
+
+    try:
+        return _run_model_chain(client, chain, _attempt)
     except Exception as exc:
         print(f"[distill] Exception: {exc}")
     return None
@@ -1712,26 +1951,34 @@ def _extract_with_model(
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
             {"type": "text", "text": prompt},
         ]}
-        resp = client.chat.completions.create(
-            model=model_id, messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=1024,
-            frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
-        )
-        result = _parse(resp.choices[0].message.content.strip())
-        if result is not None:
-            return result
-        if _retry:
-            print(f"[extract] JSON parse failed for {image_path.name}, retrying…")
-            r2 = client.chat.completions.create(
-                model=model_id,
-                messages=[system_msg, user_msg,
-                          {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
-                temperature=0.0, max_tokens=1024,
-                frequency_penalty=0.15,
+        chain = _fallback_model_chain(model_id) if _retry else [model_id]
+        single = len(chain) == 1
+
+        def _attempt(cl, mid):
+            resp = _llm_call(
+                cl, model=mid, messages=[system_msg, user_msg],
+                temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
                 extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
-            return _parse(r2.choices[0].message.content.strip())
+            result = _parse((resp.choices[0].message.content or "").strip())
+            if result is not None:
+                return result
+            if single and _retry:
+                print(f"[extract] JSON parse failed for {image_path.name}, retrying…")
+                r2 = _llm_call(
+                    cl, model=mid,
+                    messages=[system_msg, user_msg,
+                              {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
+                    temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
+                    extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
+                )
+                result = _parse((r2.choices[0].message.content or "").strip())
+                if result is not None:
+                    return result
+            _set_llm_error("model replied but the text was not valid JSON")
+            return None
+
+        return _run_model_chain(client, chain, _attempt)
     except Exception as exc:
         print(f"[extract] Exception for {image_path.name}: {exc}")
     return None
@@ -1835,7 +2082,7 @@ def _extract_receipt_with_status(
             no_model = not _active_distill_model
             if not no_model:
                 _append_step(step_log, "distillation", "Distillation",
-                             f"{_active_distill_model} – no response",
+                             f"{_active_distill_model} – {_get_llm_error() or 'no response'}",
                              ok=False, duration_s=distill_dur)
             data = _local_distill_from_ocr(ocr_text)
             local_used = data is not None
@@ -1872,6 +2119,9 @@ def _extract_receipt_with_status(
         return _finish(data, ocr_seconds, distill_seconds)
 
     try:
+        # Clear any LLM failure reason left on this (reused) worker thread by a
+        # prior receipt, so each receipt's step log only reflects its own calls.
+        _set_llm_error(None)
         # PRIMARY: built-in local RapidOCR text extraction — fast, runs offline.
         # Capture the per-line boxes too (same single OCR pass) so the final
         # fields can later be marked up on the image without any LLM.
@@ -1906,9 +2156,14 @@ def _extract_receipt_with_status(
             llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
             llm_secs = time.perf_counter() - t_llm
             ocr_seconds += llm_secs
+            if llm_text:
+                llm_detail = _active_ocr_model
+            else:
+                # Surface the real cause (429 / no provider / timeout / empty reply)
+                # captured by _llm_call instead of an opaque "no text".
+                llm_detail = f"{_active_ocr_model} – {_get_llm_error() or 'no text'}"
             _append_step(
-                step_log, "llm_ocr", "OCR (LLM)",
-                _active_ocr_model if llm_text else f"{_active_ocr_model} – no text",
+                step_log, "llm_ocr", "OCR (LLM)", llm_detail,
                 ok=bool(llm_text), duration_s=llm_secs,
             )
 
@@ -1957,7 +2212,8 @@ def _extract_receipt_with_status(
                          _active_distill_model or "", ok=True, duration_s=vision_dur)
             return _finish(data, ocr_seconds=ocr_seconds, distill_seconds=vision_dur)
         _append_step(step_log, "vision", "Vision",
-                     f"{_active_distill_model} – no response", ok=False, duration_s=vision_dur)
+                     f"{_active_distill_model} – {_get_llm_error() or 'no response'}",
+                     ok=False, duration_s=vision_dur)
         return None
     except Exception as exc:
         print(f"[extract] Unhandled exception for {image_path.name}: {exc}")

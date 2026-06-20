@@ -115,8 +115,10 @@ use) but nothing in the app turns reasoning on.
   call site hard-codes `api_key="lmstudio"` any more. For OpenRouter the base URL is
   `OPENROUTER_BASE_URL` and the key is the user's (secret `openrouter_api_key`).
 - **OpenRouter auto-pick:** `_openrouter_free_vision_models()` filters the catalogue
-  to free (zero prompt+completion price) + image-capable, ranks by family → quick
-  (small/fast variants) → context; `_openrouter_autopick()` returns the best id.
+  to free (zero prompt+completion price) + image-capable, ranks **non-reasoning
+  first** (`_model_is_reasoning`), then family → quick (small/fast variants) →
+  context; `_openrouter_autopick()` returns the best id. Reasoning models are kept
+  but ranked last (they tend to return empty content on a transcription task).
   Endpoints: `GET/POST /settings/llm-provider`, `GET /models/openrouter`.
 - **Free router default `openrouter/free`** (`OPENROUTER_FREE_ROUTER`): the default
   OpenRouter model is the free router meta-model (OpenRouter auto-selects among free
@@ -223,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **504 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **534 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -249,18 +251,93 @@ to the model — nothing hidden or clipped.
   the OCR image; must be added to `_safe_receipt_data`'s whitelist to reach the UI.
 - Compression is **deferred to export time** (`generate_spreadsheet`), never per
   receipt — keep OCR reading full-res images.
-- **Batch concurrency:** `MAX_PARALLEL_REQUESTS` (default **3**, env-overridable)
-  caps the worker's `ThreadPoolExecutor`. The local LM Studio model is the
+- **Batch concurrency:** `MAX_PARALLEL_REQUESTS` (default **1** = fully serial,
+  env-overridable) caps the worker's `ThreadPoolExecutor`. The model is the
   bottleneck — an unbounded pool times out and silently falls back to the offline
-  parser. Raise only with a parallel-capable LM Studio + VRAM headroom.
-- Don't send receipt content to any cloud service. Only outbound call is the local
-  model endpoint.
+  parser, and parallel bursts trip a free cloud tier's per-minute cap fastest.
+  Raise only with a parallel-capable server + headroom.
+- **LLM rate limiter (default ON):** `process_receipts._RATE_LIMITER` is a shared
+  sliding-window cap on outbound `chat.completions` calls (`LLM_RATE_LIMIT_PER_MIN`,
+  default **20** = OpenRouter's free-tier ceiling; `LLM_RATE_LIMIT_ENABLED`, env-
+  overridable; `set_rate_limit()` reconfigures it; settings key `rate_limit_per_min`/
+  `rate_limit_enabled` in `/settings/processing` + Settings → Advanced tuning). It
+  paces a batch *under* the limit so free models stop answering with 429s the
+  pipeline can only show as failed receipts. The conftest autouse fixture
+  `reset()`s its window each test.
+- **Default practice — surface *why* an LLM call failed.** All five model calls go
+  through one seam, `process_receipts._llm_call(client, **kwargs)`, which applies
+  the rate limiter and, on failure, records a concrete reason (`_describe_llm_error`:
+  429 throttle / 404 no-provider / 401-403 auth / 5xx / timeout / connection / empty
+  / non-JSON) on a **thread-local** channel (`_set_llm_error`/`_get_llm_error`). The
+  step-logger reads it right after each stage, so the card/run log show e.g. `OCR
+  (LLM) – rate-limited (HTTP 429) …` instead of a bare "no text"/"no response". Add
+  new model calls through `_llm_call`, not the client directly, so failures stay
+  diagnosable.
+- **Client-side model fallback ladder.** Each extraction call runs down a chain
+  (`_fallback_model_chain` = the active model + `LLM_EXTRA_BODY["models"]`, capped at
+  `LLM_FALLBACK_MAX`=3, deduped) via `_run_model_chain`. It advances to the next free
+  model on a **soft** failure (empty / unparseable 200 — the case OpenRouter's own
+  server-side routing counts as success and won't retry) or a **404** (no provider),
+  but **never on a 429** (the free tier shares one per-minute bucket — pace instead;
+  `_should_advance_model`). The router's `models` list is ranked **non-reasoning
+  first** (server `_openrouter_score` + `_model_is_reasoning`), so the chain only
+  loops back to a reasoning model once the others are exhausted — reasoning models
+  tend to spend their budget thinking and return empty content. Local single-model
+  setups have a 1-element chain → unchanged behaviour (incl. the same-model JSON
+  reprompt, which the multi-model cloud chain skips in favour of the next model).
+- Don't send receipt content to any cloud service other than the chosen local/
+  OpenRouter endpoint. Only outbound calls are to the active model endpoint.
 - Module-level model globals persist across tests; monkeypatch them, don't set
   raw (some tests rely on `_active_ocr_model == ""`).
 
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (serial-by-default + LLM rate limiter + failure-reason surfacing):**
+  Suite **504 → 522** green. Driven by a test batch where OpenRouter's free tier
+  throttled mid-run: the first few image (LLM-OCR) calls succeeded, then 5/5 failed
+  as an opaque "OCR (LLM) – no text" while the cheaper text-only distillation calls
+  kept working — classic free-tier rate-limiting on the scarcer free *vision*
+  providers, with the real 429/404 reason swallowed by a bare `except` → `print`
+  (never captured into the run log).
+  * **`MAX_PARALLEL_REQUESTS` default 3 → 1** (`process_receipts.py`) — fully serial
+    by default, the safest setting for both a single local model and a free cloud
+    tier. UI `#conc-slider` default + `loadConcurrency` fallback flipped to 1.
+  * **LLM rate limiter, ON by default** — `_RateLimiter` (shared, thread-safe,
+    sliding-window) gates every `chat.completions` call at `LLM_RATE_LIMIT_PER_MIN`
+    (default **20**, = OpenRouter's documented free-tier cap) when
+    `LLM_RATE_LIMIT_ENABLED`. `set_rate_limit()` + the `/settings/processing` keys
+    `rate_limit_per_min` / `rate_limit_enabled` (clamped 1..1000; persisted; applied
+    via `_apply_processing_config`) make it tunable in Settings → Advanced tuning
+    (number + on/off). Disabled (or count 0) for unmetered local servers.
+  * **Single call seam `_llm_call()` + reason surfacing** — all 5 model-call sites
+    (`_extract_raw_ocr`, `_unified_distillation` ×2, `_extract_with_model` ×2) now
+    route through `_llm_call`, which rate-limits then, on failure, records a concrete
+    reason via `_describe_llm_error` (HTTP 429/404/401-403/5xx, timeout, connection)
+    on a thread-local channel; empty / non-JSON replies set their own reason. The
+    three failure step-logs (`llm_ocr`, `distillation`, `vision`) read `_get_llm_error()`
+    so the card/run log now show the real cause instead of "no text"/"no response".
+    Guarded the `content.strip()` calls with `or ""` (a `None` content used to raise).
+  * Tests: `tests/test_rate_limit.py` (+16: limiter window/disable/reconfigure,
+    classifier, `_llm_call` set/clear, empty+429 OCR reasons, apply-from-config),
+    `tests/test_settings_endpoints.py` (+1 round-trip/clamp; fixture now saves/restores
+    the rate-limit globals); `tests/conftest.py` resets the limiter window per test.
+  * **Model fallback ladder + reasoning-last ranking** (suite **522 → 534**) — when a
+    free model "bounces" a call with a **soft** failure (empty / unparseable 200 — the
+    case OpenRouter's routing counts as success and won't retry), the pipeline now
+    walks down `_fallback_model_chain` (active model + `LLM_EXTRA_BODY["models"]`,
+    capped `LLM_FALLBACK_MAX`=3) via `_run_model_chain`. It advances on a soft failure
+    or a 404 (no provider) but **never on a 429** (`_should_advance_model` — the free
+    tier shares one per-minute bucket, so the next free model throttles too; pace via
+    the limiter instead). The routing `models` list is now ranked **non-reasoning
+    first** (server `_model_is_reasoning` + a leading key in `_openrouter_score`), so
+    the chain only loops back to a reasoning model after the others are exhausted —
+    reasoning models (e.g. the `…-nano-…-reasoning:free` that was being promoted by the
+    "nano = quick" bonus) tend to spend their budget thinking and return empty content.
+    Local single-model setups get a 1-element chain → unchanged (the same-model JSON
+    reprompt is preserved; the multi-model cloud chain skips it for the next model).
+    Tests: `tests/test_model_fallback.py` (+11), `tests/test_llm_provider.py` (+1).
 
 - **2026-06-19 (OpenRouter-default + live mode availability + round-trip test + chip):**
   Suite **496 → 504** green. A pass over the AI Model UX driven by the user request.
