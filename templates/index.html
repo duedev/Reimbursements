@@ -1884,8 +1884,18 @@
           <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Connection</span>
           <span id="or-avail-inline" style="font-size:11px;color:var(--muted)">checking…</span>
         </div>
-        <button class="btn btn-outline-accent btn-sm" id="or-recheck-btn"
-                title="Re-check OpenRouter availability (key + reachability). Cloud mode has no auto-detect — use Test connection below for a full round-trip.">↻ Re-check</button>
+        <!-- Live daily free-request tally vs the queried cap (50 or 1000/day). -->
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Free quota today</span>
+          <span id="or-usage" style="font-size:11px;color:var(--muted)">—</span>
+        </div>
+        <div id="or-usage-bar-wrap" style="height:5px;border-radius:3px;background:var(--surface2);overflow:hidden;margin-bottom:8px;display:none">
+          <div id="or-usage-bar" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-outline-accent btn-sm" id="or-recheck-btn"
+                  title="Re-check OpenRouter availability (key + reachability) and refresh the daily quota count + cap. Cloud mode has no auto-detect — use Test connection below for a full round-trip.">↻ Re-check</button>
+        </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="or-save-btn">Apply OpenRouter settings</button>
@@ -3129,6 +3139,7 @@ function connectSSE() {
       loadStats();
       loadBenchmarks();
       loadRuns(msg.run_id);   // refresh the run-log picker, select the just-finished run
+      refreshOpenRouterUsage();   // a batch just spent OpenRouter daily quota
 
     } else if (msg.type === 'log') {
       appendLog(msg.message, msg.level);
@@ -4446,6 +4457,53 @@ async function refreshLLMOverview() {
   }
   _renderEngineChip(d);
   _renderModeAvailability(d);
+  if ((d.active_mode || '') === 'openrouter') refreshOpenRouterUsage();
+}
+
+// ── OpenRouter daily free-request quota — live count vs the queried cap ────────
+// The count is tallied locally (every request we send today, failures included);
+// the cap (50 or 1000/day) is queried from OpenRouter's /credits endpoint.
+async function refreshOpenRouterUsage(force) {
+  const el  = document.getElementById('or-usage');
+  const wrap = document.getElementById('or-usage-bar-wrap');
+  const bar  = document.getElementById('or-usage-bar');
+  if (!el) return;
+  try {
+    const d = await (await fetch('/settings/openrouter/usage' + (force ? '?force=1' : ''))).json();
+    if (!d.has_key) {
+      el.textContent = 'add an API key to see your daily quota';
+      el.style.color = 'var(--muted)';
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    const cap = d.cap;
+    const used = d.count || 0;
+    if (cap == null) {
+      // Key set but the cap query didn't resolve — still show the live count.
+      el.textContent = `${used} used today · ~${d.per_min || 20}/min`;
+      el.style.color = 'var(--muted)';
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    const remaining = d.remaining != null ? d.remaining : Math.max(cap - used, 0);
+    const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+    const tier = d.credits_known
+      ? (cap >= 1000 ? ' (≥ $10 credit)' : ' (free tier — add $10 for 1000/day)')
+      : '';
+    el.innerHTML = `<strong>${used} / ${cap}</strong> requests today · ${remaining} left`
+      + ` · ~${d.per_min || 20}/min${tier}`;
+    el.style.color = remaining <= 0 ? 'var(--danger)'
+                   : (pct >= 80 ? 'var(--warning)' : 'var(--muted)');
+    if (wrap && bar) {
+      wrap.style.display = '';
+      bar.style.width = pct + '%';
+      bar.style.background = remaining <= 0 ? 'var(--danger)'
+                           : (pct >= 80 ? 'var(--warning)' : 'var(--accent)');
+    }
+  } catch (_) {
+    el.textContent = 'quota unavailable';
+    if (wrap) wrap.style.display = 'none';
+  }
 }
 
 function _renderEngineChip(d) {
@@ -4593,6 +4651,7 @@ async function loadLLMProvider() {
       await loadOpenRouterModels(or.model || 'openrouter/free');
       const dot = document.getElementById('or-model-dot');
       if (dot) dot.style.background = (or.has_key && (or.resolved_model || or.model)) ? 'var(--success)' : 'var(--border)';
+      refreshOpenRouterUsage();
     } else {
       loadLLMServerSettings();
     }
@@ -4682,6 +4741,7 @@ document.getElementById('or-refresh-models').addEventListener('click', () => {
 document.getElementById('or-recheck-btn').addEventListener('click', () => {
   refreshLLMOverview();
   loadLLMProvider();
+  refreshOpenRouterUsage(true);   // force a fresh cap query on explicit re-check
 });
 
 document.getElementById('or-save-btn').addEventListener('click', async () => {

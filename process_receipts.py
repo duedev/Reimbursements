@@ -502,6 +502,73 @@ def set_429_wait(enabled=None, max_wait=None) -> None:
         LLM_429_MAX_WAIT = max(0.0, float(max_wait))
 
 
+# ── OpenRouter daily free-request counter ────────────────────────────────────────
+# OpenRouter's :free models are capped per UTC day (50/day under $10 of lifetime
+# credits, 1000/day at/over) on top of the ~20 req/min cap. Failed attempts count
+# too. We keep a live local tally of every request sent while pointed at OpenRouter
+# so the UI can show "N used today" against the cap; the cap itself (50 vs 1000) is
+# queried from OpenRouter's /credits endpoint in server.py. Resets at UTC midnight.
+_or_usage_lock = threading.Lock()
+_or_daily_date = ""     # UTC "YYYY-MM-DD" the count belongs to
+_or_daily_count = 0
+
+
+def _utc_day() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _is_openrouter_endpoint() -> bool:
+    """True when the inference client is pointed at OpenRouter (vs a local server)."""
+    base = (LMSTUDIO_BASE_URL or "").rstrip("/")
+    return base == OPENROUTER_BASE_URL.rstrip("/") or "openrouter.ai" in base
+
+
+def _note_openrouter_request() -> None:
+    """Count one outbound OpenRouter request toward today's free-tier daily cap.
+    Resets when the UTC day rolls over. No-op for a local server."""
+    if not _is_openrouter_endpoint():
+        return
+    global _or_daily_date, _or_daily_count
+    today = _utc_day()
+    with _or_usage_lock:
+        if _or_daily_date != today:
+            _or_daily_date = today
+            _or_daily_count = 0
+        _or_daily_count += 1
+
+
+def get_openrouter_usage() -> dict:
+    """{date, count} of OpenRouter requests sent today (UTC); count=0 on a new day."""
+    today = _utc_day()
+    with _or_usage_lock:
+        count = _or_daily_count if _or_daily_date == today else 0
+        return {"date": today, "count": count}
+
+
+def set_openrouter_usage(date, count) -> None:
+    """Restore the persisted daily counter (server calls this on startup). A snapshot
+    from an earlier UTC day is dropped (the daily quota has since reset)."""
+    global _or_daily_date, _or_daily_count
+    with _or_usage_lock:
+        if date == _utc_day():
+            _or_daily_date = date
+            try:
+                _or_daily_count = max(0, int(count))
+            except (TypeError, ValueError):
+                _or_daily_count = 0
+        else:
+            _or_daily_date = _utc_day()
+            _or_daily_count = 0
+
+
+def reset_openrouter_usage() -> None:
+    """Clear the daily counter (used between tests)."""
+    global _or_daily_date, _or_daily_count
+    with _or_usage_lock:
+        _or_daily_date = ""
+        _or_daily_count = 0
+
+
 # ── Per-batch LLM-OCR throttle breaker ───────────────────────────────────────────
 # The optional LLM-OCR pass (a vision transcription that the distiller cross-checks
 # against RapidOCR) and the *essential* distillation call share ONE free-tier
@@ -688,6 +755,8 @@ def _llm_call(client: OpenAI, *, wait_on_throttle: bool = False, **kwargs):
     waited_total = 0.0
     while True:
         _RATE_LIMITER.acquire()
+        # Count every attempt toward the OpenRouter daily cap (failures count too).
+        _note_openrouter_request()
         try:
             resp = client.chat.completions.create(**kwargs)
             _set_llm_error(None)

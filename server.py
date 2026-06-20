@@ -586,6 +586,68 @@ def _fetch_openrouter_models(timeout: float = 6.0) -> list[dict]:
         return []
 
 
+# OpenRouter free-tier DAILY cap on :free models: 50 requests/day under $10 of
+# lifetime credits, 1000/day at or over. We query the lifetime-purchased credits
+# from /credits to decide which applies (the live per-day count is tallied locally
+# in process_receipts). The per-minute cap is a fixed ~20.
+_OPENROUTER_FREE_CAP_LOW    = 50
+_OPENROUTER_FREE_CAP_HIGH   = 1000
+_OPENROUTER_CREDIT_THRESHOLD = 10.0
+_OPENROUTER_PER_MIN         = 20
+_OR_CAP_TTL                 = 300.0   # seconds to cache the /credits lookup
+_or_cap_cache: dict = {"at": 0.0, "data": None}
+
+
+def _fetch_openrouter_credits(timeout: float = 6.0) -> dict | None:
+    """GET /credits → {total_credits, total_usage} (lifetime, USD). None on failure."""
+    key = _openrouter_api_key()
+    if not key:
+        return None
+    url = _pr.OPENROUTER_BASE_URL.rstrip("/") + "/credits"
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {key}",
+               **OPENROUTER_ATTR_HEADERS}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read() or b"{}")
+            return data.get("data") or data
+    except Exception:
+        return None
+
+
+def _openrouter_cap_info(force: bool = False) -> dict:
+    """Daily free-request cap (50/1000) inferred from purchased credits, cached.
+
+    The cap rarely changes, so the /credits lookup is cached for _OR_CAP_TTL; the
+    live daily *count* (tallied locally) is always fresh regardless of this cache.
+    """
+    now = time.time()
+    cached = _or_cap_cache.get("data")
+    if not force and cached is not None and now - _or_cap_cache["at"] < _OR_CAP_TTL:
+        return cached
+    info: dict = {"cap": _OPENROUTER_FREE_CAP_LOW, "per_min": _OPENROUTER_PER_MIN,
+                  "total_credits": None, "total_usage": None, "credits_known": False}
+    credits = _fetch_openrouter_credits()
+    if credits is not None:
+        try:
+            tc = float(credits.get("total_credits"))
+            info["total_credits"] = tc
+            info["credits_known"] = True
+            info["cap"] = (_OPENROUTER_FREE_CAP_HIGH if tc >= _OPENROUTER_CREDIT_THRESHOLD
+                           else _OPENROUTER_FREE_CAP_LOW)
+        except (TypeError, ValueError):
+            pass
+        try:
+            info["total_usage"] = float(credits.get("total_usage"))
+        except (TypeError, ValueError):
+            pass
+    _or_cap_cache["at"] = now
+    _or_cap_cache["data"] = info
+    return info
+
+
 def _model_is_free(m: dict) -> bool:
     """Free = zero prompt AND completion token cost (image/request cost ignored)."""
     pricing = m.get("pricing") or {}
@@ -954,6 +1016,9 @@ def _persist_state() -> None:
             "last_context": context_copy,
             "benchmarks":   bench_copy,
             "runs":         runs_copy,
+            # Live OpenRouter daily-request tally so the cap count survives a
+            # restart within the same UTC day (a stale day is dropped on restore).
+            "openrouter_usage": _pr.get_openrouter_usage(),
         }
         OUT_FOLDER.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
@@ -1007,6 +1072,10 @@ def _restore_state() -> None:
             _runs.clear()
             _runs.extend(r for r in runs if isinstance(r, dict))
             del _runs[RUNS_MAX_ENTRIES:]
+
+    or_usage = payload.get("openrouter_usage")
+    if isinstance(or_usage, dict):
+        _pr.set_openrouter_usage(or_usage.get("date"), or_usage.get("count"))
 
     with _results_lock:
         n = len(_results)
@@ -3804,6 +3873,39 @@ async def llm_server_availability():
         "host":         {"reachable": host_ok,   "models": host_n,   "base_url": host_url},
         "docker":       {"reachable": docker_ok, "models": docker_n, "base_url": docker_url},
         "openrouter":   {"has_key":   bool(_openrouter_api_key())},
+    })
+
+
+@app.get("/settings/openrouter/usage")
+async def openrouter_usage(force: bool = False):
+    """Live daily free-request tally + the queried daily cap.
+
+    The count is tracked locally — every OpenRouter request we sent today (UTC),
+    failures included (they count toward the quota). The cap (50 vs 1000/day) is
+    queried from OpenRouter's /credits endpoint (cached): 1000 once ≥ $10 of credit
+    has been purchased, else 50. The per-minute cap (~20) is fixed, shown for context.
+    Pass ?force=1 to bypass the cap cache.
+    """
+    usage   = _pr.get_openrouter_usage()
+    has_key = bool(_openrouter_api_key())
+    if not has_key:
+        return JSONResponse({"has_key": False, "date": usage["date"],
+                             "count": usage["count"], "cap": None,
+                             "per_min": _OPENROUTER_PER_MIN})
+    loop = asyncio.get_event_loop()
+    cap_info = await loop.run_in_executor(None, _openrouter_cap_info, bool(force))
+    cap = cap_info.get("cap")
+    remaining = max(cap - usage["count"], 0) if isinstance(cap, int) else None
+    return JSONResponse({
+        "has_key":       True,
+        "date":          usage["date"],
+        "count":         usage["count"],
+        "cap":           cap,
+        "remaining":     remaining,
+        "per_min":       cap_info.get("per_min", _OPENROUTER_PER_MIN),
+        "total_credits": cap_info.get("total_credits"),
+        "total_usage":   cap_info.get("total_usage"),
+        "credits_known": cap_info.get("credits_known", False),
     })
 
 

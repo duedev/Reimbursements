@@ -225,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **557 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **567 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -307,6 +307,29 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (OpenRouter daily-cap live counter + queried cap):** Suite **557 → 567**
+  green. Shows how much of the free-tier *daily* quota is left, live.
+  * **Live local daily counter** — `process_receipts` tallies every request sent while
+    pointed at OpenRouter (`_note_openrouter_request`, called inside `_llm_call` per
+    create attempt, so **failures count too** — matching OpenRouter, which counts failed
+    attempts against the quota). Per-UTC-day, resets at midnight UTC; `_is_openrouter_endpoint`
+    gates it off for a local server. `get_/set_/reset_openrouter_usage()`; persisted in
+    `.app_state.json` (`_persist_state`/`_restore_state`) so the count survives a restart
+    within the same day (a stale day is dropped on restore). conftest resets it per test.
+  * **Query the cap from OpenRouter** — the per-minute `X-RateLimit-*` headers are only the
+    ~20/min window, so the *daily* cap (50 vs 1000) is inferred from lifetime credits via
+    `GET /credits` (`server._fetch_openrouter_credits` → `total_credits`): ≥ $10 ⇒ 1000/day
+    else 50/day (`_openrouter_cap_info`, cached `_OR_CAP_TTL`=300s; the live count is always
+    fresh). New `GET /settings/openrouter/usage` → `{has_key, date, count, cap, remaining,
+    per_min, total_credits, total_usage, credits_known}` (`?force=1` bypasses the cap cache).
+  * **UI** — the OpenRouter card's Connection block gains a "Free quota today" readout +
+    progress bar (`#or-usage` / `#or-usage-bar`, `refreshOpenRouterUsage()`): `N / cap
+    requests today · M left · ~20/min` with a tier hint ("add $10 for 1000/day"), tinted
+    amber ≥80% and red at 0 left. Refreshes on provider load, on the Re-check button
+    (forces a fresh cap query), after every `batch_done`, and on the Settings overview timer.
+  * Tests: `tests/test_openrouter_usage.py` (+10 — counter gating/rollover/restore, failed-
+    attempt counting, cap inference from credits, the usage endpoint with/without a key).
 
 - **2026-06-20 (free-tier 429 resilience + AI-Model UX batch):** Suite **542 → 557**
   green. Driven by another OpenRouter free-tier run (every LLM-OCR pass 429'd; one
