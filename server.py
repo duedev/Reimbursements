@@ -269,6 +269,8 @@ def _processing_settings() -> dict:
         "max_upload_mb":           (MAX_UPLOAD_BYTES // (1024 * 1024)) if MAX_UPLOAD_BYTES else 0,
         "rate_limit_enabled":      _pr.LLM_RATE_LIMIT_ENABLED,
         "rate_limit_per_min":      _pr.LLM_RATE_LIMIT_PER_MIN,
+        "llm_429_wait_enabled":    _pr.LLM_429_WAIT_ENABLED,
+        "llm_429_max_wait":        _pr.LLM_429_MAX_WAIT,
     }
 
 
@@ -345,6 +347,17 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
             _pr.set_rate_limit(
                 per_min=(max(1, min(1000, int(rl_per_min))) if rl_per_min is not None else None),
                 enabled=(bool(rl_enabled) if rl_enabled is not None else None),
+            )
+        except (TypeError, ValueError):
+            pass
+    # Wait-for-bucket-refill on a 429'd essential call. Either key may be set alone.
+    w_enabled = proc.get("llm_429_wait_enabled")
+    w_max     = proc.get("llm_429_max_wait")
+    if w_enabled is not None or w_max is not None:
+        try:
+            _pr.set_429_wait(
+                enabled=(bool(w_enabled) if w_enabled is not None else None),
+                max_wait=(max(0.0, min(120.0, float(w_max))) if w_max is not None else None),
             )
         except (TypeError, ValueError):
             pass
@@ -1337,6 +1350,7 @@ def _drain_once() -> bool:
 
             future = ex.submit(
                 _gated_extract, client, path, make_cb(fname, step_log), step_log,
+                bool(item.get("force_llm_ocr", False)),
             )
             futures_map[future] = item
 
@@ -3177,6 +3191,11 @@ async def finish_batch(body: FinishBatchRequest):
 
 class RetryRequest(BaseModel):
     filename: str
+    # A manual retry from the review screen turns the optional LLM-OCR vision
+    # cross-reference ON for this one receipt (default), to rescue fringe cases the
+    # built-in OCR mangles — even when the batch-level toggle is off. Honoured only
+    # when a model is selected and image-sending is allowed.
+    force_llm_ocr: bool = True
 
 
 @app.post("/retry-receipt")
@@ -3227,6 +3246,8 @@ async def retry_receipt(body: RetryRequest):
         "employee":   _last_context.get("employee", "Employee"),
         "job_name":   _last_context.get("job_name", ""),
         "job_number": _last_context.get("job_number", ""),
+        # Force the LLM-OCR vision cross-reference for this retry (see RetryRequest).
+        "force_llm_ocr": bool(body.force_llm_ocr),
     }
     _cache_item(item)
     with _work_lock:
@@ -4111,6 +4132,8 @@ class ProcessingSettingsRequest(BaseModel):
     max_upload_mb:           int | None = None
     rate_limit_enabled:      bool | None = None
     rate_limit_per_min:      int | None = None
+    llm_429_wait_enabled:    bool | None = None
+    llm_429_max_wait:        float | None = None
 
 
 @app.get("/settings/processing")
@@ -4148,6 +4171,10 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
             proc["rate_limit_enabled"] = bool(body.rate_limit_enabled)
         if body.rate_limit_per_min is not None:
             proc["rate_limit_per_min"] = max(1, min(1000, int(body.rate_limit_per_min)))
+        if body.llm_429_wait_enabled is not None:
+            proc["llm_429_wait_enabled"] = bool(body.llm_429_wait_enabled)
+        if body.llm_429_max_wait is not None:
+            proc["llm_429_max_wait"] = max(0.0, min(120.0, float(body.llm_429_max_wait)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)

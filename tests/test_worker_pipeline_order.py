@@ -43,7 +43,7 @@ def test_extraction_reads_original_file_then_compresses_at_export(worker_env, mo
 
     seen_paths: list[Path] = []
 
-    def fake_extract(client, path, cb, step_log=None):
+    def fake_extract(client, path, cb, step_log=None, force_llm_ocr=False):
         # Whatever path the worker hands us MUST exist on disk and keep its suffix.
         seen_paths.append(Path(path))
         assert Path(path).exists(), f"extraction got a missing file: {path}"

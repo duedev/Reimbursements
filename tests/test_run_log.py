@@ -227,7 +227,7 @@ def test_drain_once_captures_full_run(tmp_path, monkeypatch):
     src = src_dir / "IMG_1.png"
     Image.new("RGB", (400, 600), (90, 90, 90)).save(src, format="PNG")
 
-    def fake_extract(client, path, cb, step_log=None):
+    def fake_extract(client, path, cb, step_log=None, force_llm_ocr=False):
         if step_log is not None:
             step_log.append({"step": "grayscale", "label": "Grayscale", "ok": True, "duration_s": 0.0})
         return {"vendor": "Shell", "amount": 45.2, "date": "2026-05-01", "flags": []}
