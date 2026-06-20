@@ -483,6 +483,48 @@ def set_rate_limit(per_min=None, enabled=None) -> None:
                             enabled=LLM_RATE_LIMIT_ENABLED)
 
 
+# ── Per-batch LLM-OCR throttle breaker ───────────────────────────────────────────
+# The optional LLM-OCR pass (a vision transcription that the distiller cross-checks
+# against RapidOCR) and the *essential* distillation call share ONE free-tier
+# per-minute bucket. When that bucket is exhausted the vision pass 429s and stays
+# throttled for the rest of the minute — so retrying it on every receipt only burns
+# wall-time (2–3 s/receipt) AND starves distillation of the shared quota (the very
+# thing that drops a receipt to the lower-accuracy offline parser). After a couple
+# of throttles we stop attempting the vision pass for the rest of the batch:
+# RapidOCR already supplied the text, so the cross-reference is pure upside we can
+# safely skip when the free tier can't serve it. Reset at the start of each batch.
+_LLM_OCR_THROTTLE_LIMIT = int(os.getenv("LLM_OCR_THROTTLE_LIMIT", "2"))
+_llm_ocr_throttles = 0
+_llm_ocr_breaker_lock = threading.Lock()
+
+
+def reset_batch_llm_state() -> None:
+    """Clear the per-batch LLM-OCR throttle breaker. Call once per batch start."""
+    global _llm_ocr_throttles
+    with _llm_ocr_breaker_lock:
+        _llm_ocr_throttles = 0
+
+
+def _note_llm_ocr_throttle() -> None:
+    """Record that the optional LLM-OCR pass was rate-limited this batch."""
+    global _llm_ocr_throttles
+    with _llm_ocr_breaker_lock:
+        _llm_ocr_throttles += 1
+
+
+def _llm_ocr_suspended() -> bool:
+    """True once the LLM-OCR pass has been throttled enough to skip for the batch."""
+    with _llm_ocr_breaker_lock:
+        return (_LLM_OCR_THROTTLE_LIMIT > 0
+                and _llm_ocr_throttles >= _LLM_OCR_THROTTLE_LIMIT)
+
+
+def _reason_is_throttle(reason: str) -> bool:
+    """Whether a recorded failure reason is a rate-limit / 429 throttle."""
+    low = (reason or "").lower()
+    return "429" in low or "rate-limit" in low or "rate limit" in low
+
+
 # Per-thread channel for the last LLM failure reason. A worker sets it via
 # _llm_call (on exception) or explicitly (empty/unparseable reply) and the
 # step-logger reads it right after each stage, so the reason is surfaced without
@@ -496,6 +538,23 @@ def _set_llm_error(reason: Optional[str]) -> None:
 
 def _get_llm_error() -> str:
     return getattr(_llm_error_local, "reason", None) or ""
+
+
+# A 429 from OpenRouter's free tier embeds a deeply-nested `previous_errors`
+# dump (one entry per provider it tried) that can run to thousands of characters,
+# and the OpenAI SDK stuffs that whole blob into `exc.message`. We only want the
+# headline reason — pull the first `"message": "…"` out of the blob and cap it so
+# the step log / run log stay readable instead of flooding with the raw dump.
+_PROVIDER_MSG_RE = re.compile(r"""['"]message['"]\s*:\s*['"]([^'"]{1,200})['"]""")
+_LLM_DETAIL_MAX = 200
+
+
+def _shorten_detail(detail: str) -> str:
+    """Collapse whitespace and cap a provider error message to one readable line."""
+    detail = " ".join((detail or "").split())
+    if len(detail) > _LLM_DETAIL_MAX:
+        detail = detail[:_LLM_DETAIL_MAX].rstrip() + "…"
+    return detail
 
 
 def _describe_llm_error(exc: Exception) -> str:
@@ -517,8 +576,14 @@ def _describe_llm_error(exc: Exception) -> str:
             detail = str(err.get("message") or "").strip()
         elif isinstance(err, str):
             detail = err.strip()
+    # When the SDK didn't parse a structured body, the message lives only inside
+    # the stringified exception ("Error code: 429 - {…huge dict…}"). Try to recover
+    # just the headline message before falling back to the (truncated) raw string.
     if not detail:
-        detail = str(getattr(exc, "message", "") or "").strip()
+        raw = str(getattr(exc, "message", "") or "").strip() or str(exc).strip()
+        m = _PROVIDER_MSG_RE.search(raw)
+        detail = m.group(1).strip() if m else raw
+    detail = _shorten_detail(detail)
 
     def _with(base: str, fallback: str) -> str:
         return f"{base} — {detail}" if detail else f"{base} — {fallback}"
@@ -540,9 +605,9 @@ def _describe_llm_error(exc: Exception) -> str:
     if "connection" in low or "connecterror" in low:
         return "could not reach the model endpoint"
     if detail:
-        return f"{name}: {detail[:160]}"
-    msg = str(exc).strip()
-    return f"{name}: {msg[:160]}" if msg else name
+        return f"{name}: {detail}"
+    msg = _shorten_detail(str(exc))
+    return f"{name}: {msg}" if msg else name
 
 
 def _llm_call(client: OpenAI, **kwargs):
@@ -2150,7 +2215,17 @@ def _extract_receipt_with_status(
         # cross-reference both readings of the same receipt. Reasoning is forced
         # off for this transcription pass.
         llm_text = None
-        if _active_ocr_model and LLM_ALLOW_IMAGE:
+        if _active_ocr_model and LLM_ALLOW_IMAGE and _llm_ocr_suspended():
+            # Skip the redundant vision pass: it was rate-limited earlier this batch
+            # and the free tier won't serve it again until the bucket resets. Doing
+            # so frees the shared quota for the essential distillation call.
+            _append_step(
+                step_log, "llm_ocr", "OCR (LLM)",
+                f"{_active_ocr_model} – skipped (rate-limited earlier this batch; "
+                "built-in OCR is sufficient)",
+                ok=False,
+            )
+        elif _active_ocr_model and LLM_ALLOW_IMAGE:
             _cb("ocr", model=_active_ocr_model)
             t_llm = time.perf_counter()
             llm_text = _extract_raw_ocr(client, image_path, _active_ocr_model)
@@ -2161,7 +2236,12 @@ def _extract_receipt_with_status(
             else:
                 # Surface the real cause (429 / no provider / timeout / empty reply)
                 # captured by _llm_call instead of an opaque "no text".
-                llm_detail = f"{_active_ocr_model} – {_get_llm_error() or 'no text'}"
+                reason = _get_llm_error() or "no text"
+                llm_detail = f"{_active_ocr_model} – {reason}"
+                # Trip the per-batch breaker on a throttle so we stop wasting the
+                # shared free-tier quota on a pass RapidOCR already covers.
+                if _reason_is_throttle(reason):
+                    _note_llm_ocr_throttle()
             _append_step(
                 step_log, "llm_ocr", "OCR (LLM)", llm_detail,
                 ok=bool(llm_text), duration_s=llm_secs,
@@ -2857,6 +2937,8 @@ def process_receipts_batch(
     log(f"  OCR model:    {_active_ocr_model or '(none — direct vision)'}")
     log(f"  Distill model: {_active_distill_model}")
     client = openai_client if openai_client is not None else make_client()
+    # Fresh per-batch LLM-OCR throttle breaker (see reset_batch_llm_state).
+    reset_batch_llm_state()
 
     results: list[dict] = []
     skipped: list[str]  = []

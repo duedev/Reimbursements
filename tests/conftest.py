@@ -31,6 +31,10 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     pr_mod = sys.modules.get("process_receipts")
     if pr_mod is not None and getattr(pr_mod, "_RATE_LIMITER", None) is not None:
         pr_mod._RATE_LIMITER.reset()
+    # Clear the per-batch LLM-OCR throttle breaker so a prior test's throttle
+    # can't pre-suspend the vision pass in the next.
+    if pr_mod is not None and hasattr(pr_mod, "reset_batch_llm_state"):
+        pr_mod.reset_batch_llm_state()
     if request.node.get_closest_marker("no_path_isolation"):
         yield
         return
