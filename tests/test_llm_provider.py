@@ -153,6 +153,29 @@ def test_autopick_empty_when_offline(monkeypatch):
     assert server._openrouter_autopick() == ""
 
 
+def test_reasoning_models_rank_last(monkeypatch):
+    # A reasoning model is image-capable + free + bigger context + matches the
+    # "nano" quick bonus — yet must still rank BELOW a plain vision model, so the
+    # fallback chain only loops back to it after the non-reasoning ones.
+    sample = [
+        {"id": "vendor/plain-vl:free", "name": "Plain VL",
+         "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"input_modalities": ["text", "image"]},
+         "context_length": 8000},
+        {"id": "vendor/omni-nano-reasoning:free", "name": "Omni Nano Reasoning",
+         "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"input_modalities": ["text", "image"]},
+         "context_length": 64000},
+    ]
+    monkeypatch.setattr(server, "_fetch_openrouter_models", lambda *a, **k: sample)
+    assert server._model_is_reasoning(sample[1]) is True
+    assert server._model_is_reasoning(sample[0]) is False
+    ids = [m["id"] for m in server._openrouter_free_vision_models()]
+    assert ids[0] == "vendor/plain-vl:free"
+    assert ids[-1] == "vendor/omni-nano-reasoning:free"
+    assert server._openrouter_autopick() == "vendor/plain-vl:free"
+
+
 # ── OpenRouter provider apply ──────────────────────────────────────────────────
 
 def test_apply_openrouter_points_client_at_cloud(monkeypatch):

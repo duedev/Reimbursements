@@ -593,9 +593,27 @@ def _model_is_vision(m: dict) -> bool:
     return "image" in str(arch.get("modality") or "").lower()
 
 
+# Reasoning/thinking models spend their token budget on hidden reasoning and
+# routinely return EMPTY content for a plain transcription/extraction — a poor OCR
+# / vision pick (and the likely source of the "OCR (LLM) – no text" failures). We
+# don't exclude them (a free vision list can be thin), just rank them LAST so the
+# fallback chain only loops back to a reasoning model after the non-reasoning ones
+# are exhausted.
+_REASONING_MARKERS = ("reasoning", "thinking", "-think", ":think", "qwq",
+                      "-r1", "r1-", ":r1", "/r1", "o1-", "o3-", "deepseek-r")
+
+
+def _model_is_reasoning(m: dict) -> bool:
+    """True for a reasoning-first model (id/name marker), which tends to emit an
+    empty answer on a transcription/extraction task."""
+    blob = f"{m.get('id') or ''} {m.get('name') or ''}".lower()
+    return any(t in blob for t in _REASONING_MARKERS)
+
+
 def _openrouter_score(m: dict) -> tuple:
-    """Sort key (higher first): preferred family, then 'quick' (small/fast)
-    variants, then larger context. Biases the pick toward quick, reliable vision."""
+    """Sort key (higher first): non-reasoning first, then preferred family, then
+    'quick' (small/fast) variants, then larger context. Biases the pick toward
+    quick, reliable, *non-reasoning* vision models."""
     mid = str(m.get("id") or "").lower()
     ctx = m.get("context_length") or (m.get("top_provider") or {}).get("context_length") or 0
     try:
@@ -611,7 +629,9 @@ def _openrouter_score(m: dict) -> tuple:
     fast = 1 if any(t in mid for t in
                     ("flash", "mini", "lite", "small", "nano", "fast",
                      "8b", "7b", "4b", "3b", "2b", "1b")) else 0
-    return (fam, fast, ctx)
+    # Most significant: reasoning models sort to the very end of the chain.
+    not_reasoning = 0 if _model_is_reasoning(m) else 1
+    return (not_reasoning, fam, fast, ctx)
 
 
 def _openrouter_free_vision_models() -> list[dict]:

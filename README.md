@@ -236,6 +236,7 @@ All variables have sensible defaults for local development.
 | `MAX_PARALLEL_REQUESTS` | `1` | Concurrent receipt processing threads (clamped 1–8; also adjustable live via the concurrency slider). Default `1` (serial) is safest for a single local model and free cloud tiers. |
 | `LLM_RATE_LIMIT_ENABLED` | `1` | Cap outbound model requests per minute (free-tier 429 guard). Set `0` to disable. Also toggleable in Settings → Advanced tuning. |
 | `LLM_RATE_LIMIT_PER_MIN` | `20` | Max model requests per minute when rate-limiting is on (`20` = OpenRouter free-tier ceiling; clamped 1–1000). |
+| `LLM_FALLBACK_MAX` | `3` | Max models tried per call before giving up. On a soft bounce (empty/unparseable reply) or 404 the request walks down the free vision fallback list (reasoning models last); never retries on a 429. |
 | `APP_AUTH_TOKEN` | *(unset)* | Shared-secret token required on every request when set. **Set this before exposing the app beyond `127.0.0.1`** (LAN, a phone, or a Cloudflare tunnel). Open the page once with `?token=<value>` — the token is then remembered and attached to image/stream/API requests, so the UI works across reloads and PWA relaunches on remote devices. |
 
 #### AI models

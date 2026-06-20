@@ -115,8 +115,10 @@ use) but nothing in the app turns reasoning on.
   call site hard-codes `api_key="lmstudio"` any more. For OpenRouter the base URL is
   `OPENROUTER_BASE_URL` and the key is the user's (secret `openrouter_api_key`).
 - **OpenRouter auto-pick:** `_openrouter_free_vision_models()` filters the catalogue
-  to free (zero prompt+completion price) + image-capable, ranks by family → quick
-  (small/fast variants) → context; `_openrouter_autopick()` returns the best id.
+  to free (zero prompt+completion price) + image-capable, ranks **non-reasoning
+  first** (`_model_is_reasoning`), then family → quick (small/fast variants) →
+  context; `_openrouter_autopick()` returns the best id. Reasoning models are kept
+  but ranked last (they tend to return empty content on a transcription task).
   Endpoints: `GET/POST /settings/llm-provider`, `GET /models/openrouter`.
 - **Free router default `openrouter/free`** (`OPENROUTER_FREE_ROUTER`): the default
   OpenRouter model is the free router meta-model (OpenRouter auto-selects among free
@@ -223,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **522 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **534 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -271,6 +273,18 @@ to the model — nothing hidden or clipped.
   (LLM) – rate-limited (HTTP 429) …` instead of a bare "no text"/"no response". Add
   new model calls through `_llm_call`, not the client directly, so failures stay
   diagnosable.
+- **Client-side model fallback ladder.** Each extraction call runs down a chain
+  (`_fallback_model_chain` = the active model + `LLM_EXTRA_BODY["models"]`, capped at
+  `LLM_FALLBACK_MAX`=3, deduped) via `_run_model_chain`. It advances to the next free
+  model on a **soft** failure (empty / unparseable 200 — the case OpenRouter's own
+  server-side routing counts as success and won't retry) or a **404** (no provider),
+  but **never on a 429** (the free tier shares one per-minute bucket — pace instead;
+  `_should_advance_model`). The router's `models` list is ranked **non-reasoning
+  first** (server `_openrouter_score` + `_model_is_reasoning`), so the chain only
+  loops back to a reasoning model once the others are exhausted — reasoning models
+  tend to spend their budget thinking and return empty content. Local single-model
+  setups have a 1-element chain → unchanged behaviour (incl. the same-model JSON
+  reprompt, which the multi-model cloud chain skips in favour of the next model).
 - Don't send receipt content to any cloud service other than the chosen local/
   OpenRouter endpoint. Only outbound calls are to the active model endpoint.
 - Module-level model globals persist across tests; monkeypatch them, don't set
@@ -309,6 +323,21 @@ to the model — nothing hidden or clipped.
     classifier, `_llm_call` set/clear, empty+429 OCR reasons, apply-from-config),
     `tests/test_settings_endpoints.py` (+1 round-trip/clamp; fixture now saves/restores
     the rate-limit globals); `tests/conftest.py` resets the limiter window per test.
+  * **Model fallback ladder + reasoning-last ranking** (suite **522 → 534**) — when a
+    free model "bounces" a call with a **soft** failure (empty / unparseable 200 — the
+    case OpenRouter's routing counts as success and won't retry), the pipeline now
+    walks down `_fallback_model_chain` (active model + `LLM_EXTRA_BODY["models"]`,
+    capped `LLM_FALLBACK_MAX`=3) via `_run_model_chain`. It advances on a soft failure
+    or a 404 (no provider) but **never on a 429** (`_should_advance_model` — the free
+    tier shares one per-minute bucket, so the next free model throttles too; pace via
+    the limiter instead). The routing `models` list is now ranked **non-reasoning
+    first** (server `_model_is_reasoning` + a leading key in `_openrouter_score`), so
+    the chain only loops back to a reasoning model after the others are exhausted —
+    reasoning models (e.g. the `…-nano-…-reasoning:free` that was being promoted by the
+    "nano = quick" bonus) tend to spend their budget thinking and return empty content.
+    Local single-model setups get a 1-element chain → unchanged (the same-model JSON
+    reprompt is preserved; the multi-model cloud chain skips it for the next model).
+    Tests: `tests/test_model_fallback.py` (+11), `tests/test_llm_provider.py` (+1).
 
 - **2026-06-19 (OpenRouter-default + live mode availability + round-trip test + chip):**
   Suite **496 → 504** green. A pass over the AI Model UX driven by the user request.

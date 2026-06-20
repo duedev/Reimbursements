@@ -106,6 +106,15 @@ LLM_MAX_RETRIES      = int(os.getenv("LLM_MAX_RETRIES", "2"))
 # LLM_RATE_LIMIT_ENABLED=0 — to turn it off.
 LLM_RATE_LIMIT_ENABLED = os.getenv("LLM_RATE_LIMIT_ENABLED", "1").lower() not in ("0", "false", "no")
 LLM_RATE_LIMIT_PER_MIN = int(os.getenv("LLM_RATE_LIMIT_PER_MIN", "20"))
+# Client-side model fallback ladder. When a free model "bounces" a request with a
+# SOFT failure (empty / unparseable reply) — the case OpenRouter's own server-side
+# routing won't retry, since it counts an empty 200 as a success — walk to the next
+# free model pinned in LLM_EXTRA_BODY["models"] (already ranked non-reasoning-first,
+# so the chain only loops back to a reasoning model once the others are exhausted).
+# This is the total number of models tried for one logical call, bounded so a run
+# of empties can't fan out unboundedly against the rate limit. For a local server
+# (no routing body) the chain is just the one selected model — behaviour unchanged.
+LLM_FALLBACK_MAX = int(os.getenv("LLM_FALLBACK_MAX", "3"))
 RECEIPTS_FOLDER      = os.getenv("RECEIPTS_FOLDER", "receipts")
 OUTPUT_FOLDER        = os.getenv("OUTPUT_FOLDER",   "output")
 
@@ -554,6 +563,52 @@ def _llm_call(client: OpenAI, **kwargs):
     except Exception as exc:
         _set_llm_error(_describe_llm_error(exc))
         raise
+
+
+def _fallback_model_chain(model_id: str) -> list:
+    """Ordered models to try for one logical call: the primary, then the ranked
+    free fallbacks pinned in ``LLM_EXTRA_BODY['models']`` (reasoning models last),
+    de-duplicated and capped at ``LLM_FALLBACK_MAX``. For a local server (no
+    routing body) this is just ``[model_id]`` — no behaviour change."""
+    primary = model_id or _active_distill_model
+    chain = [primary] if primary else []
+    for mid in (LLM_EXTRA_BODY.get("models") or []):
+        if len(chain) >= LLM_FALLBACK_MAX:
+            break
+        if mid and mid not in chain:
+            chain.append(mid)
+    return chain
+
+
+def _should_advance_model(exc: Exception) -> bool:
+    """Whether a HARD failure warrants trying the next model in the chain.
+
+    Only a 404 ("no endpoint/provider for this model right now") — pinning a
+    different model id can still succeed. NOT a 429 (the free tier shares one
+    per-minute bucket, so the next free model throttles too — pace, don't pile on)
+    and not auth/5xx/timeout (already retried by the SDK + server-side routing)."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return status == 404
+
+
+def _run_model_chain(client: OpenAI, chain: list, attempt: Callable):
+    """Drive ``attempt(client, model)`` down the fallback chain.
+
+    ``attempt`` returns the extracted value, or ``None`` for a SOFT failure
+    (empty / unparseable reply — reason already recorded). Advances to the next
+    model on a soft failure or an advanceable hard error (404); otherwise re-raises
+    so the caller's ``except`` records the stop reason. First non-None value wins."""
+    for idx, mid in enumerate(chain):
+        is_last = (idx + 1 >= len(chain))
+        try:
+            value = attempt(client, mid)
+        except Exception as exc:
+            if not is_last and _should_advance_model(exc):
+                continue
+            raise
+        if value is not None:
+            return value
+    return None
 
 
 def warm_up_model() -> bool:
@@ -1240,26 +1295,29 @@ def _extract_raw_ocr(client: OpenAI, image_path: Path, model_id: str) -> Optiona
     try:
         b64, mime = encode_image(image_path)
         thinking_body = _thinking_body(4096, enabled=False)  # OCR never reasons
-        response = _llm_call(
-            client,
-            model=model_id,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                {"type": "text", "text": OLMOCR_RAW_PROMPT},
-            ]}],
-            temperature=0.0, max_tokens=2048,
-            frequency_penalty=0.1,
-            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
-        )
-        text = (response.choices[0].message.content or "").strip()
-        if text:
-            return text
-        # The call succeeded (HTTP 200) but the model returned nothing — common on
-        # free reasoning models that spend the token budget on hidden reasoning, or
-        # on a vision provider that silently dropped the image. Name it so the step
-        # log doesn't read the same as a 429/timeout.
-        _set_llm_error("model returned an empty response (no transcription)")
-        return None
+        content = [
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            {"type": "text", "text": OLMOCR_RAW_PROMPT},
+        ]
+
+        def _attempt(cl, mid):
+            response = _llm_call(
+                cl, model=mid,
+                messages=[{"role": "user", "content": content}],
+                temperature=0.0, max_tokens=2048, frequency_penalty=0.1,
+                extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
+            )
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                return text
+            # 200 OK but nothing back — common on free reasoning models that spend
+            # the budget on hidden reasoning, or a vision provider that dropped the
+            # image. Name it (so the step log differs from a 429/timeout) and let
+            # the chain fall through to the next free model.
+            _set_llm_error("model returned an empty response (no transcription)")
+            return None
+
+        return _run_model_chain(client, _fallback_model_chain(model_id), _attempt)
     except Exception as exc:
         print(f"[ocr] Extraction failed for {image_path.name}: {exc}")
         return None
@@ -1836,33 +1894,37 @@ def _unified_distillation(
     _parse = _parse_llm_record
 
     thinking_body = _thinking_body(8192)
-    try:
+    chain = _fallback_model_chain(_active_distill_model) if _retry else [_active_distill_model]
+    single = len(chain) == 1
+
+    def _attempt(cl, mid):
         resp = _llm_call(
-            client,
-            model=_active_distill_model,
-            messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=1024,
-            frequency_penalty=0.15,
+            cl, model=mid, messages=[system_msg, user_msg],
+            temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
             extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
         )
         result = _parse((resp.choices[0].message.content or "").strip())
         if result is not None:
             return result
-        if _retry:
+        # Local single-model: re-ask the SAME model for clean JSON. With a cloud
+        # fallback chain the *next* model is the better retry, so skip the reprompt.
+        if single and _retry:
             print(f"[distill] JSON parse failed, retrying…")
             r2 = _llm_call(
-                client,
-                model=_active_distill_model,
+                cl, model=mid,
                 messages=[system_msg, user_msg,
                           {"role": "user", "content": "Return ONLY the JSON object — no extra text, no markdown."}],
-                temperature=0.0, max_tokens=1024,
-                frequency_penalty=0.15,
+                temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
                 extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
             result = _parse((r2.choices[0].message.content or "").strip())
             if result is not None:
                 return result
         _set_llm_error("model replied but the text was not valid JSON")
+        return None
+
+    try:
+        return _run_model_chain(client, chain, _attempt)
     except Exception as exc:
         print(f"[distill] Exception: {exc}")
     return None
@@ -1889,30 +1951,34 @@ def _extract_with_model(
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
             {"type": "text", "text": prompt},
         ]}
-        resp = _llm_call(
-            client, model=model_id, messages=[system_msg, user_msg],
-            temperature=0.0, max_tokens=1024,
-            frequency_penalty=0.15,
-            extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
-        )
-        result = _parse((resp.choices[0].message.content or "").strip())
-        if result is not None:
-            return result
-        if _retry:
-            print(f"[extract] JSON parse failed for {image_path.name}, retrying…")
-            r2 = _llm_call(
-                client,
-                model=model_id,
-                messages=[system_msg, user_msg,
-                          {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
-                temperature=0.0, max_tokens=1024,
-                frequency_penalty=0.15,
+        chain = _fallback_model_chain(model_id) if _retry else [model_id]
+        single = len(chain) == 1
+
+        def _attempt(cl, mid):
+            resp = _llm_call(
+                cl, model=mid, messages=[system_msg, user_msg],
+                temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
                 extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
             )
-            result = _parse((r2.choices[0].message.content or "").strip())
+            result = _parse((resp.choices[0].message.content or "").strip())
             if result is not None:
                 return result
-        _set_llm_error("model replied but the text was not valid JSON")
+            if single and _retry:
+                print(f"[extract] JSON parse failed for {image_path.name}, retrying…")
+                r2 = _llm_call(
+                    cl, model=mid,
+                    messages=[system_msg, user_msg,
+                              {"role": "user", "content": "Your response was not valid JSON. Return ONLY the JSON object."}],
+                    temperature=0.0, max_tokens=1024, frequency_penalty=0.15,
+                    extra_body={**thinking_body, "repeat_penalty": 1.1, **LLM_EXTRA_BODY},
+                )
+                result = _parse((r2.choices[0].message.content or "").strip())
+                if result is not None:
+                    return result
+            _set_llm_error("model replied but the text was not valid JSON")
+            return None
+
+        return _run_model_chain(client, chain, _attempt)
     except Exception as exc:
         print(f"[extract] Exception for {image_path.name}: {exc}")
     return None
