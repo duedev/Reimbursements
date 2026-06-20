@@ -225,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **534 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **542 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -272,7 +272,21 @@ to the model — nothing hidden or clipped.
   step-logger reads it right after each stage, so the card/run log show e.g. `OCR
   (LLM) – rate-limited (HTTP 429) …` instead of a bare "no text"/"no response". Add
   new model calls through `_llm_call`, not the client directly, so failures stay
-  diagnosable.
+  diagnosable. `_describe_llm_error` **recovers just the headline message** from a
+  free-tier 429 (whose body embeds a giant nested `previous_errors` dump the SDK
+  stuffs into `exc.message`) via `_PROVIDER_MSG_RE` and caps it with `_shorten_detail`
+  (`_LLM_DETAIL_MAX`=200) so the log isn't flooded with the raw blob.
+- **Per-batch LLM-OCR throttle breaker.** The optional LLM-OCR (vision) pass and the
+  essential distillation call share ONE free-tier per-minute bucket; once the vision
+  pass 429s it stays throttled for the minute, so retrying it on every receipt only
+  burns wall-time AND starves distillation of the shared quota (dropping receipts to
+  the offline parser). After `_LLM_OCR_THROTTLE_LIMIT` (env, default **2**) throttles
+  `_llm_ocr_suspended()` skips the pass for the rest of the batch (RapidOCR already
+  supplied the text — the cross-reference is pure upside we can drop). State:
+  `_note_llm_ocr_throttle` / `_reason_is_throttle`; **reset per batch** via
+  `reset_batch_llm_state()` (called in `server._drain_once` + `process_receipts_batch`;
+  conftest resets it each test). Vision *rescue* (last-resort, only when OCR text is
+  missing) is deliberately NOT gated.
 - **Client-side model fallback ladder.** Each extraction call runs down a chain
   (`_fallback_model_chain` = the active model + `LLM_EXTRA_BODY["models"]`, capped at
   `LLM_FALLBACK_MAX`=3, deduped) via `_run_model_chain`. It advances to the next free
@@ -293,6 +307,29 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (free-tier 429 cleanup — readable reasons + LLM-OCR breaker):** Suite
+  **534 → 542** green. Driven by a run (`run_202606200149020002`) where OpenRouter's
+  free `free-models-per-min` bucket was exhausted from the start: **every** optional
+  LLM-OCR (vision) pass 429'd, each step logged the entire multi-thousand-char nested
+  `previous_errors` dump, and one receipt's distillation also 429'd (→ offline parser)
+  because the doomed vision calls were burning the shared per-minute quota. Two fixes:
+  * **Readable failure reasons** — `_describe_llm_error` now recovers just the headline
+    provider message from the 429 blob (the OpenAI SDK stuffs the whole body into
+    `exc.message` when it isn't parsed into `.body`) via a new `_PROVIDER_MSG_RE`, and
+    caps every detail with `_shorten_detail` (`_LLM_DETAIL_MAX`=200). The log now shows
+    `OCR (LLM) – rate-limited (HTTP 429) — Rate limit exceeded: free-models-per-min.`
+    instead of the raw dump.
+  * **Per-batch LLM-OCR throttle breaker** — after `_LLM_OCR_THROTTLE_LIMIT` (env,
+    default 2) throttles, `_extract_receipt_with_status` **skips the optional vision
+    pass for the rest of the batch** (RapidOCR already supplied the text, so the
+    cross-reference is pure upside) — freeing the shared free-tier bucket for the
+    essential distillation call. State (`_llm_ocr_suspended` / `_note_llm_ocr_throttle`
+    / `_reason_is_throttle`) is **reset per batch** in `server._drain_once` and
+    `process_receipts_batch`; conftest resets it each test. Vision *rescue* (last-resort)
+    is deliberately not gated.
+  * Tests: `tests/test_llm_ocr_breaker.py` (+8 — clean/capped 429 reason, structured-body
+    path, throttle classifier, breaker state machine, end-to-end suspend + no-throttle).
 
 - **2026-06-20 (serial-by-default + LLM rate limiter + failure-reason surfacing):**
   Suite **504 → 522** green. Driven by a test batch where OpenRouter's free tier

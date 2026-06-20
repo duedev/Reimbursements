@@ -1258,6 +1258,9 @@ def _drain_once() -> bool:
         return False
 
     _batch_t0 = time.perf_counter()
+    # Reset the per-batch LLM-OCR throttle breaker so a previous batch's free-tier
+    # throttling doesn't carry over and pre-suspend the vision pass for this one.
+    _pr.reset_batch_llm_state()
     # Open a fresh run log BEFORE the first line so the whole batch is captured.
     run = _begin_run(batch)
     instr = run["instructions"]
