@@ -1436,9 +1436,9 @@
     <div class="card-title">Add Receipts</div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       <span style="font-size:12px;color:var(--muted)">Process</span>
-      <input type="range" id="conc-slider" min="1" max="8" step="1" value="3" style="flex:0 1 150px"
-             title="How many receipts the worker reads in parallel. The local model is the bottleneck — more isn't always faster, and too many can time out and fall back to the offline parser. Takes effect live, even mid-batch.">
-      <span id="conc-val" style="font-variant-numeric:tabular-nums;font-weight:600;min-width:72px">3 at a time</span>
+      <input type="range" id="conc-slider" min="1" max="8" step="1" value="1" style="flex:0 1 150px"
+             title="How many receipts the worker reads in parallel. The model is the bottleneck — more isn't always faster, and too many can time out (or trip a free cloud tier's rate limit) and fall back to the offline parser. Default 1 is safest. Takes effect live, even mid-batch.">
+      <span id="conc-val" style="font-variant-numeric:tabular-nums;font-weight:600;min-width:72px">1 at a time</span>
       <span style="font-size:11px;color:var(--muted)">— higher works your model harder; applies live, even mid-batch</span>
     </div>
     <label id="drop-zone" for="file-input">
@@ -2031,6 +2031,16 @@
           <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
             Max upload size (MB, 0 = ∞)
             <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Throttle requests sent to the model. Free cloud tiers throttle hard — OpenRouter's free models allow ~20/min and answer a burst past that with 429 'rate limited' errors that show up as failed receipts. On by default; applies to every provider.">
+            Rate-limit requests
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-rate-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum model requests per minute when rate-limiting is on. OpenRouter's free-tier ceiling is 20/min.">
+            Max requests / min
+            <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
           </label>
         </div>
       </div>
@@ -5118,6 +5128,9 @@ async function loadProcessingSettings() {
     _setNum('proc-store-px',    d.store_max_px);
     _setNum('proc-pdf-pages',   d.pdf_max_pages);
     _setNum('proc-max-upload',  d.max_upload_mb);
+    const _re = document.getElementById('proc-rate-enabled');
+    if (_re) _re.checked = d.rate_limit_enabled !== false;
+    _setNum('proc-rate-rpm',    d.rate_limit_per_min);
   } catch (_) {}
 }
 
@@ -5144,6 +5157,8 @@ async function saveProcessingSettings() {
     store_max_px:    parseInt(document.getElementById('proc-store-px').value, 10),
     pdf_max_pages:   parseInt(document.getElementById('proc-pdf-pages').value, 10),
     max_upload_mb:   parseInt(document.getElementById('proc-max-upload').value, 10),
+    rate_limit_enabled: document.getElementById('proc-rate-enabled').checked,
+    rate_limit_per_min: parseInt(document.getElementById('proc-rate-rpm').value, 10),
   };
   try {
     const res = await fetch('/settings/processing', {
@@ -5161,12 +5176,13 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr'].forEach(id => {
-  document.getElementById(id).addEventListener('change', saveProcessingSettings);
+['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr', 'proc-rate-enabled'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', saveProcessingSettings);
 });
 
 // Advanced numeric tunables — debounced save on change.
-['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload'].forEach(id => {
+['proc-llm-timeout', 'proc-llm-retries', 'proc-store-px', 'proc-pdf-pages', 'proc-max-upload', 'proc-rate-rpm'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => {
     clearTimeout(_procSaveTimer);
@@ -5190,7 +5206,7 @@ function _setConcLabel(v) {
 (async function loadConcurrency() {
   try {
     const d = await (await fetch('/settings/processing')).json();
-    const v = d.max_parallel || 3;
+    const v = d.max_parallel || 1;
     document.getElementById('conc-slider').value = v;
     _setConcLabel(v);
   } catch (_) {}

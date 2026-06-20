@@ -267,6 +267,8 @@ def _processing_settings() -> dict:
         "store_max_px":            _pr.STORE_MAX_PX,
         "pdf_max_pages":           _pr.PDF_MAX_PAGES,
         "max_upload_mb":           (MAX_UPLOAD_BYTES // (1024 * 1024)) if MAX_UPLOAD_BYTES else 0,
+        "rate_limit_enabled":      _pr.LLM_RATE_LIMIT_ENABLED,
+        "rate_limit_per_min":      _pr.LLM_RATE_LIMIT_PER_MIN,
     }
 
 
@@ -333,6 +335,17 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     if proc.get("max_upload_mb") is not None:
         try:
             MAX_UPLOAD_BYTES = max(0, min(2000, int(proc["max_upload_mb"]))) * 1024 * 1024
+        except (TypeError, ValueError):
+            pass
+    # LLM request-rate cap (free-tier 429 guard). Either key may be set alone.
+    rl_enabled = proc.get("rate_limit_enabled")
+    rl_per_min = proc.get("rate_limit_per_min")
+    if rl_enabled is not None or rl_per_min is not None:
+        try:
+            _pr.set_rate_limit(
+                per_min=(max(1, min(1000, int(rl_per_min))) if rl_per_min is not None else None),
+                enabled=(bool(rl_enabled) if rl_enabled is not None else None),
+            )
         except (TypeError, ValueError):
             pass
     return _processing_settings()
@@ -4073,6 +4086,8 @@ class ProcessingSettingsRequest(BaseModel):
     store_max_px:            int | None = None
     pdf_max_pages:           int | None = None
     max_upload_mb:           int | None = None
+    rate_limit_enabled:      bool | None = None
+    rate_limit_per_min:      int | None = None
 
 
 @app.get("/settings/processing")
@@ -4106,6 +4121,10 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
             proc["pdf_max_pages"] = max(1, min(200, int(body.pdf_max_pages)))
         if body.max_upload_mb is not None:
             proc["max_upload_mb"] = max(0, min(2000, int(body.max_upload_mb)))
+        if body.rate_limit_enabled is not None:
+            proc["rate_limit_enabled"] = bool(body.rate_limit_enabled)
+        if body.rate_limit_per_min is not None:
+            proc["rate_limit_per_min"] = max(1, min(1000, int(body.rate_limit_per_min)))
         cfg["processing"] = proc
         _save_config(cfg)
         applied = _apply_processing_config(cfg)

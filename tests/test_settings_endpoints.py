@@ -24,7 +24,8 @@ def client(tmp_path, monkeypatch):
     # Save runtime globals so endpoint mutations don't leak into other tests
     saved = (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
              pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
-             pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS)
+             pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS,
+             pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED)
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
@@ -35,7 +36,10 @@ def client(tmp_path, monkeypatch):
     server._item_cache.clear()
     (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
      pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
-     pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS) = saved
+     pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS,
+     pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED) = saved
+    pr.set_rate_limit(per_min=pr.LLM_RATE_LIMIT_PER_MIN,
+                      enabled=pr.LLM_RATE_LIMIT_ENABLED)
 
 
 def test_processing_round_trip(client):
@@ -64,6 +68,23 @@ def test_max_parallel_round_trip_and_clamp(client):
     # clamps to 1..8
     assert client.post("/settings/processing", json={"max_parallel": 0}).json()["max_parallel"] == 1
     assert client.post("/settings/processing", json={"max_parallel": 99}).json()["max_parallel"] == 8
+
+
+def test_rate_limit_round_trip_and_clamp(client):
+    r = client.post("/settings/processing",
+                    json={"rate_limit_per_min": 12, "rate_limit_enabled": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["rate_limit_per_min"] == 12 and body["rate_limit_enabled"] is True
+    assert pr.LLM_RATE_LIMIT_PER_MIN == 12 and pr._RATE_LIMITER.max_requests == 12
+    assert client.get("/settings/processing").json()["rate_limit_per_min"] == 12
+    # clamps to 1..1000
+    assert client.post("/settings/processing", json={"rate_limit_per_min": 0}).json()["rate_limit_per_min"] == 1
+    assert client.post("/settings/processing", json={"rate_limit_per_min": 99999}).json()["rate_limit_per_min"] == 1000
+    # toggle off
+    off = client.post("/settings/processing", json={"rate_limit_enabled": False}).json()
+    assert off["rate_limit_enabled"] is False
+    assert pr.LLM_RATE_LIMIT_ENABLED is False and pr._RATE_LIMITER.enabled is False
 
 
 def test_email_password_hidden_and_preserved(client):
