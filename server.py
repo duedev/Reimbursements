@@ -2741,12 +2741,19 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     # dicts here, so this updates the stored paths in place (the output folder and
     # re-generation both stay consistent); already-compressed records skip. Run it
     # off the event loop since it does PIL disk I/O.
+    #
+    # NB: results_copy was already snapshotted from _results under _results_lock
+    # above. We deliberately do NOT re-hold the lock across this whole PIL loop —
+    # doing so froze the background worker (which appends results under the same
+    # lock) and every results-reading endpoint (/queue/status, /stats, /events,
+    # _persist_state) for the entire compression window. Each record's path update
+    # is an atomic single-field string swap, so a concurrent reader always sees a
+    # consistent old-or-new path.
     def _compress_live():
-        with _results_lock:
-            compress_result_images(
-                results_copy,
-                log=lambda m: _broadcast({"type": "log", "message": m}),
-            )
+        compress_result_images(
+            results_copy,
+            log=lambda m: _broadcast({"type": "log", "message": m}),
+        )
     await asyncio.get_event_loop().run_in_executor(None, _compress_live)
 
     # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
@@ -2944,12 +2951,27 @@ _CSV_COLUMNS = [
 ]
 
 
+def _csv_safe(value: str) -> str:
+    """Neutralise CSV/spreadsheet formula injection for one field.
+
+    Receipt fields (vendor, summary, description, job…) come from OCR/LLM
+    extraction. A value beginning with ``= + - @`` (or a leading tab/CR) is
+    interpreted as a *formula* by Excel/Sheets when the exported CSV is opened —
+    the classic CSV-injection vector. Prefix such values with a single quote so
+    they are treated as text (OWASP-recommended mitigation). Untrusted leads are
+    rare, so normal values are untouched.
+    """
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def _results_to_csv(results: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([name for name, _ in _CSV_COLUMNS])
     for r in sorted(results, key=sort_key_for_receipt):
-        writer.writerow([fn(r) for _, fn in _CSV_COLUMNS])
+        writer.writerow([_csv_safe(fn(r)) for _, fn in _CSV_COLUMNS])
     return buf.getvalue()
 
 
@@ -3271,6 +3293,15 @@ class RetryRequest(BaseModel):
 async def retry_receipt(body: RetryRequest):
     """Re-queue a failed receipt for reprocessing (sends it back to the front of the queue)."""
     filename = body.filename
+
+    # Reject path-traversal in the supplied name before it is used to build
+    # filesystem candidates below (``PROCESSING_FOLDER / "../.."`` does NOT collapse
+    # the ``..`` — ``.exists()`` would stat the traversed path and the worker would
+    # then ``shutil.move`` an arbitrary file into the pipeline). Mirror the guard
+    # used by ``/receipt-image``.
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        return JSONResponse(
+            {"ok": False, "error": "invalid filename"}, status_code=400)
 
     # 1. Try _results first (image was already renamed/moved to IMAGES_FOLDER)
     img_path_str: str | None = None

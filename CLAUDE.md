@@ -45,7 +45,7 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 | File | What lives here |
 |---|---|
-| `server.py` (~4k lines) | FastAPI app: all HTTP/SSE endpoints (87 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
+| `server.py` (~5.2k lines) | FastAPI app: all HTTP/SSE endpoints (95 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
 | `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
 | `templates/index.html` (~5.4k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
@@ -225,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **567 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **589 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -307,6 +307,47 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (QC hardening — 5 HIGH audit fixes):** Suite **567 → 589** green. A
+  thorough senior-developer QC pass (five parallel subsystem audits) surfaced one
+  recurring theme — *untrusted OCR/LLM text and request filenames reaching sensitive
+  sinks unsanitized*. Fixed the HIGH tier:
+  * **H1 — `/retry-receipt` path traversal** — the request `filename` was used to build
+    `PROCESSING_FOLDER / name` / `INTAKE_FOLDER / filename` with **no guard**; `..`
+    doesn't collapse in `Path` division, so `.exists()` stat'd the traversed path and the
+    worker would `shutil.move` an arbitrary file into the pipeline (move + disclosure via
+    the rendered receipt image). Added the same `..`/`/`/`\` reject `/receipt-image` uses
+    (`server.py:retry_receipt`). 400 on a bad name; clean basenames still 404 when absent.
+  * **H2 — formula / CSV injection** — vendor/summary/notes/job fields (OCR/LLM-derived)
+    were written to cells & the CSV export verbatim; a vendor reading `=HYPERLINK(...)`
+    became a **live formula**, and `=`/`+`/`-`/`@` leads injected into a recipient's
+    Excel/Sheets when the emailed CSV is opened. New `spreadsheet_theme.write_text_cell`
+    forces a leading-`=` cell back to a string literal (`data_type='s'` — no visible
+    apostrophe, never executes); new `server._csv_safe` quote-prefixes formula-lead CSV
+    fields (OWASP mitigation). The app's own `=SUM`/`=Summary!` formulas stay live.
+  * **H3 — control char aborted the whole export** — a stray `\x0c`/`\x07` in any field
+    made openpyxl raise `IllegalCharacterError` at cell assignment, losing the **entire**
+    batch's workbook (500). New `spreadsheet_theme.sanitize_cell_text` strips
+    `ILLEGAL_CHARACTERS_RE` and caps to Excel's 32k cell limit; applied (via
+    `write_text_cell`) to vendor/job/summary/notes + the unparseable-date fallback in
+    `_write_data_row` and the Insights "Top Vendors" name cell.
+  * **H4 — export froze the app** — `make_spreadsheet._compress_live` held `_results_lock`
+    across the whole PIL compression loop, serialising the background worker and every
+    results-reading endpoint (`/queue/status`, `/stats`, `/events`, `_persist_state`) for
+    the entire export. `results_copy` is already snapshotted under the lock, so the loop
+    now runs **without** re-holding it (per-record path update is an atomic field swap).
+  * **H5 — watch mode ignored the provider config** — `watch_mode.main()` hard-coded
+    `OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio")`, bypassing `make_client()`
+    and never applying the saved provider config → OpenRouter / custom URLs silently
+    401'd → offline parser. Now lazily applies `server._first_run_provider_default()` +
+    `_apply_llm_server_config()` then builds via `process_receipts.make_client()` (dropped
+    the now-unused `LMSTUDIO_BASE_URL`/`LLM_TIMEOUT`/`LLM_MAX_RETRIES` imports).
+  * Tests: `tests/test_qc_hardening.py` (+22). **Still-open (lower-severity) audit items
+    not yet fixed:** README/TUTORIAL still claim "nothing leaves your machine" (false since
+    OpenRouter); `inf`/`nan` amount → blank Excel cell; OpenRouter daily counter under-counts
+    SDK-internal retries; dead `type:"progress"` SSE handler (progress bar stuck at 0%);
+    unbounded client-side `#log` growth; `_persist_state` shared-tmp race; no `test_watch_mode`/
+    `test_app_secrets`; `receipt_testkit` `hash()`-seeded noise non-deterministic.
 
 - **2026-06-20 (OpenRouter daily-cap live counter + queried cap):** Suite **557 → 567**
   green. Shows how much of the free-tier *daily* quota is left, live.

@@ -25,21 +25,19 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from openai import OpenAI
+from openai import OpenAI  # used only for type annotations below
 
 import app_secrets
 from process_receipts import (
     CONFIG_FILE,
     IMAGE_EXTENSIONS,
-    LLM_TIMEOUT,
-    LLM_MAX_RETRIES,
-    LMSTUDIO_BASE_URL,
     MAX_PARALLEL_REQUESTS,
     OUTPUT_FOLDER,
     classify_category,
     extract_receipt_data,
     generate_spreadsheet,
     initialize_models,
+    make_client,
     rename_receipt_image,
     sort_key_for_receipt,
     _detect_duplicates,
@@ -284,9 +282,21 @@ def main():
     print(f"[watch] Staged: {WATCH_STAGED}")
     print(f"[watch] State:  {STATE_FILE}")
 
+    # Restore the saved LLM provider config (OpenRouter / custom server URL +
+    # API key) BEFORE building the client, mirroring the web server's startup.
+    # Without this the watcher ignored the user's provider choice and hard-coded
+    # the LM Studio dummy key — so OpenRouter and any custom endpoint silently
+    # 401'd and every receipt fell back to the offline parser. Imported lazily so
+    # the watcher doesn't pull in the FastAPI app unless it actually runs.
+    try:
+        import server as _srv
+        _srv._first_run_provider_default()
+        _srv._apply_llm_server_config()
+    except Exception as exc:
+        print(f"[watch] Warning: could not apply saved LLM provider config: {exc}")
+
     initialize_models()
-    client = OpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lmstudio",
-                    timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
+    client = make_client()
     state  = load_state()
 
     while True:

@@ -10,12 +10,57 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 from openpyxl.chart.series import DataPoint
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
+
+# Excel's hard per-cell limit is 32767 chars; stay just under it.
+_MAX_CELL_LEN = 32760
+
+
+def sanitize_cell_text(value):
+    """Make an untrusted string safe to put in a worksheet cell.
+
+    Receipt fields (vendor, summary, notes, job…) come from OCR/LLM extraction —
+    never trusted. Two hazards are neutralised here:
+
+    * **XML-illegal control characters** (e.g. a stray ``\\x0c`` from OCR) make
+      openpyxl raise ``IllegalCharacterError`` *at cell assignment*, which would
+      abort the **entire** workbook build and lose every receipt's report — so we
+      strip them.
+    * **Over-long values** beyond Excel's 32767-char cell limit produce a file
+      Excel rejects on open — so we cap with an ellipsis.
+
+    Non-strings (numbers, dates) pass through untouched. Formula-injection (a
+    leading ``=``) is handled separately by ``write_text_cell`` because it needs
+    the cell object.
+    """
+    if not isinstance(value, str):
+        return value
+    value = ILLEGAL_CHARACTERS_RE.sub("", value)
+    if len(value) > _MAX_CELL_LEN:
+        value = value[:_MAX_CELL_LEN - 1] + "…"
+    return value
+
+
+def write_text_cell(ws, row: int, column: int, value):
+    """``ws.cell(row, column, value=…)`` for **untrusted text**.
+
+    Sanitises the value (see ``sanitize_cell_text``) and neutralises spreadsheet
+    formula injection: a field that reads ``=HYPERLINK(...)`` or ``=1+1`` would
+    otherwise be stored as a *live formula* (openpyxl flags a leading ``=`` as
+    ``data_type == 'f'``). Forcing the cell back to a string literal makes Excel
+    display the text verbatim and never execute it — with no visible apostrophe.
+    Returns the cell so callers can set ``.font`` / ``.alignment``.
+    """
+    cell = ws.cell(row=row, column=column, value=sanitize_cell_text(value))
+    if cell.data_type == "f":
+        cell.data_type = "s"
+    return cell
 
 # ── Color palette ──────────────────────────────────────────────────────────────
 COLOR_TITLE_BG    = "2C3E50"
@@ -226,22 +271,25 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     else:
         date_val = None
 
-    cell_b = ws.cell(row=row, column=COL_DATE, value=date_val)
     if isinstance(date_val, (datetime, date)):
+        cell_b = ws.cell(row=row, column=COL_DATE, value=date_val)
         cell_b.number_format = DATE_FORMAT
+    else:
+        # Unparseable date left as a raw string — sanitise it like any other
+        # untrusted field so a stray control char / leading '=' can't abort/inject.
+        cell_b = write_text_cell(ws, row, COL_DATE, date_val)
     cell_b.alignment = _align(h="center")
 
-    # C — Store / vendor name
-    cell_c = ws.cell(row=row, column=COL_STORE, value=data.get("vendor") or "")
+    # C — Store / vendor name (untrusted OCR/LLM text — sanitise + de-formula)
+    cell_c = write_text_cell(ws, row, COL_STORE, data.get("vendor") or "")
     cell_c.alignment = _align(h="center", wrap=True)
 
     # D — Job Name
-    cell_d = ws.cell(row=row, column=COL_JOB_NAME, value=data.get("job_name") or "")
+    cell_d = write_text_cell(ws, row, COL_JOB_NAME, data.get("job_name") or "")
     cell_d.alignment = _align(h="center", wrap=True)
 
     # E — Job Number (all categories)
-    e_val = data.get("job_number")
-    cell_e = ws.cell(row=row, column=COL_JOB_NUMBER, value=e_val)
+    cell_e = write_text_cell(ws, row, COL_JOB_NUMBER, data.get("job_number"))
     cell_e.alignment = _align(h="center")
 
     # F — Amount
@@ -260,9 +308,9 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
             cell_f.value = amount
     cell_f.alignment = _align(h="right")
 
-    # G — AI Summary
+    # G — AI Summary (untrusted LLM text)
     ai_summary = (data.get("ai_summary") or "").strip()
-    cell_g = ws.cell(row=row, column=COL_SUMMARY, value=ai_summary or None)
+    cell_g = write_text_cell(ws, row, COL_SUMMARY, ai_summary or None)
     cell_g.font      = _font(size=10, color="4B5563")
     cell_g.alignment = _align(h="center", wrap=True)
 
@@ -273,7 +321,7 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
         notes_cell_value = f"{notes_text}\n{flag_text}"
     else:
         notes_cell_value = notes_text or flag_text or None
-    cell_h = ws.cell(row=row, column=COL_NOTES, value=notes_cell_value)
+    cell_h = write_text_cell(ws, row, COL_NOTES, notes_cell_value)
     if flag_text:
         cell_h.fill  = _fill(COLOR_FLAG_BG)
         cell_h.font  = _font(size=10, color="991B1B")
@@ -817,7 +865,7 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     ven_first = row
     vendors = insights["top_vendors"]
     for v in vendors:
-        ws.cell(row=row, column=1, value=v["vendor"]).alignment = _align(h="left", wrap=False)
+        write_text_cell(ws, row, 1, v["vendor"]).alignment = _align(h="left", wrap=False)
         ws.cell(row=row, column=2, value=v["count"]).alignment = _align(h="center")
         amt = ws.cell(row=row, column=3, value=v["total"])
         amt.number_format = ACCT_FORMAT
