@@ -14,7 +14,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 
 ## Features
 
-- **Local AI only** — Uses LM Studio for all vision and language inference; nothing leaves your machine
+- **Local by default** — On-host LM Studio (or the bundled Docker model) runs all vision and language inference, so receipt data stays on your machine. An **optional** OpenRouter cloud mode is available for zero-setup free models; when enabled, requests (and, unless you choose "send OCR text only", the receipt image) go to that one cloud endpoint
 - **Web UI with live Kanban board** — Real-time receipt status tracking (Queued → OCR → Distilling → Done/Failed) via Server-Sent Events
 - **Batch & continuous modes** — Process a folder all at once, or let the watcher auto-queue new files as they appear
 - **PDF support** — PDFs are automatically expanded to per-page images before processing

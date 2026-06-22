@@ -404,7 +404,7 @@ sensible defaults, and persisted:
 
 ## 17. Non-functional requirements
 
-- **Privacy:** no receipt data leaves the machine except to the local model.
+- **Privacy:** local by default — no receipt data leaves the machine except to the local model. The optional OpenRouter cloud mode (off by default) is the one exception: when enabled it sends requests to that cloud endpoint (image included unless "send OCR text only" is chosen).
 - **Resilience:** survive per-receipt failures, model outages, and restarts
   without losing processed work.
 - **Performance:** parallel processing; responsive UI; don't block the event loop
