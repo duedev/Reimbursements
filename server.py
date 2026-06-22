@@ -21,7 +21,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -109,6 +109,11 @@ _kanban_lock = threading.Lock()
 
 _results: list[dict] = []
 _results_lock = threading.Lock()
+
+# Serialises the .app_state.json write so two concurrent persisters (e.g. the
+# worker thread + an event-loop handler) can't interleave their write/replace and
+# publish a half-written file.
+_persist_lock = threading.Lock()
 
 _last_context: dict = {"employee": "Employee", "job_name": "", "job_number": ""}
 
@@ -198,6 +203,10 @@ _worker_start_lock = threading.Lock()
 
 _subscribers: list[Queue] = []
 _sub_lock = threading.Lock()
+# Cap each SSE client's pending-event queue so a slow/stuck client (or a stalled
+# proxy) can't grow memory without bound during a busy batch. On overflow the
+# oldest event is dropped; the next full_state re-syncs the board.
+SSE_QUEUE_MAX = int(os.getenv("SSE_QUEUE_MAX", "2000"))
 
 # Item metadata cache — preserves queue item data for stall recovery
 _item_cache: dict[str, dict] = {}
@@ -907,6 +916,14 @@ def _broadcast(event: dict) -> None:
         for q in list(_subscribers):
             try:
                 q.put_nowait(event)
+            except Full:
+                # Slow/stuck client: drop its oldest queued event to bound memory,
+                # then enqueue the newest so it still gets the latest state.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -933,7 +950,7 @@ def _append_run_line(message: str, level: str = "info") -> None:
 
 
 def _add_subscriber() -> Queue:
-    q: Queue = Queue()
+    q: Queue = Queue(maxsize=SSE_QUEUE_MAX)
     with _sub_lock:
         _subscribers.append(q)
     return q
@@ -1021,9 +1038,16 @@ def _persist_state() -> None:
             "openrouter_usage": _pr.get_openrouter_usage(),
         }
         OUT_FOLDER.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
-        tmp.write_text(json.dumps(payload, default=str))
-        tmp.replace(STATE_FILE)
+        blob = json.dumps(payload, default=str)
+        # Unique tmp name + a lock so concurrent persisters can't clobber each
+        # other's tmp file and replace() a half-written one into place.
+        with _persist_lock:
+            tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                tmp.write_text(blob)
+                tmp.replace(STATE_FILE)
+            finally:
+                tmp.unlink(missing_ok=True)
     except Exception as exc:
         print(f"[state] persist failed: {exc}")
 
@@ -1423,6 +1447,14 @@ def _drain_once() -> bool:
             )
             futures_map[future] = item
 
+        # Drive the "Processing & Errors" progress bar: emit a progress event as
+        # each receipt finishes so the widget actually moves (it was wired in the
+        # SPA but the worker never emitted the event — bar was stuck at 0%).
+        _progress_total = len(futures_map)
+        _progress_done  = 0
+        _broadcast({"type": "progress", "current": 0,
+                    "total": _progress_total, "filename": ""})
+
         for future in concurrent.futures.as_completed(futures_map):
             if _worker_cancel.is_set():
                 break
@@ -1430,6 +1462,9 @@ def _drain_once() -> bool:
             fname = item["filename"]
             path  = Path(item["path"])
             steps = item.get("_steps", [])
+            _progress_done += 1
+            _broadcast({"type": "progress", "current": _progress_done,
+                        "total": _progress_total, "filename": fname})
             try:
                 data = future.result()
             except Exception as exc:
@@ -2754,7 +2789,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             results_copy,
             log=lambda m: _broadcast({"type": "log", "message": m}),
         )
-    await asyncio.get_event_loop().run_in_executor(None, _compress_live)
+    await asyncio.get_running_loop().run_in_executor(None, _compress_live)
 
     # Deep-copy so we don't mutate _results; re-detect duplicates on filtered set
     # so excluded items don't leave stale duplicate flags on the remaining receipts
@@ -4116,10 +4151,7 @@ async def llm_server_load():
 
 
 # ── Folder / file-manager helpers ──────────────────────────────────────────────
-
-def _is_docker() -> bool:
-    return Path("/.dockerenv").exists()
-
+# (Docker detection reuses _in_docker() defined above — same /.dockerenv probe.)
 
 def _open_folder_native(folder: Path) -> None:
     import sys
@@ -4158,7 +4190,7 @@ async def open_output_folder():
 async def open_folder_in_manager():
     folder = Path(OUTPUT_FOLDER).resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    if _is_docker():
+    if _in_docker():
         host = _host_output() or str(folder)
         return JSONResponse({"ok": True, "path": str(folder), "host_path": host, "docker": True})
     try:
@@ -4176,7 +4208,7 @@ class OpenFolderRequest(BaseModel):
 async def open_folder_by_path(body: OpenFolderRequest):
     """Open an arbitrary folder path in the native file manager."""
     folder = Path(body.path).resolve()
-    if _is_docker():
+    if _in_docker():
         return JSONResponse({"ok": True, "path": str(folder), "docker": True})
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -4202,7 +4234,7 @@ async def open_watch_folder():
         from watch_mode import WATCH_INBOX
         folder = Path(WATCH_INBOX).resolve()
         folder.mkdir(parents=True, exist_ok=True)
-        if _is_docker():
+        if _in_docker():
             host = _host_intake() or str(folder)
             return JSONResponse({"ok": True, "path": str(folder), "host_path": host, "docker": True})
         _open_folder_native(folder)

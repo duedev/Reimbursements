@@ -62,6 +62,18 @@ def write_text_cell(ws, row: int, column: int, value):
         cell.data_type = "s"
     return cell
 
+
+def _coerce_amount(value):
+    """Return ``value`` as a finite, cents-rounded float, or ``None`` if it is not
+    a real number. Guards against ``inf``/``nan`` — which slip through ``float()``
+    *without* raising and then serialise to a corrupt (blank) Excel numeric cell
+    and poison the Insights total."""
+    try:
+        f = round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
 # ── Color palette ──────────────────────────────────────────────────────────────
 COLOR_TITLE_BG    = "2C3E50"
 COLOR_TITLE_FG    = "FFFFFF"
@@ -296,16 +308,19 @@ def _write_data_row(ws, row: int, receipt_no: int, data: dict,
     amount = data.get("amount")
     cell_f = ws.cell(row=row, column=COL_AMOUNT)
     if amount is not None:
-        try:
+        num = _coerce_amount(amount)
+        if num is not None:
             # Use the SAME cents-rounded value that _compute_insights sums, so
             # Excel's SUM and the Insights "Total Spend" KPI never disagree.
-            cell_f.value = round(float(amount), 2)
+            cell_f.value = num
             cell_f.number_format = ACCT_FORMAT
-        except (TypeError, ValueError):
+        elif isinstance(amount, str):
             # Non-numeric amount ("$12.00", "12,00", "n/a", …): fall back to the
-            # raw value as a string so the export still succeeds. No currency
-            # format, since the value isn't a number.
-            cell_f.value = amount
+            # raw value as sanitised text so the export still succeeds. No
+            # currency format, since the value isn't a number.
+            cell_f.value = sanitize_cell_text(amount)
+        # else: a non-finite number (inf/nan) — leave the cell blank rather than
+        # writing a corrupt numeric cell Excel rejects on open.
     cell_f.alignment = _align(h="right")
 
     # G — AI Summary (untrusted LLM text)
@@ -632,7 +647,9 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
 
         cell_f = ws.cell(row=current_row, column=6, value=_fml("F", data.get("amount") or ""))
         if not sr and data.get("amount"):
-            cell_f.value = float(data["amount"])
+            num = _coerce_amount(data["amount"])
+            if num is not None:
+                cell_f.value = num
         cell_f.number_format = ACCT_FORMAT
         cell_f.alignment = _align(h="right")
 
@@ -683,10 +700,7 @@ def _compute_insights(sections: dict) -> dict:
     for cat in ("fuel", "mats", "misc"):
         label = _CAT_LABELS[cat]
         for d in sections.get(cat, []):
-            try:
-                amt = round(float(d.get("amount") or 0), 2)
-            except (TypeError, ValueError):
-                amt = 0.0
+            amt = _coerce_amount(d.get("amount") or 0) or 0.0
             total += amt
             count += 1
             c = by_category.setdefault(label, {"count": 0, "total": 0.0})

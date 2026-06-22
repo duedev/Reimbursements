@@ -3133,7 +3133,13 @@ function connectSSE() {
         // are both empty.
         const stillWorking = pending > 0 || Object.values(receiptCards)
           .some(c => ['queued', 'ocr', 'distilling'].includes(c.status));
-        if (!stillWorking) celebrate();
+        if (!stillWorking) {
+          celebrate();
+          // Reset the progress widget once the whole workload is done.
+          progressBar.style.width = '0%';
+          progressLbl.textContent = '0 / 0';
+          currentFile.textContent = '';
+        }
       }
       loadIntakeCount();
       loadStats();
@@ -4164,15 +4170,24 @@ document.getElementById('clear-board-btn').addEventListener('click', async () =>
 
 // ── Log helpers ───────────────────────────────────────────────────────────────
 let errorLines = [];
+const LOG_MAX_LINES = 1000;   // cap the live #log so a long session can't grow unbounded
+const ERR_MAX_LINES = 300;    // cap the curated error list likewise
 
 function appendLog(text, level) {
   logEl.textContent += text + '\n';
+  // Trim the oldest lines once the buffer grows past the cap (a long-running
+  // watch session would otherwise accumulate the #log node without bound).
+  const lines = logEl.textContent.split('\n');
+  if (lines.length > LOG_MAX_LINES) {
+    logEl.textContent = lines.slice(lines.length - LOG_MAX_LINES).join('\n');
+  }
   logEl.scrollTop = logEl.scrollHeight;
   // The curated Errors panel stays focused on genuine error *reasons* (so the
   // verbose per-step detail dump doesn't flood it); `level` is accepted for
   // forward-compat but the regex is what gates the curated panel.
   if (/error|skipped|SKIPPED/i.test(text)) {
     errorLines.push(text.trim());
+    if (errorLines.length > ERR_MAX_LINES) errorLines = errorLines.slice(-ERR_MAX_LINES);
     renderErrorPanel();
   }
 }
@@ -5560,8 +5575,8 @@ document.getElementById('ocr-test-input').addEventListener('change', async (e) =
     const chk = await fetch('/debug/ocr-status');
     const chkData = await chk.json();
     if (!chkData.available) {
-      statusEl.innerHTML = `<span style="color:var(--danger)">&#10007; ${chkData.reason}</span>`
-        + (chkData.fix ? `<br><span style="color:var(--warning);font-size:10px">Fix: ${chkData.fix}</span>` : '');
+      statusEl.innerHTML = `<span style="color:var(--danger)">&#10007; ${esc(chkData.reason)}</span>`
+        + (chkData.fix ? `<br><span style="color:var(--warning);font-size:10px">Fix: ${esc(chkData.fix)}</span>` : '');
       btn.disabled = false;
       e.target.value = '';
       return;

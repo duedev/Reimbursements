@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import process_receipts
@@ -47,13 +48,22 @@ def save_secret(key: str, value: str) -> None:
     else:
         data.pop(key, None)
     SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = SECRETS_FILE.with_name(SECRETS_FILE.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+    blob = json.dumps(data, indent=2)
+    # mkstemp creates the temp file with 0600 perms *from the start* (and a unique
+    # name), so the cleartext secret is never briefly world-readable — the previous
+    # write-then-chmod left a race window — and concurrent writers don't collide.
+    fd, tmp_name = tempfile.mkstemp(prefix=SECRETS_FILE.name + ".", dir=str(SECRETS_FILE.parent))
+    tmp = Path(tmp_name)
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(SECRETS_FILE)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(blob)
+        tmp.replace(SECRETS_FILE)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _legacy_config_secret(legacy_block: str, legacy_key: str) -> str:

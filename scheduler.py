@@ -208,7 +208,7 @@ async def run_scheduler(
                         continue  # not there yet — keep sleeping in ≤60s slices
 
             results, employee = get_results()
-            report = await asyncio.get_event_loop().run_in_executor(
+            report = await asyncio.get_running_loop().run_in_executor(
                 None, run_export, cfg, results, employee)
             report["ran_at"] = datetime.now().isoformat(timespec="seconds")
             on_result(report)

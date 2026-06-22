@@ -169,7 +169,11 @@ def render_challenge(ch: Challenge, width: int = 460) -> Image.Image:
         img = Image.eval(img, lambda v: int(ch.bg - (ch.bg - v) * ch.contrast))
     if ch.noise:
         import random
-        rnd = random.Random(hash(ch.id) & 0xFFFF)
+        import zlib
+        # Stable per-receipt seed: ``hash()`` of a str is salted per process
+        # (PYTHONHASHSEED), so it rendered different speckle every run, defeating
+        # the point of a *fixed* benchmark suite. crc32 is deterministic.
+        rnd = random.Random(zlib.crc32(ch.id.encode()) & 0xFFFF)
         px = img.load()
         for _ in range((img.width * img.height) // 40):
             x = rnd.randrange(img.width); yy = rnd.randrange(img.height)

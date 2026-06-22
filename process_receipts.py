@@ -409,9 +409,17 @@ def make_client() -> OpenAI:
     router like OpenRouter is honoured everywhere a client is built — there is no
     second place that hard-codes ``api_key="lmstudio"``.
     """
+    # On OpenRouter, disable the SDK's own internal retries: each create() call
+    # then maps to exactly one HTTP request, so the local daily-cap counter
+    # (_note_openrouter_request, one tick per call) matches OpenRouter's own meter
+    # instead of under-counting silent SDK retries. It also stops the SDK from
+    # blindly re-firing 429s *behind* the rate limiter — pacing + _llm_call's
+    # explicit 429-wait + the model fallback chain own that resilience now. A local
+    # server is unmetered, so keep its retries.
+    retries = 0 if _is_openrouter_endpoint() else LLM_MAX_RETRIES
     kwargs = dict(
         base_url=LMSTUDIO_BASE_URL, api_key=(LLM_API_KEY or "lmstudio"),
-        timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
+        timeout=LLM_TIMEOUT, max_retries=retries,
     )
     if LLM_EXTRA_HEADERS:
         kwargs["default_headers"] = dict(LLM_EXTRA_HEADERS)
@@ -643,6 +651,22 @@ def _shorten_detail(detail: str) -> str:
     return detail
 
 
+def _http_status(exc: Exception) -> Optional[int]:
+    """The HTTP status code carried by an SDK/proxy exception, as an int (or None).
+
+    Coerced to ``int`` because some proxies surface ``status_code`` as a *string*
+    (e.g. ``"429"``); without this, ``status == 429`` comparisons silently fail and
+    the whole 429-wait + LLM-OCR-breaker machinery no-ops on a throttled free tier.
+    """
+    raw = getattr(exc, "status_code", None)
+    if raw is None:
+        raw = getattr(exc, "status", None)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _describe_llm_error(exc: Exception) -> str:
     """Human-readable, troubleshooting-oriented reason for a failed LLM call.
 
@@ -651,7 +675,7 @@ def _describe_llm_error(exc: Exception) -> str:
     (429 throttle, 404 no-provider, 401/403 auth, 5xx), timeout, or connection —
     so the step log and run log say *why* a receipt fell back to the offline parser.
     """
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    status = _http_status(exc)
     # Pull the provider's own error message out of the response body when present
     # (OpenRouter/OpenAI return {"error": {"message": ...}}).
     detail = ""
@@ -763,7 +787,7 @@ def _llm_call(client: OpenAI, *, wait_on_throttle: bool = False, **kwargs):
             return resp
         except Exception as exc:
             _set_llm_error(_describe_llm_error(exc))
-            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+            status = _http_status(exc)
             if not (wait_on_throttle and LLM_429_WAIT_ENABLED
                     and status == 429 and LLM_429_MAX_WAIT > 0):
                 raise
@@ -811,7 +835,7 @@ def _should_advance_model(exc: Exception) -> bool:
     different model id can still succeed. NOT a 429 (the free tier shares one
     per-minute bucket, so the next free model throttles too — pace, don't pile on)
     and not auth/5xx/timeout (already retried by the SDK + server-side routing)."""
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    status = _http_status(exc)
     return status == 404
 
 
@@ -2900,7 +2924,13 @@ def rename_receipt_image(
                 new_path = candidate
                 break
         if new_path is None:
-            new_path = out_dir / f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
+            # Past the numbered-suffix cap, use a random suffix — but still verify
+            # it doesn't exist so we never overwrite an existing receipt.
+            while True:
+                candidate = out_dir / f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
+                if not candidate.exists():
+                    new_path = candidate
+                    break
 
     if new_path.resolve() != img_path.resolve():
         shutil.move(str(img_path), str(new_path))

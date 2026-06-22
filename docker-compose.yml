@@ -35,7 +35,8 @@ services:
       - HOST_INTAKE_PATH=${INTAKE_PATH:-${PWD}/intake}
       - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - HOST_EXPORT_PATH=${EXPORT_PATH:-${PWD}/export}
-      # MAX_PARALLEL_REQUESTS=4
+      # MAX_PARALLEL_REQUESTS=1   # serial by default (safest for one local model
+      #   and free cloud tiers); raise only with a parallel-capable server + headroom.
       # Scheduled export (also configurable from the web UI Settings card).
       # Point EXPORT_PATH at a Dropbox/Drive/OneDrive sync folder for
       # automatic cloud upload without any API keys.
@@ -77,7 +78,7 @@ services:
       - HOST_OUTPUT_PATH=${OUTPUT_PATH:-${PWD}/output}
       - WATCH_INTERVAL=60
       - WATCH_EMPLOYEE_NAME=Duane Hamilton
-      #MAX_PARALLEL_REQUESTS=4
+      #MAX_PARALLEL_REQUESTS=1   # serial by default; raise only with a parallel-capable server
       # Email settings — fill in to enable "Send Report Now"
       - SMTP_HOST=
       - SMTP_PORT=587

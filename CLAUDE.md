@@ -225,7 +225,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **589 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **618 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -307,6 +307,47 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-20 (QC hardening round 2 — MEDIUM/LOW audit backlog):** Suite **589 → 618**
+  green. Cleared the lower-severity items the 5-audit QC pass had left open:
+  * **inf/nan amount** — `spreadsheet_theme._coerce_amount` rejects non-finite values
+    (they slip through `float()` without raising → corrupt blank Excel cell + poisoned
+    Insights total). Applied in `_write_data_row`, the image-sheet fallback, and
+    `_compute_insights`; a non-finite amount now leaves the cell blank.
+  * **Progress bar stuck at 0%** — the SPA's `type:"progress"` handler was live but the
+    worker never emitted the event. `_drain_once` now broadcasts a `progress`
+    (`current`/`total`/`filename`) at batch start and as each receipt finishes; the SPA
+    resets the widget once the whole workload is done.
+  * **OpenRouter daily counter under-count** — `make_client` now sets `max_retries=0`
+    on the OpenRouter client so each counted `_llm_call` attempt = one real HTTP request
+    (the SDK's silent internal retries used to under-count the meter and re-fire 429s
+    behind the rate limiter). Local servers keep `LLM_MAX_RETRIES`.
+  * **String HTTP status defeated the 429 machinery** — new `process_receipts._http_status`
+    coerces `status_code`/`status` to `int` (a proxy returning `"429"` as a string used
+    to no-op the 429-wait + LLM-OCR breaker + model-advance logic). Used at all 3 sites.
+  * **Unbounded client-side log** — `appendLog` caps `#log` to `LOG_MAX_LINES`=1000 and
+    `errorLines` to `ERR_MAX_LINES`=300 (a long watch session grew them without bound).
+  * **`_persist_state` shared-tmp race** — now writes a unique `…json.<uuid>.tmp` under a
+    new `_persist_lock` and cleans it up, so concurrent persisters (worker + handlers)
+    can't `replace()` a half-written file. `tests/test_qc_hardening2.py` stress-tests it.
+  * **Unbounded SSE queue** — each subscriber's `Queue` is now `maxsize=SSE_QUEUE_MAX`
+    (2000, env); `_broadcast` drops the oldest event on overflow so a stuck client can't
+    grow memory unbounded.
+  * **`app_secrets.save_secret` perms window** — switched to `tempfile.mkstemp` (0600 from
+    the start + unique name) so the cleartext secret is never briefly world-readable.
+    New `tests/test_app_secrets.py` asserts the 0600 mode, round-trip, blank-clear, legacy
+    migration, env fallback, corrupt-file tolerance.
+  * **watch_mode coverage** — new `tests/test_watch_mode.py` covers `process_inbox`
+    dedup/move/state + the provider-aware-client wiring.
+  * **`receipt_testkit` non-determinism** — noise seed `hash(ch.id)` (PYTHONHASHSEED-salted)
+    → `zlib.crc32(ch.id.encode())`; a subprocess test asserts cross-process determinism.
+  * **Cleanups** — removed the duplicate `_is_docker` (consolidated to `_in_docker`);
+    `scheduler` + the export-compression path use `asyncio.get_running_loop()`; the
+    `/debug/ocr-status` reason/fix strings are `esc()`'d in the SPA; `docker-compose.yml`
+    `MAX_PARALLEL_REQUESTS` hint corrected 4→1; **docs privacy claims fixed** — README /
+    TUTORIAL / BLUEPRINT no longer claim "nothing leaves your machine" (they now note the
+    opt-in OpenRouter cloud mode). Tests: `tests/test_qc_hardening2.py` (+19),
+    `test_app_secrets.py` (+10), `test_watch_mode.py` (+6).
 
 - **2026-06-20 (QC hardening — 5 HIGH audit fixes):** Suite **567 → 589** green. A
   thorough senior-developer QC pass (five parallel subsystem audits) surfaced one

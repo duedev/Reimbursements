@@ -27,7 +27,7 @@ Docker is the engine that runs the app. You only need to install it once.
 
 ## Step 2 — Install LM Studio and Download the Models
 
-LM Studio runs the AI that reads your receipts. Everything stays on your computer.
+LM Studio runs the AI that reads your receipts on your own computer, so by default your receipt data stays local. (If you'd rather not install a model, you can instead switch to the optional OpenRouter cloud mode in Settings → AI Model — that sends requests to a free cloud model instead.)
 
 1. Go to [https://lmstudio.ai](https://lmstudio.ai) and click **Download**.
 2. Open the installer and follow the prompts (Windows: Next → Next → Install; Mac: drag to Applications).
