@@ -1924,7 +1924,7 @@
         <span id="llm-status-label" style="font-size:11px;color:var(--muted)">checking…</span>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-outline-accent btn-sm" id="llm-autodetect-btn" title="Probe known endpoints (LM Studio :1234, bundled server :11434, host.docker.internal) and connect to whichever answers">🔎 Auto-detect</button>
+        <button class="btn btn-outline-accent btn-sm" id="llm-autodetect-btn" title="Probe known endpoints (LM Studio :1234, bundled server :1234, host.docker.internal) and connect to whichever answers">🔎 Auto-detect</button>
         <button class="btn btn-outline-accent btn-sm" id="llm-status-refresh-btn">↻ Refresh</button>
       </div>
     </div>
@@ -1937,7 +1937,7 @@
       <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Docker bundled LLM</div>
       <div style="font-size:11px;line-height:1.5;color:var(--muted)">
         The bundled LLM runs as the <code style="font-family:ui-monospace,monospace;font-size:10px">model-server</code>
-        compose service (port 11434, weights baked in, fully offline). Start it from a terminal with
+        compose service (port 1234, weights baked in, fully offline). Start it from a terminal with
         <code style="font-family:ui-monospace,monospace;font-size:10px">docker compose --profile bundled-llm up -d</code>,
         then click <strong>🔎 Auto-detect</strong> above to connect.
         See <strong>Info → Using the Docker bundled LLM</strong> for the full how-to.
@@ -2578,7 +2578,7 @@
     <p style="font-size:14px;line-height:1.65;color:var(--text)">
       A fully-local, private, OpenAI-compatible LLM (llama.cpp serving a vision GGUF) ships with this app as the
       <code class="inline-code">model-server</code> service in <code class="inline-code">docker-compose</code>,
-      under the <strong>bundled-llm</strong> profile, on port <strong>11434</strong>. The model weights are
+      under the <strong>bundled-llm</strong> profile, on port <strong>1234</strong>. The model weights are
       baked into the image (~2–3&nbsp;GB), so it works completely offline — nothing leaves your machine.
     </p>
 
@@ -2592,8 +2592,8 @@
     <div class="section-heading" style="margin-top:14px">2. Wire it up</div>
     <ol style="font-size:13px;line-height:1.7;color:var(--text);padding-left:20px;margin:6px 0 0">
       <li>Settings → <strong>AI Model</strong> → pick <strong>🐳 Docker bundled LLM</strong>.</li>
-      <li>The <strong>Server URL</strong> auto-fills — <code class="inline-code">http://model-server:11434/v1</code>
-          inside Docker, or <code class="inline-code">http://127.0.0.1:11434/v1</code> on the host.</li>
+      <li>The <strong>Server URL</strong> auto-fills — <code class="inline-code">http://model-server:1234/v1</code>
+          inside Docker, or <code class="inline-code">http://127.0.0.1:1234/v1</code> on the host.</li>
       <li>Click <strong>↻ Refresh</strong> on the model list, then select the model.</li>
     </ol>
 
@@ -2874,7 +2874,7 @@
         <div style="display:flex;flex-direction:column;gap:8px">
           <label class="check-label" style="font-size:13px;gap:8px">
             <input type="radio" name="cm-server-type" value="docker" id="cm-server-docker">
-            Use Docker bundled LLM server (model-server:11434)
+            Use Docker bundled LLM server (model-server:1234)
           </label>
           <label class="check-label" style="font-size:13px;gap:8px">
             <input type="radio" name="cm-server-type" value="other" id="cm-server-other" checked>

@@ -420,6 +420,31 @@ to the model — nothing hidden or clipped.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-23 (Dockerfile.model port fix + docker mode detection via env URL):**
+  Suite **711** green (no count change). Two bugs fixed together.
+  * **Port mismatch fixed** — `Dockerfile.model` had `EXPOSE 11434` and `--port 11434`
+    in its CMD but `docker-compose.yml` mapped `"127.0.0.1:1234:1234"` and the
+    healthcheck probed `http://localhost:1234/v1/models`. The container was unreachable
+    because the port mapping didn't match. Fixed: `Dockerfile.model` now uses port 1234
+    everywhere (`EXPOSE 1234`, `--port 1234`). `_docker_llm_url()` updated to return
+    `:1234` (both the `model-server:1234` inside-Docker form and the `127.0.0.1:1234`
+    host form). All doc/UI/test references to `:11434` as the bundled-server port
+    updated to `:1234` (`.env.example`, `README.md`, `templates/index.html`). Legacy
+    `:11434` kept as final fallback entries in `_candidate_llm_urls()`.
+  * **"On-host" shown when running Docker bundled LLM (env-injected URL)** — when
+    `LMSTUDIO_BASE_URL=http://model-server:1234/v1` is set via environment variable
+    (not saved config), the UI was showing "On-host LLM" because mode detection only
+    checked the `server_type` config key. New `_is_docker_bundled_url(url)` helper
+    (server.py, right after `_docker_llm_url`) checks whether the effective URL points
+    at the bundled service (`"model-server:" in url` or inside Docker +
+    `"host.docker.internal:" in url`). Wired into `GET /settings/llm-server`,
+    `GET /settings/llm-provider` (local.server_type), and `GET /llm-server/availability`
+    (active_mode), so all three endpoints correctly report "docker" when the URL came
+    from the environment rather than a saved config. Tests updated:
+    `tests/test_llm_server_url.py` and `tests/test_llm_provider.py` assertions
+    updated for new port; `test_availability_probes_each_mode` adjusted since
+    both host and docker probe the same `:1234` port off-host.
+
 - **2026-06-23 (pin the bundled Docker LLM to Qwen3-VL-2B-Instruct):** Config/docs
   only — no Python code or tests changed. The bundled `model-server` now defaults to
   unsloth's **Qwen3-VL-2B-Instruct (UD-Q5_K_XL)** GGUF + its **`mmproj-F16.gguf`** vision
@@ -428,10 +453,9 @@ to the model — nothing hidden or clipped.
   unsloth `resolve/main/…` URLs; `docker-compose.yml` build-arg defaults set to the
   same (so an unset env var no longer passes an empty string that would override the
   ARG default); `.env.example` shows the concrete URLs as optional overrides. README
-  Bundled-LLM section updated and the stale `LMSTUDIO_BASE_URL=…:1234` example fixed to
-  the model-server's actual port **`:11434`**. The CMD `--alias qwen3-vl-2b-instruct`
-  already matched. (mmproj filename verified via web search — huggingface.co is blocked
-  by the network policy, but a wrong URL would fail the build loudly at `curl -fL`.)
+  Bundled-LLM section updated. The CMD `--alias qwen3-vl-2b-instruct` already matched.
+  (mmproj filename verified via web search — huggingface.co is blocked by the network
+  policy, but a wrong URL would fail the build loudly at `curl -fL`.)
 
 - **2026-06-23 (Send-Report flow fix + Docker/settings/warnings UX — 6 fixes):**
   Suite **710 → 711** green. Driven by user-reported bugs in the report/email flow

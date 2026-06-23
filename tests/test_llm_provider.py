@@ -89,7 +89,7 @@ def test_docker_selection_still_resolves(monkeypatch):
     """Docker recovery behaviour is preserved for users who actually want it."""
     monkeypatch.setattr(server, "_in_docker", lambda: False)
     server._apply_llm_server_config({"llm_server": {"server_type": "docker", "base_url": ""}})
-    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:11434/v1"
+    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:1234/v1"
 
 
 def test_local_apply_resets_cloud_runtime(monkeypatch):
@@ -496,6 +496,10 @@ def test_provider_reports_configured_after_explicit_choice(client):
 def test_availability_probes_each_mode(client, monkeypatch):
     monkeypatch.setattr(server, "_in_docker", lambda: False)
 
+    # The bundled docker server is now on the same port as the host LM Studio
+    # (:1234) — both urls hit port 1234 when running off-host.  The docker url
+    # differs only when we're *inside* Docker (model-server hostname).  So just
+    # verify the response shape and that a key produces has_key=True.
     def fake_probe(url, *a, **k):
         return (True, 2) if "1234" in url else (False, 0)
     monkeypatch.setattr(server, "_probe_llm_url", fake_probe)
@@ -503,9 +507,10 @@ def test_availability_probes_each_mode(client, monkeypatch):
 
     d = client.get("/llm-server/availability").json()
     assert d["host"]["reachable"] is True and d["host"]["models"] == 2
-    assert d["docker"]["reachable"] is False
     assert d["openrouter"]["has_key"] is True
     assert d["active_mode"] in ("host", "docker", "openrouter")
+    # docker probe url is now also :1234 on host — it will be reachable too
+    assert "reachable" in d["docker"]
 
 
 def test_availability_active_mode_follows_provider(client, monkeypatch):
