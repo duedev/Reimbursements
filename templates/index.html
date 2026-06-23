@@ -2315,6 +2315,75 @@
     </div>
   </div>
 
+  <!-- Google Drive receipt intake (opt-in cloud capture source) -->
+  <div class="card" id="gdrive-card">
+    <div class="card-title">Google Drive Intake (receipts from a Drive folder)</div>
+    <p class="section-desc">
+      Make one Google Drive folder your "receipts inbox" — fill it from your phone
+      (Drive <strong>Scan</strong> / share-sheet) and/or from Gmail (the
+      <code>gmail_to_drive.gs</code> Apps Script, see <code>GMAIL_TO_DRIVE_SETUP.md</code>) —
+      and the app pulls new image/PDF files into the pipeline automatically.
+      <strong>Opt-in cloud source, off by default.</strong> The receipt image still
+      only reaches a cloud LLM if you've enabled that — Drive only changes how
+      receipts <em>arrive</em>. Setup needs a one-time Google Cloud OAuth client
+      (see <code>GOOGLE_DRIVE_IMPORT.md</code> §3.2).
+      <span id="gd-config-status" style="font-weight:600"></span>
+    </p>
+    <label class="toggle-row" style="margin:4px 0 10px">
+      <input type="checkbox" id="gd-enabled">
+      <span>Enable Drive intake (poll the folder for new receipts)</span>
+    </label>
+    <div class="fields fields-1col">
+      <label>Drive inbox folder ID <span style="color:var(--muted);font-weight:400">(the part after <code>/folders/</code> in the URL)</span>
+        <input type="text" id="gd-folder" placeholder="1AbC…XyZ" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-2col" style="margin-top:10px">
+      <label>OAuth client ID
+        <input type="text" id="gd-client-id" placeholder="…apps.googleusercontent.com" autocomplete="off">
+      </label>
+      <label>OAuth client secret
+        <input type="password" id="gd-client-secret" placeholder="••••••••" autocomplete="new-password">
+      </label>
+    </div>
+    <div class="fields fields-21" style="margin-top:10px">
+      <label>Access
+        <select id="gd-scope">
+          <option value="drive.readonly">Read only (recommended)</option>
+          <option value="drive.file">Read &amp; manage app files</option>
+        </select>
+      </label>
+      <label>Poll every (seconds)
+        <input type="number" id="gd-poll" value="300" min="30" autocomplete="off">
+      </label>
+    </div>
+    <div class="action-row">
+      <button class="btn btn-primary btn-sm" id="gd-save-btn">Save Drive settings</button>
+      <button class="btn btn-neutral btn-sm" id="gd-connect-btn">🔗 Connect Google</button>
+      <button class="btn btn-neutral btn-sm" id="gd-test-btn">🔌 Test connection</button>
+      <button class="btn btn-neutral btn-sm" id="gd-poll-btn">⬇ Check for receipts now</button>
+      <button class="btn btn-cancel btn-sm hidden" id="gd-disconnect-btn">Disconnect &amp; revoke</button>
+      <span id="gd-status" class="status-note"></span>
+    </div>
+    <!-- One-time consent: open the URL, approve, paste back the code (or the full
+         redirected localhost URL — the app extracts ?code=). -->
+    <div id="gd-connect-panel" class="hidden" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px">
+      <p class="status-note" style="margin:0 0 8px">
+        1. Open the consent link, approve access, then 2. paste the authorization
+        code (or the full redirected URL) below and click <strong>Finish connecting</strong>.
+      </p>
+      <div style="margin-bottom:8px"><a id="gd-auth-link" href="#" target="_blank" rel="noopener">Open Google consent screen →</a></div>
+      <div class="fields fields-1col">
+        <label>Authorization code / redirected URL
+          <input type="text" id="gd-auth-code" placeholder="4/0Ax…  or  http://localhost/?code=…" autocomplete="off">
+        </label>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-primary btn-sm" id="gd-finish-btn">Finish connecting</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Maintenance — kept apart from everyday settings -->
   <div class="card adv-only" id="admin-card">
     <div class="card-title">Maintenance</div>
@@ -5090,6 +5159,7 @@ async function loadSettings() {
   loadReviewSettings();
   loadEmailSettings();
   loadEmailIntake();
+  loadGDrive();
   loadBenchmarks();
 }
 
@@ -5983,6 +6053,163 @@ document.getElementById('ei-poll-btn').addEventListener('click', async () => {
     const d = await (await fetch('/settings/email-intake/poll-now', { method: 'POST' })).json();
     if (d.ok) {
       status.textContent = `Found ${d.messages || 0} message(s), queued ${d.receipts || 0} receipt(s).`;
+      status.style.color = 'var(--success)';
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '⬇ Check for receipts now'; }
+});
+
+// ── Google Drive intake ──────────────────────────────────────────────────────
+async function loadGDrive() {
+  try {
+    const res = await fetch('/settings/gdrive');
+    if (res.status === 403) {              // admin-only in multi-user mode
+      const card = document.getElementById('gdrive-card');
+      if (card) card.classList.add('hidden');
+      return;
+    }
+    const d = await res.json();
+    document.getElementById('gd-enabled').checked = !!d.enabled;
+    document.getElementById('gd-folder').value    = d.folder_id || '';
+    document.getElementById('gd-client-id').value = d.client_id || '';
+    document.getElementById('gd-scope').value     = d.scope || 'drive.readonly';
+    document.getElementById('gd-poll').value      = d.poll_interval || 300;
+    document.getElementById('gd-client-secret').placeholder = d.client_secret_set ? '•••••••• (saved)' : '••••••••';
+    document.getElementById('gd-disconnect-btn').classList.toggle('hidden', !d.connected);
+    const status = document.getElementById('gd-config-status');
+    if (d.connected) {
+      status.textContent = d.enabled ? '✓ Connected & active' : '✓ Connected (off)';
+      status.style.color = 'var(--success)';
+    } else {
+      status.textContent = (d.client_id || d.folder_id) ? '⚠ Not connected' : '';
+      status.style.color = 'var(--warning)';
+    }
+  } catch (_) {}
+}
+
+function _gdPayload() {
+  return {
+    enabled:       document.getElementById('gd-enabled').checked,
+    folder_id:     document.getElementById('gd-folder').value.trim(),
+    client_id:     document.getElementById('gd-client-id').value.trim(),
+    client_secret: document.getElementById('gd-client-secret').value,  // blank keeps saved
+    scope:         document.getElementById('gd-scope').value,
+    poll_interval: parseInt(document.getElementById('gd-poll').value, 10) || 300,
+  };
+}
+
+async function _gdSave() {
+  const d = await (await fetch('/settings/gdrive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(_gdPayload()),
+  })).json();
+  document.getElementById('gd-client-secret').value = '';   // don't keep the secret in the DOM
+  return d;
+}
+
+document.getElementById('gd-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-save-btn');
+  btn.disabled = true;
+  try {
+    const d = await _gdSave();
+    if (d.ok) { showToast('Google Drive settings saved', true); loadGDrive(); }
+    else showToast(`Drive error: ${d.error}`, false);
+  } catch (err) { showToast(`Drive error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('gd-connect-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-connect-btn');
+  const status = document.getElementById('gd-status');
+  btn.disabled = true; status.textContent = '';
+  try {
+    await _gdSave();                       // persist client id/secret first
+    const d = await (await fetch('/settings/gdrive/auth-url')).json();
+    if (d.ok) {
+      const link = document.getElementById('gd-auth-link');
+      link.href = d.url;
+      document.getElementById('gd-connect-panel').classList.remove('hidden');
+      status.textContent = 'Open the consent link, then paste the code below.';
+      status.style.color = 'var(--muted)';
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; }
+});
+
+document.getElementById('gd-finish-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-finish-btn');
+  const status = document.getElementById('gd-status');
+  let code = document.getElementById('gd-auth-code').value.trim();
+  const m = code.match(/[?&]code=([^&]+)/);   // accept a pasted redirect URL too
+  if (m) code = decodeURIComponent(m[1]);
+  if (!code) { status.textContent = 'Paste the authorization code first.'; status.style.color = 'var(--danger)'; return; }
+  btn.disabled = true;
+  try {
+    const d = await (await fetch('/settings/gdrive/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })).json();
+    if (d.ok) {
+      document.getElementById('gd-auth-code').value = '';
+      document.getElementById('gd-connect-panel').classList.add('hidden');
+      showToast('Connected to Google Drive', true);
+      loadGDrive();
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; }
+});
+
+document.getElementById('gd-disconnect-btn').addEventListener('click', async () => {
+  if (!confirm('Disconnect Google Drive and revoke the stored token?')) return;
+  const btn = document.getElementById('gd-disconnect-btn');
+  btn.disabled = true;
+  try {
+    await fetch('/settings/gdrive/disconnect', { method: 'POST' });
+    showToast('Disconnected from Google Drive', true);
+    loadGDrive();
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('gd-test-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-test-btn');
+  const status = document.getElementById('gd-status');
+  btn.disabled = true; btn.textContent = 'Testing…'; status.textContent = '';
+  try {
+    await _gdSave();
+    const d = await (await fetch('/settings/gdrive/test', { method: 'POST' })).json();
+    status.textContent = d.ok ? (d.message || 'Connected ✓') : `Failed: ${d.error}`;
+    status.style.color = d.ok ? 'var(--success)' : 'var(--danger)';
+    loadGDrive();
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '🔌 Test connection'; }
+});
+
+document.getElementById('gd-poll-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-poll-btn');
+  const status = document.getElementById('gd-status');
+  btn.disabled = true; btn.textContent = 'Checking…'; status.textContent = '';
+  try {
+    const d = await (await fetch('/settings/gdrive/poll-now', { method: 'POST' })).json();
+    if (d.ok) {
+      status.textContent = `Found ${d.files || 0} file(s), downloaded ${d.downloaded || 0} new receipt(s).`;
       status.style.color = 'var(--success)';
     } else {
       status.textContent = `Failed: ${d.error}`;

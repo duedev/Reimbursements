@@ -39,6 +39,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery & scheduling** — Watch-mode daemon and a built-in weekly scheduler can email the report over SMTP or drop it into a synced cloud folder
+- **Optional cloud capture sources (opt-in, off by default)** — Pull receipts in from a mailbox over **IMAP** (forward receipts to a dedicated Gmail), or from a **Google Drive** folder you fill from your phone or via a Gmail→Drive Apps Script. Both are off until you configure them. Like the optional OpenRouter LLM mode, these are disclosed cloud surfaces: Drive intake stores an OAuth refresh token (kept out of the synced config, `drive.readonly` scope, one-click disconnect/revoke) — the receipts it pulls were already in your Gmail/Drive. Local OCR + the offline parser are unaffected, and the receipt image still only reaches a cloud LLM if you separately enabled that. See `GOOGLE_DRIVE_IMPORT.md` and `GMAIL_TO_DRIVE_SETUP.md`
 - **Self-healing LLM connection** — The app auto-detects a working LLM endpoint at startup and whenever the configured one reads unreachable (LM Studio on `:1234`, the bundled Docker server on `:11434`, and the `host.docker.internal` variants), with a one-click **🔎 Auto-detect** in Settings
 - **On-image field markup** — The review modal and full-screen lightbox draw colour-coded boxes over the receipt showing exactly where the vendor, date, and amount were read, plus a zoomed callout of each so the extracted value can be checked against the print at a glance
 - **Opt-in spending & date warnings** — Off by default; set per-category dollar caps and a max receipt age in **Settings → Spending & Date Warnings** to have over-limit or stale receipts flagged
@@ -153,6 +154,8 @@ Open `http://localhost:8000`.
 | **Browse** | Click the upload zone and select files |
 | **Intake folder** | Drop files (images, PDFs, or `.zip` archives) into the configured intake folder; they appear in the queue automatically within 5 seconds |
 | **Queue Intake Files** | Click the button to manually enqueue everything currently in the intake folder |
+| **Email intake** *(opt-in)* | Forward receipts to a dedicated mailbox; **Settings → Email Intake** polls it over IMAP (Gmail + App Password) and queues attachments + e-receipt bodies |
+| **Google Drive intake** *(opt-in cloud source)* | Point **Settings → Google Drive Intake** at a Drive folder you fill from your phone (Drive Scan / share-sheet) or via the Gmail→Drive Apps Script (`gmail_to_drive.gs`). The app polls the folder and downloads new image/PDF files. Needs a one-time Google OAuth consent; the refresh token is stored locally in the secrets file (never the synced config). See `GOOGLE_DRIVE_IMPORT.md` |
 
 Click **Add to Queue** to start processing. You can keep adding files at any time — the queue drains continuously.
 

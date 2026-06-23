@@ -119,3 +119,31 @@ The set literal in `process_receipts.py` contained `"sunoco"` twice (lines 71 an
 
 **`--folder-structure` CLI mode — candidate for future removal.**
 This mode reorganizes an existing output folder into the category-prefixed filename convention. It is CLI-only and has no web UI exposure. It is not broken, but it adds surface area for testing. If no one on the team uses it, remove it in a future cleanup pass.
+
+## 7. Opt-in cloud capture sources (privacy posture)
+
+The app's default posture is local-first; the only previously disclosed cloud
+surface was the **optional** OpenRouter LLM mode (and the `LLM_ALLOW_IMAGE` gate that
+governs whether the receipt *image* is sent there). Two further **opt-in, off-by-default**
+*capture* sources now exist — **email/IMAP intake** and **Google Drive intake** — and
+deserve the same eyes-open treatment:
+
+- **What's genuinely new is the stored credential, not the receipts.** Receipts in
+  your Gmail/Drive are already on Google's servers; pulling them down to process
+  locally does not newly expose them. The new surface is the credential the app holds
+  — an IMAP App Password (`imap_password`) and a Drive OAuth **refresh token**
+  (`gdrive_token`) plus the client secret (`gdrive_client_secret`). All live in
+  `.app_secrets.json` (0600, kept out of the often-cloud-synced config), never in
+  `.app_config.json`.
+- **Least privilege.** The Drive scope defaults to `drive.readonly` (list + download
+  only); `drive.file` is offered only if a future "move processed file" option is
+  wanted. There is a one-click **Disconnect & revoke** that best-effort revokes the
+  token at Google's endpoint and always clears it locally. The Gmail→Drive bridge
+  (`gmail_to_drive.gs`) holds **no app credential at all** — it runs in the user's own
+  Google account.
+- **Local extraction is unaffected.** OCR + the offline parser stay local; the
+  `LLM_ALLOW_IMAGE` gate still governs whether an image reaches a cloud LLM. Drive/email
+  intake changes *transport/storage*, not the extraction privacy gate.
+- **Off by default; admin-gated in multi-user mode.** Both sources are instance-level
+  (one mailbox / one Drive folder per box) and their settings endpoints are admin-only
+  when `MULTIUSER_ENABLED`. See `GOOGLE_DRIVE_IMPORT.md` §6 and `GMAIL_TO_DRIVE_SETUP.md`.

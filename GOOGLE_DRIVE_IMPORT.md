@@ -1,7 +1,13 @@
 # Google Drive Receipt Capture + Gmail→Drive Ingestion — Research / Design Write-up
 
-> **Status:** Research & design only. **No code in this document is implemented.**
-> It captures the recommended architecture so a developer can build it later.
+> **Status:** ✅ **Phase 1 + Phase 2 IMPLEMENTED** (2026-06-23). The in-app Drive API
+> poller is `gdrive_intake.py` (wired into `server.py` as `_run_gdrive_poller` + the
+> `GET/POST /settings/gdrive` group, Settings → **Google Drive Intake** card); the
+> Gmail→Drive Apps Script ships as `gmail_to_drive.gs` with the step-by-step
+> `GMAIL_TO_DRIVE_SETUP.md`. Off by default, opt-in; the OAuth refresh token lives in
+> `app_secrets` (`drive.readonly` scope). Phase 3 polish (move-to-"Done" subfolder,
+> richer SSE status) remains optional/future. The sections below are the design this
+> was built from.
 > **Scope:** Two requests — (1) use **Google Drive** as a receipt-capture inbox
 > (phone photos / Drive document-scan land in a Drive folder the app ingests),
 > and (2) ingest **emailed receipts from Gmail into that same Drive folder**, so
