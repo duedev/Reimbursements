@@ -243,9 +243,34 @@ to the model — nothing hidden or clipped.
 ## Gas-receipt import research
 
 - **`GAS_RECEIPT_IMPORT.md`** — research write-up (no code). TL;DR: no public
-  per-consumer gas-brand receipt API; recommended future path is inbound email/IMAP
-  ingestion into the existing pipeline, optional Shell/WEX fleet connector for
-  business-card holders.
+  per-consumer gas-brand receipt API; the universal path is inbound email/IMAP
+  ingestion into the existing pipeline (now built — see below), optional Shell/WEX
+  fleet connector for business-card holders.
+
+## Email intake (inbound IMAP receipts)
+
+- **`email_intake.py`** — the recommended gas-receipt-import path, generalised to
+  *any* receipt. Pure, testable MIME parsing (`message_artifacts` → image/PDF
+  attachments + inline images + the HTML/plain **body**; `strip_html_to_text`;
+  `route_user` plus-addressing; `sender_allowed`) + a thin IMAP poll (`poll_once`
+  fetches UNSEEN, hands artifacts to a callback, marks `\Seen`). `_connect` uses
+  `IMAP_TIMEOUT` (20s) so an unreachable host fails fast. Gmail + App Password is
+  the intended host (no OAuth/Cloud project).
+- **Pipeline text path** — `process_receipts._extract_receipt_with_status` gained a
+  text-source branch (`TEXT_EXTENSIONS` = `.html/.htm/.txt`, `_is_text_source`):
+  image-prep + OCR are skipped, the body is `strip_html_to_text`'d and fed straight
+  to `_distill_text` (→ offline parser when no LLM), tagged `_ocr_engine="email-text"`
+  + `_text_source=True`. Optional fallback `_maybe_render_text_source` (render HTML→
+  image→OCR) is OFF unless `RENDER_HTML_FALLBACK` AND `imgkit` are present (else →
+  manual review). The spreadsheet already tolerates imageless receipts.
+- **server.py** — `_run_email_poller` thread (started in lifespan), `_ingest_email_message`
+  (plus-routes to a user, stages each artifact to that workspace, enqueues via
+  `_enqueue_receipt_file`), seen-id guard (`.email_seen.json`). Endpoints
+  `GET/POST /settings/email-intake`, `/settings/email-intake/test`, `/poll-now`
+  (admin-only in multi-user mode; password in `app_secrets` `imap_password`).
+  Settings → **Email Intake** card (`loadEmailIntake`). Vendor-agnostic — the
+  pipeline's `classify_category` buckets whatever arrives.
+- Tests: `tests/test_email_intake.py` (+19).
 
 ## Config / state / paths
 
@@ -258,7 +283,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **641 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **660 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -340,6 +365,31 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (inbound email/IMAP receipt intake):** Suite **641 → 660** green.
+  Implements the recommended gas-receipt-import path from `GAS_RECEIPT_IMPORT.md`,
+  generalised to **any** receipt: forward receipts to a dedicated mailbox (Gmail +
+  App Password — no OAuth/Cloud project, vs. a locked-down work Outlook) and the app
+  polls IMAP and feeds them into the existing queue/board/pipeline.
+  * **`email_intake.py`** — pure, testable MIME parsing (`message_artifacts`:
+    image/PDF attachments + inline images + the HTML/plain **body**;
+    `strip_html_to_text`; `route_user` plus-addressing; `sender_allowed`) + a thin
+    `poll_once` (fetch UNSEEN → callback → mark `\Seen`). `_connect` has an
+    `IMAP_TIMEOUT` so an unreachable host fails fast (no hung poller).
+  * **Pipeline text path** — `_extract_receipt_with_status` gained a text-source
+    branch (`TEXT_EXTENSIONS`/`_is_text_source`): for an emailed HTML/text body it
+    SKIPS image-prep + OCR and distils the body text directly (cleaner than OCR),
+    tagged `_ocr_engine="email-text"` / `_text_source=True`; offline parser handles
+    it with no LLM. Optional render fallback (`_maybe_render_text_source`, off unless
+    `RENDER_HTML_FALLBACK` + `imgkit`) → else manual review. Spreadsheet already
+    tolerates imageless receipts.
+  * **server.py** — `_run_email_poller` (lifespan thread), `_ingest_email_message`
+    (plus-routes to a user, stages + enqueues each artifact via `_enqueue_receipt_file`),
+    seen-id guard. Endpoints `GET/POST /settings/email-intake` + `/test` + `/poll-now`
+    (admin-only in multi-user mode; App Password in `app_secrets`). SPA: Settings →
+    **Email Intake** card. Vendor-agnostic (the pipeline's `classify_category` buckets
+    whatever arrives). Docs: `.env.example`, `GAS_RECEIPT_IMPORT.md` (marked strategy
+    A implemented). Tests: `tests/test_email_intake.py` (+19).
 
 - **2026-06-23 (multi-user mode + gas-receipt import research):** Suite **618 → 641**
   green. Two requests: make the app multi-user friendly, and research importing

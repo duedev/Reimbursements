@@ -2250,6 +2250,71 @@
     </div>
   </div>
 
+  <!-- Inbound email (IMAP) receipt intake -->
+  <div class="card" id="email-intake-card">
+    <div class="card-title">Email Intake (receipts by email)</div>
+    <p class="section-desc">
+      Forward receipts — gas, materials, meals, lodging, anything — to a dedicated
+      mailbox and they're pulled in automatically and processed like uploads.
+      <strong>Gmail is easiest:</strong> turn on 2-Step Verification, generate a 16-char
+      <strong>App Password</strong>, enable IMAP, and paste it below — no Google Cloud
+      project or approvals needed. (A managed Outlook/work account usually needs IT
+      approval, so a dedicated Gmail is recommended.)
+      <span id="ei-config-status" style="font-weight:600"></span>
+    </p>
+    <label class="toggle-row" style="margin:4px 0 10px">
+      <input type="checkbox" id="ei-enabled">
+      <span>Enable email intake (poll the mailbox for new receipts)</span>
+    </label>
+    <div class="fields fields-21">
+      <label>IMAP host
+        <input type="text" id="ei-host" placeholder="imap.gmail.com" autocomplete="off">
+      </label>
+      <label>Port
+        <input type="number" id="ei-port" value="993" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-2col" style="margin-top:10px">
+      <label>Username
+        <input type="text" id="ei-user" placeholder="work.receipts@gmail.com" autocomplete="off">
+      </label>
+      <label>App Password
+        <input type="password" id="ei-pass" placeholder="••••••••" autocomplete="new-password">
+      </label>
+    </div>
+    <div class="fields fields-21" style="margin-top:10px">
+      <label>Mailbox / folder
+        <input type="text" id="ei-mailbox" placeholder="INBOX" autocomplete="off">
+      </label>
+      <label>Poll every (seconds)
+        <input type="number" id="ei-poll" value="120" min="15" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-1col" style="margin-top:10px">
+      <label>Only accept from <span style="color:var(--muted);font-weight:400">(optional, comma-separated senders/domains; blank = all)</span>
+        <input type="text" id="ei-allow" placeholder="amazon.com, noreply@shell.com" autocomplete="off">
+      </label>
+    </div>
+    <label class="toggle-row" style="margin-top:8px">
+      <input type="checkbox" id="ei-body" checked>
+      <span>Read HTML/text e-receipts that have no attachment (parses the email body — no OCR)</span>
+    </label>
+    <label class="toggle-row" style="margin-top:6px">
+      <input type="checkbox" id="ei-seen" checked>
+      <span>Mark messages read after importing (avoids re-importing)</span>
+    </label>
+    <label class="toggle-row hidden" id="ei-plus-row" style="margin-top:6px">
+      <input type="checkbox" id="ei-plus">
+      <span>Route <code>receipts+&lt;user&gt;@…</code> plus-addresses to that user (multi-user)</span>
+    </label>
+    <div class="action-row">
+      <button class="btn btn-primary btn-sm" id="ei-save-btn">Save intake settings</button>
+      <button class="btn btn-neutral btn-sm" id="ei-test-btn">🔌 Test connection</button>
+      <button class="btn btn-neutral btn-sm" id="ei-poll-btn">⬇ Check for receipts now</button>
+      <span id="ei-status" class="status-note"></span>
+    </div>
+  </div>
+
   <!-- Maintenance — kept apart from everyday settings -->
   <div class="card adv-only" id="admin-card">
     <div class="card-title">Maintenance</div>
@@ -5024,6 +5089,7 @@ async function loadSettings() {
   loadAuditSettings();
   loadReviewSettings();
   loadEmailSettings();
+  loadEmailIntake();
   loadBenchmarks();
 }
 
@@ -5822,6 +5888,110 @@ document.getElementById('email-test-btn').addEventListener('click', async () => 
     status.textContent = `Failed: ${err.message}`;
     status.style.color = 'var(--danger)';
   } finally { btn.disabled = false; btn.textContent = 'Send test email'; }
+});
+
+async function loadEmailIntake() {
+  try {
+    const res = await fetch('/settings/email-intake');
+    if (res.status === 403) {            // admin-only in multi-user mode
+      const card = document.getElementById('email-intake-card');
+      if (card) card.classList.add('hidden');
+      return;
+    }
+    const d = await res.json();
+    document.getElementById('ei-enabled').checked = !!d.enabled;
+    document.getElementById('ei-host').value    = d.host || '';
+    document.getElementById('ei-port').value    = d.port || 993;
+    document.getElementById('ei-user').value    = d.username || '';
+    document.getElementById('ei-mailbox').value = d.mailbox || 'INBOX';
+    document.getElementById('ei-poll').value    = d.poll_seconds || 120;
+    document.getElementById('ei-allow').value   = d.allow_senders || '';
+    document.getElementById('ei-body').checked  = d.process_body !== false;
+    document.getElementById('ei-seen').checked  = d.mark_seen !== false;
+    document.getElementById('ei-plus').checked  = !!d.plus_routing;
+    document.getElementById('ei-pass').placeholder = d.password_set ? '•••••••• (saved)' : '••••••••';
+    document.getElementById('ei-plus-row').classList.toggle('hidden', !d.multiuser);
+    const status = document.getElementById('ei-config-status');
+    status.textContent = d.configured ? (d.enabled ? '✓ Active' : '✓ Configured (off)')
+                                       : (d.host ? '⚠ Incomplete' : '');
+    status.style.color = d.configured ? 'var(--success)' : 'var(--warning)';
+  } catch (_) {}
+}
+
+function _eiPayload() {
+  return {
+    enabled:       document.getElementById('ei-enabled').checked,
+    host:          document.getElementById('ei-host').value.trim(),
+    port:          parseInt(document.getElementById('ei-port').value, 10) || 993,
+    username:      document.getElementById('ei-user').value.trim(),
+    password:      document.getElementById('ei-pass').value,   // blank keeps saved
+    mailbox:       document.getElementById('ei-mailbox').value.trim() || 'INBOX',
+    poll_seconds:  parseInt(document.getElementById('ei-poll').value, 10) || 120,
+    allow_senders: document.getElementById('ei-allow').value.trim(),
+    process_body:  document.getElementById('ei-body').checked,
+    mark_seen:     document.getElementById('ei-seen').checked,
+    plus_routing:  document.getElementById('ei-plus').checked,
+    use_ssl:       true,
+  };
+}
+
+document.getElementById('ei-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('ei-save-btn');
+  btn.disabled = true;
+  try {
+    const d = await (await fetch('/settings/email-intake', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_eiPayload()),
+    })).json();
+    if (d.ok) {
+      document.getElementById('ei-pass').value = '';   // don't keep the secret in the DOM
+      showToast('Email intake settings saved', true);
+      loadEmailIntake();
+    } else {
+      showToast(`Intake error: ${d.error}`, false);
+    }
+  } catch (err) { showToast(`Intake error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('ei-test-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('ei-test-btn');
+  const status = document.getElementById('ei-status');
+  btn.disabled = true; btn.textContent = 'Testing…'; status.textContent = '';
+  try {
+    // Save first so the test uses what's on screen (password included).
+    await fetch('/settings/email-intake', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_eiPayload()),
+    });
+    document.getElementById('ei-pass').value = '';
+    const d = await (await fetch('/settings/email-intake/test', { method: 'POST' })).json();
+    status.textContent = d.ok ? (d.message || 'Connected ✓') : `Failed: ${d.error}`;
+    status.style.color = d.ok ? 'var(--success)' : 'var(--danger)';
+    loadEmailIntake();
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '🔌 Test connection'; }
+});
+
+document.getElementById('ei-poll-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('ei-poll-btn');
+  const status = document.getElementById('ei-status');
+  btn.disabled = true; btn.textContent = 'Checking…'; status.textContent = '';
+  try {
+    const d = await (await fetch('/settings/email-intake/poll-now', { method: 'POST' })).json();
+    if (d.ok) {
+      status.textContent = `Found ${d.messages || 0} message(s), queued ${d.receipts || 0} receipt(s).`;
+      status.style.color = 'var(--success)';
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '⬇ Check for receipts now'; }
 });
 
 async function loadSchedule() {

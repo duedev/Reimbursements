@@ -1,6 +1,15 @@
 # Importing Receipts from Gas-Provider Websites — Research Write-up
 
-> **Status:** Research only. No code in this document is implemented.
+> **Update (2026-06-23): Strategy (A) is now implemented.** Inbound **email/IMAP
+> ingestion** ships in `email_intake.py` + Settings → *Email Intake*: forward any
+> receipt (gas or otherwise) to a dedicated mailbox and it's pulled in and run
+> through the existing local pipeline — image/PDF attachments and inline images via
+> OCR, and HTML/plain-text e-receipt bodies distilled straight from text (no OCR).
+> Gmail + an App Password is the recommended host (no Google Cloud project or
+> approvals). The fleet-API connector (B) remains a future option for business-card
+> holders. The original research below stands.
+>
+> **Status of this document:** Research only — no code in *this document* is implemented.
 > **Scope:** Can the Reimbursements app pull *itemized fuel receipts* (vendor,
 > date, amount, gallons, price/gal, fuel grade, station address) directly from
 > gas-brand websites/apps — by API, data export, or otherwise — and feed them
