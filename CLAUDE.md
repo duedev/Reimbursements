@@ -420,6 +420,19 @@ to the model — nothing hidden or clipped.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-23 (pin the bundled Docker LLM to Qwen3-VL-2B-Instruct):** Config/docs
+  only — no Python code or tests changed. The bundled `model-server` now defaults to
+  unsloth's **Qwen3-VL-2B-Instruct (UD-Q5_K_XL)** GGUF + its **`mmproj-F16.gguf`** vision
+  projector, so `docker compose --profile bundled-llm up --build` works with no
+  `MODEL_URL`/`MMPROJ_URL` to set. `Dockerfile.model` ARG defaults set to the exact
+  unsloth `resolve/main/…` URLs; `docker-compose.yml` build-arg defaults set to the
+  same (so an unset env var no longer passes an empty string that would override the
+  ARG default); `.env.example` shows the concrete URLs as optional overrides. README
+  Bundled-LLM section updated and the stale `LMSTUDIO_BASE_URL=…:1234` example fixed to
+  the model-server's actual port **`:11434`**. The CMD `--alias qwen3-vl-2b-instruct`
+  already matched. (mmproj filename verified via web search — huggingface.co is blocked
+  by the network policy, but a wrong URL would fail the build loudly at `curl -fL`.)
+
 - **2026-06-23 (Send-Report flow fix + Docker/settings/warnings UX — 6 fixes):**
   Suite **710 → 711** green. Driven by user-reported bugs in the report/email flow
   and settings layout. `server.py` + `templates/index.html` + `tests/test_ui_layout.py`.

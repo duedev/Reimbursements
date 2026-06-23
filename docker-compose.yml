@@ -104,8 +104,10 @@ services:
       context: .
       dockerfile: Dockerfile.model
       args:
-        MODEL_URL: ${MODEL_URL:-}
-        MMPROJ_URL: ${MMPROJ_URL:-}
+        # Default bundled model: unsloth Qwen3-VL-2B-Instruct (UD-Q5_K_XL) + its
+        # F16 vision projector. Override either with MODEL_URL / MMPROJ_URL in .env.
+        MODEL_URL: ${MODEL_URL:-https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3-VL-2B-Instruct-UD-Q5_K_XL.gguf}
+        MMPROJ_URL: ${MMPROJ_URL:-https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-F16.gguf}
     restart: unless-stopped
     # Exposed on localhost too, so the model is reachable from a host LM Studio
     # client / curl for debugging. The app talks to it over the compose network.

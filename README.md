@@ -103,15 +103,16 @@ Prefer to run everything in one `docker compose up`? You can bundle a local mode
 OpenAI-compatible API the app talks to.
 
 ```bash
-# In .env, set the model download URLs (a small Qwen3-VL-2B GGUF + its mmproj is
-# recommended — find current links on Hugging Face), then:
-LMSTUDIO_BASE_URL=http://model-server:1234/v1 \
+# The default bundled model is unsloth's Qwen3-VL-2B-Instruct (UD-Q5_K_XL) + its
+# F16 mmproj — no download URLs to set. Just point the app at the bundled server:
+LMSTUDIO_BASE_URL=http://model-server:11434/v1 \
   docker compose --profile bundled-llm up --build
 ```
 
 - **Weights are baked into the image** → the container runs fully offline, but the
-  image is large (~2–3 GB for a 2B vision model). Swap the model with the
-  `MODEL_URL` / `MMPROJ_URL` build args (see `Dockerfile.model`).
+  image is large (~2–3 GB for a 2B vision model). The default is unsloth's
+  **Qwen3-VL-2B-Instruct (UD-Q5_K_XL)**; swap it with the `MODEL_URL` /
+  `MMPROJ_URL` build args (see `Dockerfile.model`).
 - A **vision** model (GGUF + mmproj) is expected so the direct-image path and the
   on-image field-location boxes work.
 - CPU-only by default; enable the commented GPU block in `docker-compose.yml`

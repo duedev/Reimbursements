@@ -9,18 +9,20 @@
 # field-location boxes work), which is why an mmproj (vision projector) is
 # required alongside the main GGUF.
 #
-# Swap the model without editing this file via build args — point them at any
-# GGUF + mmproj download URLs (see README → "Bundled LLM" for how to find them):
+# The default model is unsloth's Qwen3-VL-2B-Instruct (UD-Q5_K_XL) — a small
+# vision model with its F16 mmproj (vision projector). Swap it without editing
+# this file via build args — point them at any GGUF + mmproj download URLs
+# (see README → "Bundled LLM" for how to find them):
 #
 #   docker build -f Dockerfile.model \
-#     --build-arg MODEL_URL="https://…/qwen3-vl-2b-instruct-q5_k_xl.gguf" \
-#     --build-arg MMPROJ_URL="https://…/mmproj-qwen3-vl-2b-f16.gguf" \
+#     --build-arg MODEL_URL="https://…/some-other-vision-model.gguf" \
+#     --build-arg MMPROJ_URL="https://…/mmproj-some-other-model-f16.gguf" \
 #     -t receipts-model .
 
 # ── Stage 1: fetch the weights (baked into the final image) ───────────────────
 FROM debian:stable-slim AS fetch
-ARG MODEL_URL=""
-ARG MMPROJ_URL=""
+ARG MODEL_URL="https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3-VL-2B-Instruct-UD-Q5_K_XL.gguf"
+ARG MMPROJ_URL="https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-F16.gguf"
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /models
