@@ -31,6 +31,7 @@ from openai import OpenAI
 
 import app_secrets
 import email_intake
+import gdrive_intake
 import multiuser
 import process_receipts as _pr
 import scheduler
@@ -1650,6 +1651,10 @@ def _run_batch(batch: list, batch_uid: str) -> None:
                                     partial.get("_steps", []), error=fail_reason)
                 continue
 
+            # Canonicalize the vendor against the known-vendor database (rules-based,
+            # no LLM) just before classification: an exact/glyph match rewrites the
+            # displayed name to the canonical brand and settles the category.
+            _pr.canonicalize_vendor(data)
             category = classify_category(data)
             data["_category"]  = category
             data["job_name"]   = item.get("job_name") or DEFAULT_JOB_NAME
@@ -2244,6 +2249,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
     threading.Thread(target=_run_email_poller,  daemon=True).start()  # IMAP receipt intake
+    threading.Thread(target=_run_gdrive_poller, daemon=True).start()  # Google Drive intake
     sched_task = asyncio.create_task(scheduler.run_scheduler(
         _get_schedule_config, _schedule_results_snapshot,
         _on_schedule_result, _schedule_wakeup,
@@ -5254,6 +5260,264 @@ async def poll_email_now(request: Request):
         for mid in summary.get("seen_ids", []):
             seen.add(mid)
         _save_email_seen(seen)
+        return JSONResponse({"ok": True, **summary})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+# ── Google Drive receipt intake (opt-in, off by default) ────────────────────────
+# Poll a Drive "receipts inbox" folder (filled from a phone or the Gmail→Drive Apps
+# Script) and download new image/PDF files into INTAKE_FOLDER, where the existing
+# folder watcher + pipeline take over unchanged. Dedup is by Drive file ID. The
+# OAuth refresh token + client secret live in app_secrets (never the synced config).
+# See gdrive_intake.py + GOOGLE_DRIVE_IMPORT.md. Instance-level (admin-only in MU
+# mode), mirroring the email-intake card.
+
+def _gdrive_config() -> gdrive_intake.GDriveConfig:
+    return gdrive_intake.GDriveConfig.from_dict(_load_config().get("gdrive"))
+
+
+def _gdrive_client_secret() -> str:
+    return app_secrets.get_secret("gdrive_client_secret", env="GDRIVE_CLIENT_SECRET")
+
+
+def _gdrive_token() -> str:
+    return app_secrets.get_secret("gdrive_token", env="GDRIVE_REFRESH_TOKEN")
+
+
+def _gdrive_redirect_uri() -> str:
+    # Google's standard installed-app loopback. The one-time consent happens in the
+    # user's browser; they paste the resulting code (or full redirected URL) back in.
+    return os.getenv("GDRIVE_REDIRECT_URI", "http://localhost")
+
+
+def _gdrive_seen_path() -> Path:
+    return multiuser.default_workspace().out_folder / ".gdrive_seen.json"
+
+
+def _load_gdrive_seen() -> set[str]:
+    try:
+        p = _gdrive_seen_path()
+        if p.exists():
+            data = json.loads(p.read_text())
+            if isinstance(data, list):
+                return set(str(x) for x in data)
+    except Exception:
+        pass
+    return set()
+
+
+def _save_gdrive_seen(seen: set[str]) -> None:
+    try:
+        p = _gdrive_seen_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Keep the newest 5000 ids so the guard file can't grow without bound.
+        p.write_text(json.dumps(list(seen)[-5000:]))
+    except Exception as exc:
+        print(f"[gdrive] could not persist seen ids: {exc}")
+
+
+def _build_gdrive_service():
+    """Build the Drive service from the saved config + secrets, or None."""
+    cfg = _gdrive_config()
+    try:
+        return gdrive_intake.build_service(cfg, _gdrive_client_secret(), _gdrive_token())
+    except Exception as exc:
+        _emit_log(f"[gdrive] could not build Drive client: {exc}", level="error")
+        return None
+
+
+def _gdrive_poll(cfg: gdrive_intake.GDriveConfig, seen: set[str]) -> dict:
+    """One Drive poll: download new files into the default intake folder."""
+    service = _build_gdrive_service()
+    if service is None:
+        return {"files": 0, "downloaded": 0, "skipped": 0, "seen_ids": [],
+                "error": "not connected"}
+    intake_dir = multiuser.default_workspace().intake_folder
+    summary = gdrive_intake.poll_once(service, cfg, intake_dir, already_seen=seen)
+    for fid in summary.get("seen_ids", []):
+        seen.add(fid)
+    if summary.get("seen_ids"):
+        _save_gdrive_seen(seen)
+    if summary.get("downloaded"):
+        _emit_log(f"[gdrive] {summary['downloaded']} new receipt(s) downloaded "
+                  f"from Drive (folder {cfg.folder_id[:12]}…)")
+    return summary
+
+
+def _run_gdrive_poller() -> None:
+    """Background loop: poll the configured Drive folder for new receipts."""
+    seen = _load_gdrive_seen()
+    while not _worker_cancel.is_set():
+        cfg = _gdrive_config()
+        interval = cfg.poll_interval if cfg.poll_interval else 300
+        if cfg.enabled and cfg.folder_id and _gdrive_token():
+            try:
+                _gdrive_poll(cfg, seen)
+            except Exception as exc:
+                _emit_log(f"[gdrive] poll error: {exc}", level="error")
+        _worker_cancel.wait(timeout=max(30, interval))
+
+
+class GDriveSettingsRequest(BaseModel):
+    enabled:        bool = False
+    folder_id:      str = ""
+    poll_interval:  int = 300
+    scope:          str = "drive.readonly"
+    move_processed: bool = False
+    client_id:      str = ""
+    client_secret:  str = ""   # blank = keep previously saved secret
+
+
+class GDriveConnectRequest(BaseModel):
+    code:          str = ""    # OAuth authorization code from the consent screen
+    refresh_token: str = ""    # or paste a refresh token directly (advanced)
+    redirect_uri:  str = ""
+
+
+def _gdrive_admin_or_403(request: Request):
+    """Drive intake is instance-level + holds an OAuth token: admin-only in MU mode."""
+    if multiuser.ENABLED and not users.is_admin(getattr(request.state, "user_id", "")):
+        return JSONResponse({"error": "admin_only"}, status_code=403)
+    return None
+
+
+@app.get("/settings/gdrive")
+async def get_gdrive(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _gdrive_config()
+    out = cfg.to_public_dict()
+    out["client_secret_set"] = bool(_gdrive_client_secret())
+    out["connected"] = bool(_gdrive_token())
+    out["configured"] = bool(cfg.folder_id and cfg.client_id and _gdrive_token())
+    out["multiuser"] = multiuser.ENABLED
+    return JSONResponse(out)
+
+
+@app.post("/settings/gdrive")
+async def set_gdrive(body: GDriveSettingsRequest, request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    try:
+        cfg = _load_config()
+        block = cfg.get("gdrive") or {}
+        scope = body.scope.strip() if body.scope.strip() in ("drive.readonly", "drive.file") else "drive.readonly"
+        block.update({
+            "enabled":        bool(body.enabled),
+            "folder_id":      body.folder_id.strip(),
+            "poll_interval":  max(30, int(body.poll_interval or 300)),
+            "scope":          scope,
+            "move_processed": bool(body.move_processed),
+            "client_id":      body.client_id.strip(),
+        })
+        block.pop("client_secret", None)   # never keep the secret in the synced config
+        block.pop("token", None)
+        if body.client_secret:             # blank keeps the previously saved secret
+            app_secrets.save_secret("gdrive_client_secret", body.client_secret)
+        cfg["gdrive"] = block
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/settings/gdrive/auth-url")
+async def gdrive_auth_url(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _gdrive_config()
+    secret = _gdrive_client_secret()
+    if not (cfg.client_id and secret):
+        return JSONResponse({"ok": False, "error": "Save the OAuth client id and secret first."},
+                            status_code=400)
+    try:
+        url = gdrive_intake.auth_url(cfg, secret, _gdrive_redirect_uri())
+        return JSONResponse({"ok": True, "url": url, "redirect_uri": _gdrive_redirect_uri()})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/settings/gdrive/connect")
+async def gdrive_connect(body: GDriveConnectRequest, request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _gdrive_config()
+    secret = _gdrive_client_secret()
+    token = ""
+    try:
+        if body.refresh_token.strip():
+            token = body.refresh_token.strip()
+        elif body.code.strip():
+            redirect = body.redirect_uri.strip() or _gdrive_redirect_uri()
+            token = gdrive_intake.exchange_code(cfg, secret, body.code.strip(), redirect)
+        else:
+            return JSONResponse({"ok": False, "error": "Provide an authorization code or a refresh token."},
+                                status_code=400)
+        if not token:
+            return JSONResponse({"ok": False, "error": "No refresh token returned — re-consent with prompt=consent."},
+                                status_code=400)
+        app_secrets.save_secret("gdrive_token", token)
+        return JSONResponse({"ok": True, "connected": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/settings/gdrive/disconnect")
+async def gdrive_disconnect(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    tok = _gdrive_token()
+
+    def _run():
+        return gdrive_intake.revoke_token(tok)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception:
+        pass
+    app_secrets.save_secret("gdrive_token", "")   # always clear locally
+    return JSONResponse({"ok": True, "connected": False})
+
+
+@app.post("/settings/gdrive/test")
+async def test_gdrive(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _gdrive_config()
+
+    def _run():
+        service = _build_gdrive_service()
+        return gdrive_intake.test_connection(service, cfg)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/settings/gdrive/poll-now")
+async def poll_gdrive_now(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _gdrive_config()
+    if not (cfg.folder_id and _gdrive_token()):
+        return JSONResponse({"ok": False, "error": "Connect Google and set the inbox folder ID first."},
+                            status_code=400)
+    seen = _load_gdrive_seen()
+
+    def _run():
+        return _gdrive_poll(cfg, seen)
+    try:
+        summary = await asyncio.get_event_loop().run_in_executor(None, _run)
+        if summary.get("downloaded"):
+            _ensure_worker_alive()
         return JSONResponse({"ok": True, **summary})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

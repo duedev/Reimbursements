@@ -272,6 +272,36 @@ to the model — nothing hidden or clipped.
   pipeline's `classify_category` buckets whatever arrives.
 - Tests: `tests/test_email_intake.py` (+19).
 
+## Google Drive intake (opt-in cloud capture source)
+
+- **`gdrive_intake.py`** — the Google-Drive-as-hub capture path (see
+  `GOOGLE_DRIVE_IMPORT.md`, Phase 1+2). Mirrors `email_intake.py`'s shape: a pure,
+  testable core (`poll_once` lists the inbox folder, downloads new image/PDF files,
+  writes basename-only into the intake dir; `_list_folder` / `_safe_name` / `_ext_kind`)
+  + lazily-imported Google client calls (`_download_media`, `build_service`, `auth_url`,
+  `exchange_code`, `revoke_token`) so the module imports fine WITHOUT the Google libs
+  (tests fake the `service` and monkeypatch `_download_media`). **Dedup is by Drive
+  file ID** (not filename). `GDriveConfig` (`enabled`/`folder_id`/`poll_interval`/`scope`/
+  `move_processed`/`client_id`; `to_public_dict` hides secrets). Scope defaults to
+  `drive.readonly`.
+- **server.py** — `_run_gdrive_poller` thread (lifespan) polls the folder and downloads
+  into the default workspace's `intake_folder`, where the existing `_run_watcher` +
+  pipeline take over UNCHANGED (no new queue code). Seen-id guard `.gdrive_seen.json`
+  (mirrors `.email_seen.json`). Secrets in `app_secrets`: `gdrive_client_secret` +
+  `gdrive_token` (OAuth refresh token) — never in `.app_config.json`. Endpoints
+  `GET/POST /settings/gdrive`, `/settings/gdrive/auth-url`, `/connect` (accepts an OAuth
+  code OR a pasted refresh token), `/disconnect` (best-effort revoke + always clears
+  locally), `/test`, `/poll-now` — admin-only in multi-user mode. Settings → **Google
+  Drive Intake** card (`loadGDrive`): connect / disconnect-revoke / test / poll-now.
+- **Gmail→Drive bridge (Phase 2)** — `gmail_to_drive.gs` (Apps Script, runs in the
+  user's Google account on a time trigger, copies labelled receipt mail's attachments
+  into the same Drive folder) + `GMAIL_TO_DRIVE_SETUP.md` (filter → label → trigger →
+  folder ID). No app code; it just fills the inbox the poller drains.
+- **Deps** — `google-api-python-client` + `google-auth-oauthlib` in `requirements.txt`
+  only (lazy-imported, **mocked in tests** like the OCR/LLM stack — not in
+  `requirements-test.txt`).
+- Tests: `tests/test_gdrive_intake.py` (+12).
+
 ## Config / state / paths
 
 - `OUTPUT_FOLDER` (default `output/`), `RECEIPTS_FOLDER` (default `receipts/`).
@@ -283,7 +313,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **660 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **693 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -365,6 +395,96 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (Settings tab layout rework + scroll-capped benchmark):** Suite
+  **691 → 693** green. `templates/index.html` only — layout/CSS, **no behaviour
+  change**: every id, endpoint, JS handler, and the advanced/developer-mode gates are
+  untouched.
+  * **Responsive grid.** The Settings cards are wrapped in a new `.settings-grid`
+    (`display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr))`) so short
+    related cards sit 2-up on wide screens and stack to one column on mobile; `auto-fit`
+    means hidden `adv-only`/`dev-only` cards collapse out with no empty holes. The large
+    **AI Model** and tall **Image Processing** cards span full width (`grid-column:1/-1`).
+  * **Grouping via CSS `order`** (not DOM moves, so ids/handlers/structural tests are
+    untouched): Folders & Scheduled Export beside Email Delivery; the two inbound capture
+    cards (Email Intake + Google Drive Intake) together; Spending & Date Warnings beside
+    Maintenance; Benchmark near Maintenance.
+  * **Benchmark scroll-capped.** `#bench-body` gets `max-height:300px; overflow-y:auto`
+    (mirrors `.model-strip`) so up to `BENCH_MAX_ENTRIES=100` rows can't blow out the page.
+  * Tests: `tests/test_ui_layout.py` (+2 — grid present/wraps the cards, bench cap);
+    the duplicate-id test stays green.
+
+- **2026-06-23 (Google Drive receipt capture + Gmail→Drive ingestion):** Suite
+  **679 → 691** green. Implements Phase 1 + Phase 2 of `GOOGLE_DRIVE_IMPORT.md` (its
+  status note is flipped to "implemented"): make one Drive folder the "receipts inbox,"
+  fill it from a phone and/or Gmail, and have the app pull from it.
+  * **`gdrive_intake.py`** (new) — an in-app Drive API poller mirroring
+    `email_intake.py`: pure/testable `poll_once` (list the folder, **dedup by Drive
+    file ID**, download new image/PDF files basename-only into the intake dir) +
+    lazily-imported Google client calls so the module imports without the libs (tests
+    fake the `service` + monkeypatch `_download_media`). `GDriveConfig` (`drive.readonly`
+    default scope; `to_public_dict` hides secrets).
+  * **server.py** — `_run_gdrive_poller` lifespan thread downloads into the default
+    workspace `intake_folder` (existing `_run_watcher` + pipeline unchanged); seen-id
+    guard `.gdrive_seen.json`. Secrets `gdrive_client_secret` + `gdrive_token` (OAuth
+    refresh token) in `app_secrets` (never the synced config). Endpoints
+    `GET/POST /settings/gdrive` + `/auth-url` + `/connect` (OAuth code OR pasted refresh
+    token) + `/disconnect` (revoke + clear) + `/test` + `/poll-now` — admin-only in MU
+    mode. SPA: Settings → **Google Drive Intake** card (`loadGDrive`).
+  * **Gmail→Drive (Phase 2)** — `gmail_to_drive.gs` (Apps Script, server-less, runs in
+    the user's account) + `GMAIL_TO_DRIVE_SETUP.md` setup guide. No app code; fills the
+    same inbox the poller drains.
+  * **Privacy** — opt-in, off by default; README / TUTORIAL / ADVISORY (new §7) disclose
+    it as an opt-in cloud capture source (mirroring OpenRouter) — the new surface is the
+    stored OAuth token, not the receipts (already in Gmail/Drive); local OCR + the
+    `LLM_ALLOW_IMAGE` gate unchanged. Deps `google-api-python-client` +
+    `google-auth-oauthlib` (requirements.txt only, mocked in tests). `.env.example`
+    documents the new `GDRIVE_*` vars. Tests: `tests/test_gdrive_intake.py` (+12).
+
+- **2026-06-23 (glyph-robust vendor recognition + ~300-brand vendor DB):** Suite
+  **660 → 679** green. Two real-world misses drove this: a **7-Eleven** gas receipt
+  whose stylised font makes OCR read `7-ELEVEN` as `7-ELEUEN` (and which wasn't even
+  in the DB), and a **Home Depot** receipt whose vendor is a logo (no machine text) —
+  the only readable brand text being the printed slogan *"How doers get more done."*
+  * **`vendor_db.py` restructured + expanded.** The flat `KNOWN_VENDORS` literal is
+    now three grouped dicts (`_FUEL_BRANDS` / `_MATS_BRANDS` / `_MISC_BRANDS`,
+    `{canonical: alias_set}`) merged via `_tag()` into the SAME public
+    `KNOWN_VENDORS: dict[str, tuple[str, set[str]]]` — now **~329 canonical brands**
+    (fuel/c-stores, building+hardware+paint+print as `mats`, big-box/grocery/pharmacy/
+    restaurant/lodging/travel/telecom/auto-parts as `misc`). Added **7-Eleven**
+    (Speedway kept separate). The category-scoring sets `FUEL_VENDORS` / `MATS_VENDORS`
+    are **derived** from the brand aliases (one source of truth) PLUS preserved generic
+    non-brand keywords (`_FUEL_GENERIC` / `_MATS_GENERIC`); `FUEL_KEYWORDS` unchanged.
+  * **Glyph normalization (core, no LLM).** `_normalize_ocr_strict()` folds a tiny set
+    of letter OCR confusions (`rn→m`, `vv→w`, `cl→d`, `u→v`) and strips punctuation —
+    **digits are never folded** (protects numeric brands like `76`). `match_vendor` is
+    now two-pass: (1) **exact** on raw lowercased text (runs first → existing behaviour
+    byte-for-byte), (2) **glyph-normalized** only when the exact pass misses — so
+    `7-ELEUEN` → `("7-Eleven","fuel")` deterministically. Longest-original-alias-wins +
+    earliest position, via the refactored `_search_patterns()`.
+  * **Slogan aliases.** Printed taglines added as long aliases on ~6 logo-heavy brands
+    (Home Depot, Lowe's, Walmart, Target, Best Buy, Staples); `_is_slogan` (len ≥
+    `_SLOGAN_MIN_LEN`) EXCLUDES them from the scoring sets. So "How doers get more done."
+    → The Home Depot, no false hits.
+  * **Bounded fuzzy backstop** (`_fuzzy_match_vendor`, off by default): `difflib`
+    ratio ≥ 0.88 over a fully-folded (incl. digits) alias list, min length 5, cheap
+    length gate, and only ever on a SHORT vendor-name candidate (never the whole
+    receipt). `match_vendor(text, fuzzy=True)`; default does NOT fuzzy.
+  * **Canonicalization wired into both paths.** New `process_receipts.canonicalize_vendor(data)`
+    — exact/glyph on `vendor` then `_raw_ocr` rewrites the displayed vendor to the
+    canonical brand + sets `_db_category` / `_db_exact` / `_vendor_match_src`; fuzzy
+    (short vendor only) sets a category HINT, never renames unless ratio ≥
+    `_FUZZY_RENAME_RATIO` (0.93). Called in the server worker right before
+    `classify_category`, which short-circuits to `_db_category` only on `_db_exact`.
+    The offline parser (`_local_distill_from_ocr`) uses `match_vendor_detailed` so it
+    canonicalises + stashes `_vendor_match_src` automatically. `_parse_llm_record` is
+    NOT canonicalised.
+  * **Box mapping.** `locate_field_boxes` falls back to `data["_vendor_match_src"]`
+    when the canonical vendor scores 0 against every OCR line (e.g. the on-image box
+    for "The Home Depot" via the slogan line) — additive, inert when the key is absent.
+  * Tests: `tests/test_vendor_db.py` (+11), `test_classification.py` (+4, one existing
+    numeric-76 test re-pointed off Office Depot, which now correctly classifies `mats`),
+    `test_local_fallback.py` (+2), `test_field_markup.py` (+2).
 
 - **2026-06-23 (inbound email/IMAP receipt intake):** Suite **641 → 660** green.
   Implements the recommended gas-receipt-import path from `GAS_RECEIPT_IMPORT.md`,

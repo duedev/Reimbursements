@@ -66,3 +66,23 @@ def test_no_duplicate_ids(page):
     ids = re.findall(r'id="([^"]+)"', page)
     dups = [k for k, v in collections.Counter(ids).items() if v > 1]
     assert not dups, f"duplicate ids: {dups}"
+
+
+def test_settings_cards_in_responsive_grid(page):
+    # The settings cards are condensed into a responsive grid that collapses
+    # adv-only/dev-only cards out cleanly via auto-fit.
+    assert 'class="settings-grid"' in page
+    assert "repeat(auto-fit, minmax(360px, 1fr))" in page
+    # The grid sits inside the settings tab and wraps the cards (grid opens before
+    # the AI Model card and closes after Maintenance).
+    grid = page.find('class="settings-grid"')
+    cfg = page.find('id="config-card"')
+    admin = page.find('id="admin-card"')
+    gclose = page.find("/.settings-grid")
+    assert grid < cfg < admin < gclose
+
+
+def test_benchmark_table_is_height_capped(page):
+    # The benchmark table is scroll-capped so up to 100 rows can't blow out the page.
+    assert "#bench-body { max-height:" in page
+    assert "overflow-y: auto" in page
