@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns='http://www.w3.org/2005/Atom' xmlns:apps='http://schemas.google.com/apps/2006'>
+  <title>Mail Filters — Receipts</title>
+  <entry>
+    <category term='filter'></category>
+    <title>Receipts</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='{&quot;thank you for your purchase&quot; &quot;thanks for your purchase&quot; &quot;transaction total&quot; &quot;amount charged&quot; &quot;your receipt&quot; &quot;order confirmation&quot; &quot;e-receipt&quot; &quot;payment received&quot; &quot;fuel receipt&quot; &quot;price per gallon&quot; gallons &quot;fuel rewards&quot; subject:receipt subject:invoice from:shell.com from:fuelrewards.com from:email.fuelrewards.com from:gasbuddy.com from:notifications.chevronmobileapp.com from:rewards.sheetz.com from:upside.com from:getupside.com from:circlekeasy.com from:kwiktrip.com from:murphyusa.com from:murphydriverewards.com from:maverik.com from:speedway.com} -from:google.com -from:youtube.com -from:accounts.google.com'/>
+    <apps:property name='label' value='Receipts'/>
+    <apps:property name='shouldNeverSpam' value='true'/>
+  </entry>
+</feed>

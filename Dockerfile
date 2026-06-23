@@ -3,8 +3,12 @@ WORKDIR /app
 
 # Runtime libs for the local OCR stack (RapidOCR → onnxruntime + opencv, CPU):
 # libgomp1 (OpenMP, onnxruntime), libgl1 + libglib2.0-0 (OpenCV image I/O).
+# wkhtmltopdf bundles wkhtmltoimage (patched-Qt, runs headless) so emailed HTML
+# e-receipts render to a faithful JPEG "copy of the receipt" (see
+# process_receipts.render_receipt_copy); without it the app still produces a
+# pure-Python text-image copy, so this is a fidelity upgrade, not a hard dep.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 libglib2.0-0 libgl1 \
+        libgomp1 libglib2.0-0 libgl1 wkhtmltopdf \
     && rm -rf /var/lib/apt/lists/*
 
 # Unprivileged account the app actually runs as (see docker-entrypoint.py).

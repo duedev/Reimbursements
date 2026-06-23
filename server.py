@@ -32,6 +32,7 @@ from openai import OpenAI
 import app_secrets
 import email_intake
 import gdrive_intake
+import gmail_filter
 import multiuser
 import process_receipts as _pr
 import scheduler
@@ -1693,13 +1694,21 @@ def _run_batch(batch: list, batch_uid: str) -> None:
             # later, when the spreadsheet is generated.
             dest_dir = _receipts_output_dir()
             path = Path(item["path"])
-            final_path = rename_receipt_image(path, data, category, dest_dir)
+            # An emailed e-receipt has no photo, but the pipeline renders a filable
+            # JPEG copy (faithful HTML render or a text-based fallback) so the report
+            # and preview show the actual receipt document the office requires. When
+            # that copy exists, it becomes the canonical image (renamed + moved like
+            # any photo); the original .html/.txt stays staged and is ignored.
+            render_path = data.pop("_render_path", "")
+            have_copy   = bool(render_path and Path(render_path).exists())
+            src_path    = Path(render_path) if have_copy else path
+            final_path  = rename_receipt_image(src_path, data, category, dest_dir)
             data["_new_filename"] = final_path.name
             data["_file"]         = fname
-            # A text-source receipt (emailed HTML/plain body) has no picture, so
-            # don't point _image_path at the .html/.txt — the spreadsheet/preview
-            # then show a clean "image not available" instead of a decode error.
-            if not data.get("_text_source"):
+            # Point the spreadsheet/preview at the image unless this is a text source
+            # with no rendered copy (then show a clean "image not available" instead
+            # of a decode error on the .html/.txt).
+            if not data.get("_text_source") or have_copy:
                 data["_image_path"] = str(final_path)
 
             with _results_lock:
@@ -5189,6 +5198,10 @@ async def get_email_intake(request: Request):
     out["password_set"] = bool(_imap_password())
     out["configured"] = bool(cfg.host and cfg.username and _imap_password())
     out["multiuser"] = multiuser.ENABLED
+    # Surface the verified fuel-receipt senders + the recommended label so the UI
+    # can offer a one-click sender fill and a "use a label" nudge.
+    out["fuel_senders"] = list(email_intake.FUEL_RECEIPT_SENDERS)
+    out["recommended_label"] = gmail_filter.DEFAULT_LABEL
     return JSONResponse(out)
 
 
@@ -5263,6 +5276,20 @@ async def poll_email_now(request: Request):
         return JSONResponse({"ok": True, **summary})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/settings/email-intake/gmail-filter")
+async def download_gmail_filter(request: Request):
+    """Download an importable Gmail filter (Gmail → Settings → Filters → Import) that
+    labels receipt mail so the intake can poll a clean label instead of the inbox."""
+    guard = _email_admin_or_403(request)
+    if guard is not None:
+        return guard
+    xml = gmail_filter.build_gmail_filter_xml()
+    return Response(
+        content=xml, media_type="application/xml",
+        headers={"Content-Disposition": "attachment; filename=gmail_receipts_filter.xml"},
+    )
 
 
 # ── Google Drive receipt intake (opt-in, off by default) ────────────────────────

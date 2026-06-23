@@ -270,7 +270,31 @@ to the model — nothing hidden or clipped.
   (admin-only in multi-user mode; password in `app_secrets` `imap_password`).
   Settings → **Email Intake** card (`loadEmailIntake`). Vendor-agnostic — the
   pipeline's `classify_category` buckets whatever arrives.
-- Tests: `tests/test_email_intake.py` (+19).
+- **Filable receipt copy (office needs the document, not just data).** An emailed
+  HTML/plain receipt has no photo, so `process_receipts.render_receipt_copy(path,
+  body, step_log)` now renders one to a **JPEG** that becomes the receipt's canonical
+  image (embedded in the report + shown in the preview). Faithful render of the real
+  HTML via **wkhtmltoimage** (`imgkit`, bundled in the Docker image) when present;
+  pure-Python **PIL text→JPEG** fallback (`_text_to_jpeg`) otherwise, so a copy is
+  ALWAYS produced. Distillation still uses the clean body text — the render is purely
+  the visual. The text-source branch stashes `data["_render_path"]`; the worker
+  (`server._drain_once`) uses it as the file to rename/move and sets `_image_path`.
+  ON by default (`RENDER_RECEIPT_COPY`, `EMAIL_RENDER_COPY`; width `RECEIPT_COPY_WIDTH_PX`).
+- **Keyword Gmail filter is the recommended setup (not a sender allowlist).** Most
+  fuel brands don't email receipts / don't publish a sender domain, and
+  forwarding/privacy-relays rewrite `From:` — so `gmail_filter.py` builds an importable
+  Gmail filter that labels mail by **receipt keywords** (+ the few verified senders,
+  − known noise) and the app polls that **label** instead of INBOX (pure config).
+  `GET /settings/email-intake/gmail-filter` downloads it; committed copy
+  `gmail_receipts_filter.xml`; setup in `GMAIL_RECEIPTS_FILTER_SETUP.md`. UI: Email
+  Intake card "Download Gmail filter" + "Add verified fuel-receipt senders".
+- **Privacy-relay sender decoding.** `email_intake.decode_relay_sender` unwraps a
+  DuckDuckGo `From:` (`<local>_at_<domain>_<alias>@duck.com` → `<local>@<domain>`) so
+  a domain allowlist matches relayed receipts; `sender_allowed` checks both forms.
+  `FUEL_RECEIPT_SENDERS` = the curated, verified brand domains (Shell/Chevron/GasBuddy/
+  Sheetz/Upside/…; `earnify.com` deliberately excluded — unrelated ad company).
+- Tests: `tests/test_email_intake.py` (+24), `tests/test_receipt_copy.py` (+7),
+  `tests/test_gmail_filter.py` (+5).
 
 ## Google Drive intake (opt-in cloud capture source)
 
@@ -313,7 +337,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **693 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **710 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -395,6 +419,38 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (filable e-receipt copy + keyword Gmail filter intake):** Suite
+  **693 → 710** green. Driven by a real run where the email intake (pointed at a
+  whole Gmail INBOX) tried to read 42 non-receipt emails — Google security alerts,
+  YouTube notifications — as receipts, all failing distillation and burning OpenRouter
+  quota; plus the office requirement that a *copy of the receipt* (not just extracted
+  data) must reach the report.
+  * **Filable receipt copy.** New `process_receipts.render_receipt_copy` renders an
+    emailed HTML/plain receipt to a **JPEG** so the report/preview show the actual
+    document. Faithful render via wkhtmltoimage (`imgkit`, added to `requirements.txt`
+    + `wkhtmltopdf` to the `Dockerfile`) when present; pure-Python `_text_to_jpeg` PIL
+    fallback otherwise (always produces a copy). Wired into the text-source branch
+    (`data["_render_path"]`) and consumed by the worker, which now uses the rendered
+    copy as the canonical image and sets `_image_path` for text sources that have one.
+    Knobs `RENDER_RECEIPT_COPY` / `RECEIPT_COPY_WIDTH_PX`.
+  * **Keyword Gmail filter beats a sender allowlist.** Research (3 agents, ~28 brands)
+    found only a handful of *verifiable* fuel-receipt sender domains; most brands
+    don't email receipts at all, and forwarding/Duck relays rewrite `From:`. So the
+    primary intake is now a **keyword filter → label**: new `gmail_filter.py`
+    (`build_search_query` / `build_gmail_filter_xml`) + committed
+    `gmail_receipts_filter.xml` + `GMAIL_RECEIPTS_FILTER_SETUP.md`; endpoint
+    `GET /settings/email-intake/gmail-filter`; the app polls the `Receipts` label
+    instead of INBOX (config). UI: Email Intake card gains a "Download Gmail filter"
+    link + "Add verified fuel-receipt senders" button + a recommended-setup hint.
+  * **Privacy-relay + curated senders.** `email_intake.decode_relay_sender` unwraps a
+    DuckDuckGo-rewritten `From:` so a domain allowlist matches relayed receipts
+    (`sender_allowed` checks both forms); `FUEL_RECEIPT_SENDERS` is the verified list
+    (Shell/Chevron `notifications.chevronmobileapp.com`/GasBuddy/Sheetz/Upside/…,
+    `earnify.com` excluded). Surfaced via `GET /settings/email-intake`
+    (`fuel_senders` + `recommended_label`).
+  * Tests: `tests/test_receipt_copy.py` (+7), `tests/test_gmail_filter.py` (+5),
+    `tests/test_email_intake.py` (+5: relay decode, curated senders, endpoints).
 
 - **2026-06-23 (Settings tab layout rework + scroll-capped benchmark):** Suite
   **691 → 693** green. `templates/index.html` only — layout/CSS, **no behaviour

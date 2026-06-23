@@ -155,6 +155,16 @@ TEXT_EXTENSIONS      = {".html", ".htm", ".txt"}
 # manual review when disabled or the renderer isn't installed.
 RENDER_HTML_FALLBACK = os.getenv("EMAIL_RENDER_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
 
+# A filable image "copy" of an emailed receipt. A reimbursement office wants the
+# actual receipt document, not just the extracted numbers — but an emailed
+# e-receipt (HTML/plain body) has no photo. So every text-source receipt is
+# rendered to a JPEG that flows into the report and the preview like any other
+# receipt image. A FAITHFUL render of the real HTML via wkhtmltoimage is used when
+# it's installed; otherwise a pure-Python PIL text→image fallback so a copy is
+# ALWAYS produced. JPEG (not PDF) keeps the file small. ON by default.
+RENDER_RECEIPT_COPY   = os.getenv("EMAIL_RENDER_COPY", "1").strip().lower() not in {"0", "false", "no", "off"}
+RECEIPT_COPY_WIDTH_PX = int(os.getenv("RECEIPT_COPY_WIDTH_PX", "760"))
+
 
 def _is_text_source(path: "Path") -> bool:
     try:
@@ -2308,6 +2318,111 @@ def _maybe_render_text_source(path: Path, step_log: Optional[list]) -> Optional[
     return None
 
 
+def render_receipt_copy(path: "Path", body_text: str,
+                        step_log: Optional[list] = None) -> Optional[Path]:
+    """Produce a filable JPEG copy of an emailed (HTML/plain) receipt.
+
+    An emailed e-receipt has no photo, but reimbursement offices require the actual
+    receipt document — not just the extracted fields. This renders the message into
+    a JPEG the report embeds and the UI previews like any other receipt image.
+
+    Faithful render of the real HTML via wkhtmltoimage when it's installed;
+    otherwise a pure-Python PIL fallback that lays the receipt text onto a clean
+    JPEG, so a copy is ALWAYS produced. Best-effort — returns None (never raises)
+    on failure, leaving the receipt imageless rather than failing it.
+    """
+    if not RENDER_RECEIPT_COPY:
+        return None
+    try:
+        src = Path(path)
+        out = src.parent / (src.stem + ".receipt.jpg")
+        if src.suffix.lower() in (".html", ".htm"):
+            rendered = _render_html_to_jpeg(src, out)
+            if rendered is not None:
+                _append_step(step_log, "receipt_copy", "Receipt copy",
+                             "rendered the e-receipt to a JPEG (faithful)", ok=True)
+                return rendered
+        rendered = _text_to_jpeg(body_text or "", out)
+        if rendered is not None:
+            _append_step(step_log, "receipt_copy", "Receipt copy",
+                         "built a JPEG copy from the receipt text", ok=True)
+            return rendered
+    except Exception as exc:  # never let a copy failure fail the receipt
+        _append_step(step_log, "receipt_copy", "Receipt copy",
+                     f"could not build a receipt image: {exc}", ok=False)
+    return None
+
+
+def _render_html_to_jpeg(src: Path, out: Path) -> Optional[Path]:
+    """Faithful HTML→JPEG via wkhtmltoimage (optional dep). None if unavailable."""
+    try:
+        import imgkit  # type: ignore  # wraps wkhtmltoimage — optional, lazy-imported
+    except Exception:
+        return None
+    try:
+        imgkit.from_file(str(src), str(out), options={
+            "quiet": "", "format": "jpg", "encoding": "UTF-8",
+            "width": str(RECEIPT_COPY_WIDTH_PX), "quality": "82",
+        })
+        if out.exists() and out.stat().st_size > 0:
+            return out
+    except Exception:
+        return None
+    return None
+
+
+def _text_to_jpeg(text: str, out: Path) -> Optional[Path]:
+    """Pure-Python fallback: lay receipt text onto a white JPEG (PIL always present)."""
+    try:
+        import textwrap
+        from PIL import ImageDraw, ImageFont
+    except Exception:
+        return None
+    try:
+        text = (text or "").strip() or "(receipt — no readable text)"
+        font = None
+        for cand in ("DejaVuSans.ttf",
+                     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                     "Arial.ttf"):
+            try:
+                font = ImageFont.truetype(cand, 15)
+                break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        width  = max(360, RECEIPT_COPY_WIDTH_PX)
+        margin = 24
+        try:
+            box    = font.getbbox("Ayg")
+            line_h = (box[3] - box[1]) + 6
+            avg_ch = max(font.getlength("n"), 6.0)
+        except Exception:                       # very old PIL — use safe defaults
+            line_h, avg_ch = 18, 8.0
+        max_chars = max(24, int((width - 2 * margin) / avg_ch))
+        lines: list[str] = []
+        for para in text.splitlines():
+            if not para.strip():
+                lines.append("")
+                continue
+            lines.extend(textwrap.wrap(para, width=max_chars) or [""])
+        if len(lines) > 2000:                   # bound a pathological body
+            lines = lines[:2000] + ["… (truncated)"]
+        height = margin * 2 + line_h * max(len(lines), 1)
+        img  = Image.new("RGB", (width, int(height)), "white")
+        draw = ImageDraw.Draw(img)
+        y = margin
+        for ln in lines:
+            draw.text((margin, y), ln, fill=(17, 24, 39), font=font)
+            y += line_h
+        img.save(str(out), "JPEG", quality=82, optimize=True)
+        if out.exists() and out.stat().st_size > 0:
+            return out
+    except Exception:
+        return None
+    return None
+
+
 def _extract_receipt_with_status(
     client: OpenAI,
     image_path: Path,
@@ -2459,6 +2574,12 @@ def _extract_receipt_with_status(
             data = _distill_text(body, 0.0, engine="email-text")
             if data is not None:
                 data["_text_source"] = True
+                # Render a filable JPEG copy of the receipt (the office wants the
+                # actual document, not just the parsed fields). Distillation still
+                # uses the clean body text above; this is purely the visual copy.
+                copy_path = render_receipt_copy(image_path, body, step_log)
+                if copy_path is not None:
+                    data["_render_path"] = str(copy_path)
                 return data
         else:
             _append_step(step_log, "email_text", "Email body",
