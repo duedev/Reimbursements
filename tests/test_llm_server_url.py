@@ -2,7 +2,7 @@
 
 Covers the bug where selecting the "Docker bundled server" option persisted
 ``server_type: docker`` and then forced ``LMSTUDIO_BASE_URL`` to the
-docker-compose-internal hostname ``http://model-server:11434/v1`` on every
+docker-compose-internal hostname ``http://model-server:1234/v1`` on every
 startup — which is unresolvable when the app runs on the host (not in Docker),
 permanently stranding a perfectly good LM Studio connection on localhost.
 """
@@ -48,13 +48,13 @@ def test_docker_url_uses_localhost_on_host(monkeypatch):
     """Outside Docker the bundled server is on the published host port, NOT the
     unresolvable compose service name."""
     monkeypatch.setattr(server, "_in_docker", lambda: False)
-    assert server._docker_llm_url() == "http://127.0.0.1:11434/v1"
+    assert server._docker_llm_url() == "http://127.0.0.1:1234/v1"
     assert "model-server" not in server._docker_llm_url()
 
 
 def test_docker_url_uses_service_name_in_docker(monkeypatch):
     monkeypatch.setattr(server, "_in_docker", lambda: True)
-    assert server._docker_llm_url() == "http://model-server:11434/v1"
+    assert server._docker_llm_url() == "http://model-server:1234/v1"
 
 
 # ── persisted docker config no longer strands a host-run app ───────────────────
@@ -65,7 +65,7 @@ def test_persisted_docker_config_resolves_to_host_port(monkeypatch):
     monkeypatch.setattr(server, "_in_docker", lambda: False)
     cfg = {"llm_server": {"server_type": "docker", "base_url": ""}}
     server._apply_llm_server_config(cfg)
-    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:11434/v1"
+    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:1234/v1"
     assert "model-server" not in pr.LMSTUDIO_BASE_URL
 
 
@@ -74,8 +74,8 @@ def test_post_llm_server_docker_returns_resolved_url(client, monkeypatch):
     r = client.post("/settings/llm-server",
                     json={"server_type": "docker", "base_url": ""})
     assert r.status_code == 200
-    assert r.json()["base_url"] == "http://127.0.0.1:11434/v1"
-    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:11434/v1"
+    assert r.json()["base_url"] == "http://127.0.0.1:1234/v1"
+    assert pr.LMSTUDIO_BASE_URL == "http://127.0.0.1:1234/v1"
 
 
 def test_custom_url_normalized_and_applied(client):
