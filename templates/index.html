@@ -707,26 +707,36 @@
     .model-strip::-webkit-scrollbar { width: 8px; }
     .model-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-    /* ── Settings tab: condense related cards into a responsive grid ──────────
-       auto-fit so short cards sit 2-up on wide screens and stack to one column
-       on narrow/mobile; crucially, adv-only/dev-only cards that are display:none
-       collapse out cleanly (no empty grid holes). The large AI Model and the tall
-       Image Processing cards span the full width; the rest flow two-up. Visual
-       grouping is done with `order` so the DOM (ids/handlers/structure) is
-       untouched. */
-    .settings-grid { display: grid; gap: 18px; align-items: start;
-                     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
-    .settings-grid > .card { margin: 0; }            /* the grid gap handles spacing */
-    #config-card, #processing-card { grid-column: 1 / -1; }   /* large/tall → full width */
-    #config-card       { order: 1; }
-    #processing-card   { order: 2; }
-    #settings-card     { order: 3; }   /* Folders & Scheduled Export … */
-    #email-card        { order: 4; }   /* … beside Email Delivery (delivered by email) */
-    #email-intake-card { order: 5; }   /* the two inbound capture sources together */
-    #gdrive-card       { order: 6; }
-    #audit-card        { order: 7; }   /* Spending & Date Warnings … */
-    #admin-card        { order: 8; }   /* … beside Maintenance (both dev/ops) */
-    #benchmark-card    { order: 9; }   /* Benchmark near Maintenance (both dev/ops) */
+    /* ── Settings tab: full-width stacked, collapsible sections ───────────────
+       Every settings card is a full-width section that collapses (closed by
+       default) via a chevron on its title — keeps a long Settings tab tidy with
+       no side-by-side gaps. The collapse is wired generically in JS
+       (_initCollapsibleSettings) so the cards' DOM (ids/handlers) is untouched:
+       each card's content is moved into a `.settings-card-body` wrapper and the
+       title becomes the toggle. */
+    .settings-grid { display: flex; flex-direction: column; gap: 14px; }
+    .settings-grid > .card { margin: 0; }
+    .settings-grid > .card > .card-title { cursor: pointer; margin-bottom: 0; user-select: none; }
+    .settings-grid > .card.collapsed > .card-title { margin-bottom: 0; }
+    .settings-grid > .card:not(.collapsed) > .card-title { margin-bottom: 16px; }
+    .settings-chev { margin-left: auto; display: flex; align-items: center;
+                     color: var(--muted); transition: transform 0.2s; flex-shrink: 0; }
+    .settings-chev svg { width: 14px; height: 14px; }
+    .settings-grid > .card.collapsed > .card-title .settings-chev { transform: rotate(-90deg); }
+    /* Brief highlight when we send the user to a specific settings card (e.g. the
+       "set up email first" guide from Send Report Now). */
+    @keyframes settingsFlash {
+      0%, 100% { box-shadow: var(--shadow-sm); }
+      30%, 70% { box-shadow: 0 0 0 2px var(--accent); }
+    }
+    .settings-flash { animation: settingsFlash 1.5s ease; }
+
+    /* Inline Spending & Date Warnings panel — lives in the workspace Receipt
+       Progress card (moved out of Settings). Collapsible header + chips summary. */
+    .audit-inline { border: 1px solid var(--border); border-radius: 10px;
+                    padding: 10px 12px; margin-bottom: 10px; background: rgba(255,255,255,0.02); }
+    .audit-inline-head { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-wrap: wrap; }
+    .audit-inline-title { font-size: 12px; font-weight: 600; color: var(--text); }
 
     /* Benchmark table — capped height + scroll so up to BENCH_MAX_ENTRIES=100
        rows can't blow out the card/page (mirrors the .model-strip treatment). */
@@ -1635,13 +1645,67 @@
       </div>
     </div>
     <div id="kanban-body">
-    <!-- Warning threshold chips — shown when any spending/date limit is configured -->
-    <div id="warning-thresholds-row" style="display:none;margin-bottom:8px;align-items:center;gap:6px;flex-wrap:wrap">
-      <span style="font-size:11px;color:var(--muted);margin-right:2px">Limits:</span>
-      <span id="wt-fuel-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
-      <span id="wt-mats-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
-      <span id="wt-misc-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
-      <span id="wt-age-chip" class="wt-chip hidden" title="Click to configure date warnings" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
+    <!-- Spending & Date Warnings — moved here from Settings so the limits live with
+         the receipts they apply to. Optional, app-applied (not AI) checks that flag
+         a receipt for review; all off by default. Collapsed by default; the chips
+         summarise any active limit. -->
+    <div id="audit-inline" class="audit-inline">
+      <div class="audit-inline-head" onclick="toggleSection('audit-inline-body','audit-inline-toggle')">
+        <span class="audit-inline-title">&#9873; Spending &amp; Date Warnings</span>
+        <span id="warning-thresholds-row" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--muted);margin-right:2px">Active:</span>
+          <span id="wt-fuel-chip" class="wt-chip hidden"></span>
+          <span id="wt-mats-chip" class="wt-chip hidden"></span>
+          <span id="wt-misc-chip" class="wt-chip hidden"></span>
+          <span id="wt-age-chip" class="wt-chip hidden"></span>
+        </span>
+        <button class="section-toggle collapsed" id="audit-inline-toggle" tabindex="-1" aria-label="Toggle spending &amp; date warnings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+      </div>
+      <div id="audit-inline-body" style="display:none;margin-top:10px">
+        <p class="section-desc" style="margin-top:0">
+          Optional checks that flag a receipt for review. <strong>All off by default</strong> —
+          leave a field blank for no warning. Applied by the app itself (not the AI), so they're
+          consistent every time.
+        </p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 24px">
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Fuel</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--muted);font-size:13px">$</span>
+              <input type="number" id="audit-fuel" min="0" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">max</span>
+            </div>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Materials</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--muted);font-size:13px">$</span>
+              <input type="number" id="audit-mats" min="0" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">max</span>
+            </div>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Misc</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--muted);font-size:13px">$</span>
+              <input type="number" id="audit-misc" min="0" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">max</span>
+            </div>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Receipt Age</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="audit-age" min="1" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">days</span>
+            </div>
+          </label>
+        </div>
+        <div style="margin-top:8px"><span id="audit-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
+      </div>
     </div>
     <div class="board-search">
       <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)"
@@ -1865,19 +1929,17 @@
       </div>
     </div>
 
-    <!-- Docker lifecycle controls — only shown for (and only work with) the bundled Docker server -->
+    <!-- Docker bundled-LLM info — only shown for the bundled Docker server. The
+         old Start/Stop/Restart/Load buttons shelled out to `docker compose` and did
+         nothing in a normal install, so they were removed; start the bundled server
+         from a terminal instead (command below), then use Auto-detect above. -->
     <div id="llm-docker-controls" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:none">
-      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Docker server controls</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-outline-accent btn-sm" id="llm-start-btn">Start</button>
-        <button class="btn btn-cancel btn-sm" id="llm-stop-btn">Stop</button>
-        <button class="btn btn-outline-accent btn-sm" id="llm-restart-btn">Restart</button>
-        <button class="btn btn-outline-accent btn-sm" id="llm-load-btn">Load Model</button>
-      </div>
-      <div style="font-size:11px;line-height:1.5;color:var(--muted);margin-top:8px">
-        First time? The bundled LLM runs as the <code style="font-family:ui-monospace,monospace;font-size:10px">model-server</code>
-        compose service (port 11434, weights baked in, fully offline). If the buttons can't reach it, start it with
-        <code style="font-family:ui-monospace,monospace;font-size:10px">docker compose --profile bundled-llm up -d</code>.
+      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Docker bundled LLM</div>
+      <div style="font-size:11px;line-height:1.5;color:var(--muted)">
+        The bundled LLM runs as the <code style="font-family:ui-monospace,monospace;font-size:10px">model-server</code>
+        compose service (port 11434, weights baked in, fully offline). Start it from a terminal with
+        <code style="font-family:ui-monospace,monospace;font-size:10px">docker compose --profile bundled-llm up -d</code>,
+        then click <strong>🔎 Auto-detect</strong> above to connect.
         See <strong>Info → Using the Docker bundled LLM</strong> for the full how-to.
       </div>
     </div>
@@ -2192,49 +2254,7 @@
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
   </div>
 
-  <!-- Spending & date warnings — optional, all off by default -->
-  <div class="card" id="audit-card">
-    <div class="card-title">Spending &amp; Date Warnings</div>
-    <p class="section-desc">
-      Optional checks that flag a receipt for review. <strong>All off by default</strong> —
-      leave a field blank for no warning. Applied by the app itself (not the AI), so they're
-      consistent every time.
-    </p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px 24px">
-      <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
-        <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Fuel</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="color:var(--muted);font-size:13px">$</span>
-          <input type="number" id="audit-fuel" min="0" step="1" placeholder="no limit" style="flex:1">
-          <span style="color:var(--muted);font-size:12px">max</span>
-        </div>
-      </label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
-        <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Materials</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="color:var(--muted);font-size:13px">$</span>
-          <input type="number" id="audit-mats" min="0" step="1" placeholder="no limit" style="flex:1">
-          <span style="color:var(--muted);font-size:12px">max</span>
-        </div>
-      </label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
-        <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Misc</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="color:var(--muted);font-size:13px">$</span>
-          <input type="number" id="audit-misc" min="0" step="1" placeholder="no limit" style="flex:1">
-          <span style="color:var(--muted);font-size:12px">max</span>
-        </div>
-      </label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
-        <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Receipt Age</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          <input type="number" id="audit-age" min="1" step="1" placeholder="no limit" style="flex:1">
-          <span style="color:var(--muted);font-size:12px">days</span>
-        </div>
-      </label>
-    </div>
-    <div style="margin-top:8px"><span id="audit-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
-  </div>
+  <!-- (Spending & Date Warnings moved to the workspace Receipt Progress card.) -->
 
   <!-- Email delivery — has its own save button -->
   <div class="card" id="email-card">
@@ -2954,6 +2974,46 @@ function toggleSection(bodyId, toggleId) {
   if (toggle) toggle.classList.toggle('collapsed', !isCollapsed);
 }
 
+// ── Collapsible Settings sections ─────────────────────────────────────────────
+// Every settings card is turned into a full-width, collapsible section (closed by
+// default) so the long Settings tab stays tidy with no side-by-side gaps. Done in
+// JS — generically wrapping each card's content into a `.settings-card-body` and
+// making the title the toggle — so the cards' markup (ids/handlers) is untouched.
+function _initCollapsibleSettings() {
+  const grid = document.querySelector('.settings-grid');
+  if (!grid || grid.dataset.collapsibleInit) return;
+  grid.dataset.collapsibleInit = '1';
+  grid.querySelectorAll(':scope > .card').forEach(card => {
+    const title = card.querySelector(':scope > .card-title');
+    if (!title) return;
+    // Move everything after the title into a collapsible body wrapper.
+    const body = document.createElement('div');
+    body.className = 'settings-card-body';
+    let node = title.nextSibling;
+    while (node) { const next = node.nextSibling; body.appendChild(node); node = next; }
+    card.appendChild(body);
+    // Collapsed by default; add a chevron to the title and make it the toggle.
+    body.style.display = 'none';
+    card.classList.add('collapsed');
+    const chev = document.createElement('span');
+    chev.className = 'settings-chev';
+    chev.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>';
+    title.appendChild(chev);
+    title.addEventListener('click', () => {
+      const collapsed = card.classList.toggle('collapsed');
+      body.style.display = collapsed ? 'none' : '';
+    });
+  });
+}
+
+// Expand a specific settings card (used by the "set up email first" guide).
+function _expandSettingsCard(card) {
+  if (!card) return;
+  card.classList.remove('collapsed');
+  const body = card.querySelector(':scope > .settings-card-body');
+  if (body) body.style.display = '';
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
@@ -2972,14 +3032,20 @@ const genSummary   = document.getElementById('gen-summary');
 const downloadBtn  = document.getElementById('download-btn');
 const resetBtn     = document.getElementById('reset-btn');
 
-// Swap the green "Generate Spreadsheet" button for the "Download Spreadsheet"
-// link (same slot) once a workbook is ready, and swap back when the board
-// changes (any edit/new batch makes the prepared download stale).
+// Once a workbook is ready, the green "Generate Spreadsheet" button is replaced
+// (same slot) by "Download Spreadsheet" + "Send Report Now": the report is kept
+// server-side so it can be emailed straight away, and re-pressing Generate (which
+// would fail once the board is cleared) is no longer the default action. Any board
+// edit/new batch makes the prepared report stale, so we swap back to Generate.
+let _reportReady = false;
 function _swapToDownload(fname, url) {
   if (url) downloadBtn.href = url;
   if (fname) downloadBtn.download = fname;
   downloadBtn.style.display = '';
   generateBtn.style.display = 'none';
+  const sendBtn = document.getElementById('send-email-btn');
+  if (sendBtn) sendBtn.classList.remove('hidden');   // report can be emailed now
+  _reportReady = true;
 }
 function _swapToGenerate() {
   if (downloadBtn) {
@@ -2989,6 +3055,9 @@ function _swapToGenerate() {
       downloadBtn.dataset.objUrl = '';
     }
   }
+  const sendBtn = document.getElementById('send-email-btn');
+  if (sendBtn) sendBtn.classList.add('hidden');      // prepared report is now stale
+  _reportReady = false;
   if (generateBtn) generateBtn.style.display = '';
 }
 
@@ -3445,6 +3514,15 @@ function connectSSE() {
         if (['done','failed'].includes(receiptCards[k].status)) delete receiptCards[k];
       });
       setCounts();
+      // The board may now be empty (clearing done/failed after a report was built).
+      // Hide the Clear Board button — and the whole board/progress cards — when
+      // nothing remains, so a cleared board doesn't keep showing Clear Board.
+      const stillHasCards = Object.keys(receiptCards).length > 0;
+      document.getElementById('clear-board-btn').classList.toggle('hidden', !stillHasCards);
+      if (!stillHasCards) {
+        kanbanCard.classList.add('hidden');
+        progressCard.classList.add('hidden');
+      }
       loadStats();
 
     } else if (msg.type === 'stall_recovered') {
@@ -4660,9 +4738,12 @@ document.getElementById('refresh-models-btn').addEventListener('click', () => {
 // ── Output folder + watch status ──────────────────────────────────────────────
 async function loadWatchStatus() {
   try {
-    const [folderRes, statusRes, watchFolderRes, foldersRes] = await Promise.all([
+    // The "Send Report Now" button is revealed by _swapToDownload after a report
+    // is generated (kept server-side so it can be emailed), not on page load — so
+    // there's always a report to send when it's shown. If email isn't configured,
+    // clicking it guides the user to set up Gmail. (No /watch/status fetch needed.)
+    const [folderRes, watchFolderRes, foldersRes] = await Promise.all([
       fetch('/open-output-folder'),
-      fetch('/watch/status'),
       fetch('/watch/folder'),
       fetch('/folders'),
     ]);
@@ -4672,10 +4753,6 @@ async function loadWatchStatus() {
       const el = document.getElementById('folder-path');
       el.textContent = display;
       el.dataset.hostPath = display;
-    }
-    if (statusRes.ok) {
-      const { smtp_configured } = await statusRes.json();
-      if (smtp_configured) document.getElementById('send-email-btn').classList.remove('hidden');
     }
     if (watchFolderRes.ok) {
       const d = await watchFolderRes.json();
@@ -5151,18 +5228,9 @@ document.getElementById('llm-server-save-btn').addEventListener('click', async (
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 });
 
-document.getElementById('llm-start-btn').addEventListener('click', async () => {
-  try { const r = await fetch('/llm-server/start',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server starting…':'Start failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
-});
-document.getElementById('llm-stop-btn').addEventListener('click', async () => {
-  try { const r = await fetch('/llm-server/stop',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server stopping…':'Stop failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
-});
-document.getElementById('llm-restart-btn').addEventListener('click', async () => {
-  try { const r = await fetch('/llm-server/restart',{method:'POST'}); const d=await r.json(); showToast(d.ok?'LLM server restarting…':'Restart failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
-});
-document.getElementById('llm-load-btn').addEventListener('click', async () => {
-  try { const r = await fetch('/llm-server/load',{method:'POST'}); const d=await r.json(); showToast(d.ok?'Model load started…':'Load failed',d.ok); } catch(e){showToast('Error: '+e.message,false);}
-});
+// (The Docker Start/Stop/Restart/Load buttons were removed — they shelled out to
+//  `docker compose` and did nothing in a normal install. Start the bundled server
+//  from a terminal, then use Auto-detect below.)
 document.getElementById('llm-autodetect-btn').addEventListener('click', async () => {
   const btn = document.getElementById('llm-autodetect-btn');
   const prev = btn.textContent;
@@ -5238,15 +5306,39 @@ document.getElementById('open-watch-folder-btn').addEventListener('click', async
 
 document.getElementById('send-email-btn').addEventListener('click', async () => {
   const btn = document.getElementById('send-email-btn');
+  const orig = btn.innerHTML;   // preserve the icon + label
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
     const res  = await fetch('/watch/send-email', { method: 'POST' });
-    const data = await res.json();
-    showToast(data.ok ? `Report sent: ${data.filename}` : `Failed: ${data.error}`, data.ok);
-    if (data.ok) loadWatchStatus();
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      showToast(`Report emailed${data.filename ? ': ' + data.filename : ''}`, true);
+    } else if (data.needs_email_setup) {
+      // Email isn't configured — walk the user to the Email Delivery settings.
+      _guideToEmailSetup();
+    } else {
+      showToast(`Failed: ${data.error || ('server error ' + res.status)}`, false);
+    }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
-  finally { btn.disabled = false; btn.textContent = 'Send Report Now'; }
+  finally { btn.disabled = false; btn.innerHTML = orig; }
 });
+
+// Send Report Now was pressed without email set up — open Settings → Email Delivery,
+// expand + highlight it, and focus the first field so the user can finish setup.
+function _guideToEmailSetup() {
+  showToast('Set up email first to send reports — opening Email settings', false);
+  switchTab('settings');
+  setTimeout(() => {
+    const card = document.getElementById('email-card');
+    if (!card) return;
+    _expandSettingsCard(card);
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('settings-flash');
+    setTimeout(() => card.classList.remove('settings-flash'), 1800);
+    const host = document.getElementById('email-host');
+    if (host) setTimeout(() => { try { host.focus(); } catch (_) {} }, 450);
+  }, 150);
+}
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 async function loadSettings() {
@@ -7186,6 +7278,7 @@ function _muFillEmployee(me) {
 function _bootApp() {
   if (_muBooted) return;
   _muBooted = true;
+  _initCollapsibleSettings();   // collapse Settings sections (closed by default)
   connectSSE();
   loadWatchStatus();
   loadIntakeCount();

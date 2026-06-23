@@ -337,7 +337,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **710 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **711 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -419,6 +419,50 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (Send-Report flow fix + Docker/settings/warnings UX — 6 fixes):**
+  Suite **710 → 711** green. Driven by user-reported bugs in the report/email flow
+  and settings layout. `server.py` + `templates/index.html` + `tests/test_ui_layout.py`.
+  * **"Send Report Now" no longer fails with "no receipts in state".** The
+    `POST /watch/send-email` endpoint used to build from the *watch-mode* state file
+    (`watch_mode.load_state`/`send_report`) — an unrelated, usually-empty store — so
+    the web-UI button always errored. It now emails the workbook from the most recent
+    Generate (kept in memory, see below), falling back to building one from the live
+    web-UI `_results` if none exists. Runs SMTP send off the event loop.
+  * **Keep the generated Excel in memory + button turns into Send Report Now.** New
+    module globals `server._last_report_path` / `_last_report_count` record the
+    workbook built by `POST /generate-spreadsheet`. The frontend `_swapToDownload`
+    now also reveals **Send Report Now** (and `_swapToGenerate` hides it) — so after
+    a successful Generate the green button is replaced by Download + Send Report Now
+    (not a re-press of Generate that would 404 with "no processed results available"
+    once the board was cleared). `_reportReady` tracks the state.
+  * **Guide to Gmail when email isn't set up.** `/watch/send-email` returns
+    `needs_email_setup:true` (HTTP 400) when SMTP is unconfigured; the Send Report Now
+    handler calls `_guideToEmailSetup()` → switches to Settings, expands + flashes
+    (`.settings-flash`) the Email Delivery card, focuses the SMTP host field. The
+    button is no longer auto-shown on load by `smtp_configured` — it appears only
+    after a report is ready (so there's always something to send).
+  * **Cleared board no longer shows the Clear Board button.** The SSE
+    `results_cleared` handler now hides `#clear-board-btn` (and the empty board +
+    progress cards) when no cards remain — fixes the stray button after Generate →
+    finish-batch.
+  * **Dead Docker buttons removed (mode kept).** The non-working Start/Stop/Restart/
+    Load buttons in the AI Model card (`#llm-docker-controls`, shelled out to
+    `docker compose`) and their JS handlers are gone; the Docker bundled-LLM *mode*
+    stays, with the block reworded to "start it from a terminal, then Auto-detect".
+  * **Spending & Date Warnings moved to the workspace.** The Settings `#audit-card`
+    is gone; the editor now lives inside the **Receipt Progress** (kanban) card as a
+    collapsible `#audit-inline` panel (same `audit-fuel/mats/misc/age` ids +
+    `warning-thresholds-row` chips, so `loadAuditSettings`/`saveAuditSettings`/
+    `_renderWarningChips` are unchanged).
+  * **Settings layout = full-width collapsible sections (closed by default).** The
+    `.settings-grid` is now a stacked flex column (no side-by-side gaps); each card is
+    made collapsible generically in JS (`_initCollapsibleSettings` wraps each card's
+    body into `.settings-card-body` and turns the title into a chevron toggle —
+    leaving every id/handler untouched). `_expandSettingsCard` opens a specific one.
+  * Tests: `tests/test_ui_layout.py` — `test_settings_cards_in_responsive_grid`
+    replaced by `test_settings_cards_full_width_collapsible`; added
+    `test_spending_warnings_moved_to_workspace` (+1).
 
 - **2026-06-23 (UI/UX polish batch — 13 changes):** Suite **710** green.
   All changes are `templates/index.html` + `spreadsheet_theme.py`; no backend

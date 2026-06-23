@@ -68,11 +68,12 @@ def test_no_duplicate_ids(page):
     assert not dups, f"duplicate ids: {dups}"
 
 
-def test_settings_cards_in_responsive_grid(page):
-    # The settings cards are condensed into a responsive grid that collapses
-    # adv-only/dev-only cards out cleanly via auto-fit.
+def test_settings_cards_full_width_collapsible(page):
+    # The settings cards are stacked full-width and collapsible (closed by default),
+    # so there are no side-by-side gaps. The collapse is wired generically in JS.
     assert 'class="settings-grid"' in page
-    assert "repeat(auto-fit, minmax(360px, 1fr))" in page
+    assert ".settings-grid { display: flex; flex-direction: column;" in page
+    assert "_initCollapsibleSettings" in page          # collapse mechanism present
     # The grid sits inside the settings tab and wraps the cards (grid opens before
     # the AI Model card and closes after Maintenance).
     grid = page.find('class="settings-grid"')
@@ -80,6 +81,18 @@ def test_settings_cards_in_responsive_grid(page):
     admin = page.find('id="admin-card"')
     gclose = page.find("/.settings-grid")
     assert grid < cfg < admin < gclose
+
+
+def test_spending_warnings_moved_to_workspace(page):
+    # Spending & Date Warnings now live in the workspace Receipt Progress card,
+    # not in a Settings card.
+    assert 'id="audit-card"' not in page          # the old Settings card is gone
+    assert 'id="audit-inline"' in page            # inline panel in the kanban card
+    ws = page.find('id="tab-workspace"')
+    kanban = page.find('id="kanban-card"')
+    audit = page.find('id="audit-inline"')
+    stset = page.find('id="tab-settings"')
+    assert ws < kanban < audit < stset            # inline panel sits in the workspace tab
 
 
 def test_benchmark_table_is_height_capped(page):
