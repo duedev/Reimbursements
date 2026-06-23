@@ -1275,6 +1275,42 @@
 </head>
 <body>
 
+<style>
+  .mu-userbox{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border-radius:8px;
+    background:var(--surface-2,rgba(127,127,127,.12));font-size:12px;font-weight:600;color:var(--text,#ddd)}
+  .mu-userbox .mu-logout-btn{border:0;background:transparent;color:var(--accent,#3b82f6);
+    cursor:pointer;font-size:12px;font-weight:600;padding:0 2px;text-decoration:underline}
+  .mu-login-box{width:360px;max-width:92vw}
+  .mu-login-box h2{margin:0 0 4px}
+  .mu-login-box label{display:block;font-size:12px;font-weight:600;margin:10px 0 4px;text-align:left}
+  .mu-login-box input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;
+    border:1px solid var(--border,rgba(127,127,127,.3));background:var(--surface,#1b1f27);
+    color:var(--text,#eee);font-size:14px}
+  .mu-error{display:none;margin:10px 0 0;padding:8px 10px;border-radius:8px;font-size:13px;
+    background:rgba(220,38,38,.14);color:#fda4af;border:1px solid rgba(220,38,38,.35)}
+  .mu-login-actions{margin-top:16px}
+  .mu-login-actions .btn-primary{width:100%}
+</style>
+
+<!-- Multi-user sign-in / first-run setup overlay (only shown when MULTIUSER_ENABLED) -->
+<div class="modal-overlay hidden" id="mu-login-overlay" role="dialog" aria-modal="true"
+     aria-labelledby="mu-login-title" style="z-index:9999">
+  <div class="modal-box mu-login-box">
+    <h2 id="mu-login-title">Sign in</h2>
+    <p class="modal-sub" id="mu-login-sub">Enter your username and password to continue.</p>
+    <label for="mu-username">Username</label>
+    <input type="text" id="mu-username" autocomplete="username" autocapitalize="none"
+           spellcheck="false" onkeydown="if(event.key==='Enter')muSubmit()">
+    <label for="mu-password">Password</label>
+    <input type="password" id="mu-password" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter')muSubmit()">
+    <div class="mu-error" id="mu-login-error"></div>
+    <div class="mu-login-actions">
+      <button class="btn-primary" id="mu-login-btn" onclick="muSubmit()">Sign in</button>
+    </div>
+  </div>
+</div>
+
 <header>
   <div class="logo-mark">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1299,6 +1335,13 @@
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
     </svg>
   </a>
+  <div class="mu-userbox hidden" id="mu-userbox" title="Signed-in user">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+    </svg>
+    <span id="mu-userbox-name">—</span>
+    <button class="mu-logout-btn" id="mu-logout-btn" onclick="muLogout()" title="Sign out">Sign out</button>
+  </div>
   <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode" onclick="toggleTheme()">
     <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
@@ -6469,38 +6512,134 @@ function celebrate() {
   setTimeout(() => bits.forEach(b => b.remove()), 5000);
 }
 
+// ── Multi-user auth ─────────────────────────────────────────────────────────────
+let _muSetupMode = false;
+let _muBooted = false;
+
+function _muShowError(msg) {
+  const el = document.getElementById('mu-login-error');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
+}
+
+function _muShowOverlay(needsSetup) {
+  _muSetupMode = !!needsSetup;
+  document.getElementById('mu-login-title').textContent = needsSetup ? 'Create the first account' : 'Sign in';
+  document.getElementById('mu-login-sub').textContent = needsSetup
+    ? 'No accounts exist yet — pick an admin username and password for this app.'
+    : 'Enter your username and password to continue.';
+  document.getElementById('mu-login-btn').textContent = needsSetup ? 'Create account' : 'Sign in';
+  document.getElementById('mu-password').setAttribute('autocomplete', needsSetup ? 'new-password' : 'current-password');
+  _muShowError('');
+  document.getElementById('mu-login-overlay').classList.remove('hidden');
+  const u = document.getElementById('mu-username');
+  if (u) setTimeout(() => u.focus(), 50);
+}
+
+function _muHideOverlay() {
+  document.getElementById('mu-login-overlay').classList.add('hidden');
+}
+
+function _muShowUserChip(me) {
+  const box = document.getElementById('mu-userbox');
+  if (!box) return;
+  if (me && me.multiuser && me.authenticated) {
+    document.getElementById('mu-userbox-name').textContent =
+      (me.display || me.user_id) + (me.is_admin ? ' · admin' : '');
+    box.classList.remove('hidden');
+  } else {
+    box.classList.add('hidden');
+  }
+}
+
+async function muSubmit() {
+  const username = (document.getElementById('mu-username').value || '').trim();
+  const password = document.getElementById('mu-password').value || '';
+  if (!username || !password) { _muShowError('Username and password are required.'); return; }
+  const btn = document.getElementById('mu-login-btn');
+  btn.disabled = true;
+  try {
+    const url = _muSetupMode ? '/setup' : '/login';
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      _muShowError(_muSetupMode ? (data.error || 'Could not create the account.')
+                                : 'Incorrect username or password.');
+      return;
+    }
+    document.getElementById('mu-password').value = '';
+    _muHideOverlay();
+    const me = await fetch('/me').then(x => x.json()).catch(() => null);
+    _muShowUserChip(me);
+    _bootApp();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function muLogout() {
+  try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
+  location.reload();
+}
+
+async function initMultiuser() {
+  let status;
+  try { status = await fetch('/multiuser/status').then(r => r.json()); }
+  catch (e) { status = { enabled: false }; }
+  if (!status.enabled) { _bootApp(); return; }   // single-user: boot immediately
+  const me = await fetch('/me').then(r => r.json()).catch(() => ({ authenticated: false }));
+  if (me && me.authenticated) {
+    _muShowUserChip(me);
+    _bootApp();
+  } else {
+    _muShowOverlay(status.needs_setup);   // boot deferred until sign-in
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
-connectSSE();
-loadWatchStatus();
-loadIntakeCount();
-loadRejected();
-loadLMStudioModels();
-checkLLMStatus();
-loadModels();
-if (typeof loadLLMProvider === 'function') loadLLMProvider();
-refreshLLMOverview();
-loadSettings();
-loadSavedFields();
-loadStats();
-loadReports();
-loadRuns();
-// Keep the intake count and the LM Studio health chip honest while the page idles
-setInterval(loadIntakeCount, 15000);
-setInterval(loadRejected, 20000);
-setInterval(loadLMStudioModels, 30000);
-// Keep the header engine chip (active mode + model) honest while the page idles.
-setInterval(refreshLLMOverview, 20000);
-// Auto-refresh the model list AND re-probe mode availability while the AI Model
-// settings are open ("auto-detect to auto-run while the section is visible") —
-// but never refresh the dropdown while the user is actively picking from it.
-setInterval(() => {
-  const settings = document.getElementById('tab-settings');
-  if (!settings || settings.classList.contains('hidden')) return;
-  refreshLLMOverview();
-  const active = document.activeElement;
-  if (active && active.id === 'distill-model-select') return;
+// The actual app boot is gated behind auth: in multi-user mode it runs only once a
+// user is signed in (so the page doesn't fire a flurry of 401s on the login screen).
+function _bootApp() {
+  if (_muBooted) return;
+  _muBooted = true;
+  connectSSE();
+  loadWatchStatus();
+  loadIntakeCount();
+  loadRejected();
+  loadLMStudioModels();
+  checkLLMStatus();
   loadModels();
-}, 12000);
+  if (typeof loadLLMProvider === 'function') loadLLMProvider();
+  refreshLLMOverview();
+  loadSettings();
+  loadSavedFields();
+  loadStats();
+  loadReports();
+  loadRuns();
+  // Keep the intake count and the LM Studio health chip honest while the page idles
+  setInterval(loadIntakeCount, 15000);
+  setInterval(loadRejected, 20000);
+  setInterval(loadLMStudioModels, 30000);
+  // Keep the header engine chip (active mode + model) honest while the page idles.
+  setInterval(refreshLLMOverview, 20000);
+  // Auto-refresh the model list AND re-probe mode availability while the AI Model
+  // settings are open ("auto-detect to auto-run while the section is visible") —
+  // but never refresh the dropdown while the user is actively picking from it.
+  setInterval(() => {
+    const settings = document.getElementById('tab-settings');
+    if (!settings || settings.classList.contains('hidden')) return;
+    refreshLLMOverview();
+    const active = document.activeElement;
+    if (active && active.id === 'distill-model-select') return;
+    loadModels();
+  }, 12000);
+}
+
+initMultiuser();
 </script>
 </body>
 </html>

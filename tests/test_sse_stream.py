@@ -33,14 +33,15 @@ def test_sse_snapshot_then_event_delivery():
             assert snapshot["type"] == "full_state"
             assert "kanban" in snapshot and "pending" in snapshot
 
-            # The connect registered exactly one new subscriber queue.
-            new = [q for q in server._subscribers if q not in before]
+            # The connect registered exactly one new subscriber (a _Subscriber
+            # carrying its own event queue + owner user_id).
+            new = [s for s in server._subscribers if s not in before]
             assert len(new) == 1
-            q = new[0]
+            sub = new[0]
 
             # A queued event is delivered on the very next pull — the success
             # path never touches asyncio.sleep, so this can't hang.
-            q.put_nowait({"type": "log", "message": "hello-from-test"})
+            sub.q.put_nowait({"type": "log", "message": "hello-from-test"})
             event = _frame(await agen.__anext__())
             assert event == {"type": "log", "message": "hello-from-test"}
         finally:
