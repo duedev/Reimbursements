@@ -75,6 +75,31 @@ def test_locate_field_boxes_no_geometry_returns_empty():
     assert pr.locate_field_boxes(rows, 100, 100, {"amount": 5.00}) == {}
 
 
+def test_locate_vendor_box_via_match_src_after_canonicalization():
+    # After canonicalization the displayed vendor is the canonical brand, which is
+    # NOT printed verbatim (the line is the slogan). The box still maps via the
+    # alias that actually matched (_vendor_match_src).
+    W, H = 200, 400
+    rows = [
+        _row("HOW DOERS GET MORE DONE", 10, 12, 190, 32),
+        _row("TOTAL 88.42", 10, 330, 190, 350),
+    ]
+    data = {"vendor": "The Home Depot", "amount": 88.42,
+            "_vendor_match_src": "how doers get more done"}
+    boxes = pr.locate_field_boxes(rows, W, H, data)
+    assert "vendor" in boxes and "amount" in boxes
+    assert abs(boxes["vendor"][1] - 12 / H) < 0.02   # lands on the slogan line
+
+
+def test_locate_vendor_box_unchanged_without_match_src():
+    # No _vendor_match_src and the canonical name isn't on any line → no vendor box
+    # (additive fallback is inert when the key is absent — no behaviour change).
+    W, H = 200, 400
+    rows = [_row("RANDOM HEADER", 10, 10, 100, 30), _row("TOTAL 9.99", 10, 300, 100, 320)]
+    boxes = pr.locate_field_boxes(rows, W, H, {"vendor": "The Home Depot", "amount": 9.99})
+    assert "vendor" not in boxes and "amount" in boxes
+
+
 def test_locate_field_boxes_empty_inputs():
     assert pr.locate_field_boxes([], 100, 100, {"amount": 5.0}) == {}
     assert pr.locate_field_boxes([_row("TOTAL 5.00", 0, 0, 10, 10)], 100, 100, None) == {}

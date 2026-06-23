@@ -219,7 +219,13 @@ DEFAULT_JOB_NUMBER = "Default Job Number"
 # Brand / keyword sets and the known-vendor database live in vendor_db so the
 # offline parser can name a real vendor (not the store address) and so the lists
 # have a single home. The category-scoring patterns below are built from them.
-from vendor_db import FUEL_VENDORS, FUEL_KEYWORDS, MATS_VENDORS, match_vendor
+import vendor_db
+from vendor_db import FUEL_VENDORS, FUEL_KEYWORDS, MATS_VENDORS, match_vendor, match_vendor_detailed
+
+# Confidence floor (difflib ratio) at which a bounded fuzzy vendor match is
+# trusted enough to REWRITE the displayed vendor name (below this it is only a
+# category hint — see canonicalize_vendor).
+_FUZZY_RENAME_RATIO = 0.93
 
 
 def _kw_pattern(kw: str) -> "re.Pattern[str]":
@@ -2109,11 +2115,13 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         amount = max(candidates) if candidates else 0.0
 
     # Vendor: first try the known-vendor database (handles the common case where
-    # the OCR'd name would otherwise lose out to the store address), then fall
+    # the OCR'd name would otherwise lose out to the store address — and glyph
+    # normalisation rescues stylised fonts like 7-ELEVEN→7-ELEUEN), then fall
     # back to the address-skipping line heuristic.
-    matched = match_vendor(ocr_text)
+    matched = match_vendor_detailed(ocr_text)
+    vendor_match_src = None
     if matched:
-        vendor, matched_category = matched
+        vendor, matched_category, vendor_match_src = matched
     else:
         vendor, matched_category = _guess_vendor_line(ocr_text), None
 
@@ -2132,7 +2140,7 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         else:
             category = "misc"
 
-    return {
+    out = {
         "date":                _find_date_in_text(ocr_text),
         "vendor":              vendor,
         "amount":              amount,
@@ -2142,6 +2150,11 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         "flags": [],
         "_local_parse": True,
     }
+    # Stash the alias that matched so on-image vendor markup can still map a box
+    # even when the canonical name isn't printed verbatim (e.g. a logo + slogan).
+    if vendor_match_src:
+        out["_vendor_match_src"] = vendor_match_src
+    return out
 
 
 def _unified_distillation(
@@ -2830,19 +2843,21 @@ def locate_field_boxes(line_boxes, img_w: int, img_h: int,
                 break
 
     # ── Vendor: the line that best contains the vendor name ─────────────────────
-    vendor = (data.get("vendor") or "").strip().lower()
-    if vendor:
+    def _best_vendor_row(name: str):
+        name = (name or "").strip().lower()
+        if not name:
+            return None
         best = None  # (score, row)
         for idx, r in enumerate(rows):
             tlow = r["text"].strip().lower()
             if not tlow:
                 continue
-            if tlow == vendor:
+            if tlow == name:
                 score = 3.0
-            elif vendor in tlow or tlow in vendor:
+            elif name in tlow or tlow in name:
                 score = 2.0
             else:
-                vtok = set(re.findall(r"[a-z0-9]+", vendor))
+                vtok = set(re.findall(r"[a-z0-9]+", name))
                 ttok = set(re.findall(r"[a-z0-9]+", tlow))
                 shared = vtok & ttok
                 if not shared:
@@ -2851,17 +2866,83 @@ def locate_field_boxes(line_boxes, img_w: int, img_h: int,
             score -= idx * 0.01  # earlier lines win ties — the name sits up top
             if best is None or score > best[0]:
                 best = (score, r)
-        if best is not None:
-            rect = _poly_to_norm_rect(best[1]["box"], img_w, img_h)
-            if rect:
-                out["vendor"] = rect
+        return best
+
+    vbest = _best_vendor_row(data.get("vendor"))
+    # When the canonical vendor isn't printed verbatim (a logo + printed slogan, a
+    # glyph-normalized rewrite), the canonical name scores 0 against every OCR
+    # line — fall back to the alias text that actually matched on the receipt.
+    if vbest is None:
+        vbest = _best_vendor_row(data.get("_vendor_match_src"))
+    if vbest is not None:
+        rect = _poly_to_norm_rect(vbest[1]["box"], img_w, img_h)
+        if rect:
+            out["vendor"] = rect
 
     return out
+
+
+# ── Vendor canonicalization ─────────────────────────────────────────────────────
+
+def canonicalize_vendor(data: dict) -> dict:
+    """Rewrite the displayed vendor to its canonical brand on a confident match.
+
+    Rules-based, no LLM. On an exact / glyph-normalized hit (tried against the
+    extracted vendor first, then the raw OCR text) it rewrites ``data["vendor"]``
+    to the canonical brand, records the brand category (``_db_category``), marks
+    the match authoritative (``_db_exact``), and stashes the alias that matched
+    (``_vendor_match_src``) so on-image markup can still locate the vendor box.
+
+    A bounded FUZZY match is tried only on the short vendor name as a last resort:
+    it sets ``_db_category`` as a category HINT but never renames the displayed
+    vendor unless the ratio is high enough to be confident (``_FUZZY_RENAME_RATIO``).
+    Returns ``data`` (mutated in place) for convenience.
+    """
+    if not isinstance(data, dict):
+        return data
+    vendor = (data.get("vendor") or "").strip()
+    raw = data.get("_raw_ocr") or ""
+
+    hit = match_vendor_detailed(vendor) if vendor else None
+    if hit is None and raw:
+        hit = match_vendor_detailed(raw)
+    if hit is not None:
+        canonical, category, alias = hit
+        data["vendor"] = canonical
+        data["_db_category"] = category
+        data["_db_exact"] = True
+        # Prefer the printed vendor text when it actually contains the canonical
+        # name; otherwise the alias is the thing that appeared on the receipt.
+        if vendor and canonical.lower() in vendor.lower():
+            data.setdefault("_vendor_match_src", vendor)
+        else:
+            data.setdefault("_vendor_match_src", alias)
+        return data
+
+    # Last resort: tight fuzzy on the SHORT vendor name only (never the receipt).
+    if vendor:
+        fz = vendor_db._fuzzy_match_vendor(vendor)
+        if fz is not None:
+            canonical, category, ratio, alias = fz
+            data["_db_category"] = category               # category hint only
+            if ratio >= _FUZZY_RENAME_RATIO:              # confident → safe to rename
+                data["vendor"] = canonical
+                data["_db_exact"] = True
+                data.setdefault("_vendor_match_src", alias)
+    return data
 
 
 # ── Category classification ────────────────────────────────────────────────────
 
 def classify_category(data: dict) -> str:
+    # An authoritative known-vendor match (exact / glyph) already settled the
+    # category — trust it and skip the heuristic scoring (a fuzzy-only hint does
+    # NOT short-circuit; it left _db_exact unset on purpose).
+    if data.get("_db_exact"):
+        db_cat = (data.get("_db_category") or "").lower().strip()
+        if db_cat in ("fuel", "mats", "misc"):
+            return db_cat
+
     model_cat = (data.get("category") or "misc").lower().strip()
     if model_cat == "materials":
         model_cat = "mats"

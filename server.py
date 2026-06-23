@@ -1650,6 +1650,10 @@ def _run_batch(batch: list, batch_uid: str) -> None:
                                     partial.get("_steps", []), error=fail_reason)
                 continue
 
+            # Canonicalize the vendor against the known-vendor database (rules-based,
+            # no LLM) just before classification: an exact/glyph match rewrites the
+            # displayed name to the canonical brand and settles the category.
+            _pr.canonicalize_vendor(data)
             category = classify_category(data)
             data["_category"]  = category
             data["job_name"]   = item.get("job_name") or DEFAULT_JOB_NAME

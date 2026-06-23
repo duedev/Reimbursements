@@ -283,7 +283,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **660 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **679 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -365,6 +365,51 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (glyph-robust vendor recognition + ~300-brand vendor DB):** Suite
+  **660 → 679** green. Two real-world misses drove this: a **7-Eleven** gas receipt
+  whose stylised font makes OCR read `7-ELEVEN` as `7-ELEUEN` (and which wasn't even
+  in the DB), and a **Home Depot** receipt whose vendor is a logo (no machine text) —
+  the only readable brand text being the printed slogan *"How doers get more done."*
+  * **`vendor_db.py` restructured + expanded.** The flat `KNOWN_VENDORS` literal is
+    now three grouped dicts (`_FUEL_BRANDS` / `_MATS_BRANDS` / `_MISC_BRANDS`,
+    `{canonical: alias_set}`) merged via `_tag()` into the SAME public
+    `KNOWN_VENDORS: dict[str, tuple[str, set[str]]]` — now **~329 canonical brands**
+    (fuel/c-stores, building+hardware+paint+print as `mats`, big-box/grocery/pharmacy/
+    restaurant/lodging/travel/telecom/auto-parts as `misc`). Added **7-Eleven**
+    (Speedway kept separate). The category-scoring sets `FUEL_VENDORS` / `MATS_VENDORS`
+    are **derived** from the brand aliases (one source of truth) PLUS preserved generic
+    non-brand keywords (`_FUEL_GENERIC` / `_MATS_GENERIC`); `FUEL_KEYWORDS` unchanged.
+  * **Glyph normalization (core, no LLM).** `_normalize_ocr_strict()` folds a tiny set
+    of letter OCR confusions (`rn→m`, `vv→w`, `cl→d`, `u→v`) and strips punctuation —
+    **digits are never folded** (protects numeric brands like `76`). `match_vendor` is
+    now two-pass: (1) **exact** on raw lowercased text (runs first → existing behaviour
+    byte-for-byte), (2) **glyph-normalized** only when the exact pass misses — so
+    `7-ELEUEN` → `("7-Eleven","fuel")` deterministically. Longest-original-alias-wins +
+    earliest position, via the refactored `_search_patterns()`.
+  * **Slogan aliases.** Printed taglines added as long aliases on ~6 logo-heavy brands
+    (Home Depot, Lowe's, Walmart, Target, Best Buy, Staples); `_is_slogan` (len ≥
+    `_SLOGAN_MIN_LEN`) EXCLUDES them from the scoring sets. So "How doers get more done."
+    → The Home Depot, no false hits.
+  * **Bounded fuzzy backstop** (`_fuzzy_match_vendor`, off by default): `difflib`
+    ratio ≥ 0.88 over a fully-folded (incl. digits) alias list, min length 5, cheap
+    length gate, and only ever on a SHORT vendor-name candidate (never the whole
+    receipt). `match_vendor(text, fuzzy=True)`; default does NOT fuzzy.
+  * **Canonicalization wired into both paths.** New `process_receipts.canonicalize_vendor(data)`
+    — exact/glyph on `vendor` then `_raw_ocr` rewrites the displayed vendor to the
+    canonical brand + sets `_db_category` / `_db_exact` / `_vendor_match_src`; fuzzy
+    (short vendor only) sets a category HINT, never renames unless ratio ≥
+    `_FUZZY_RENAME_RATIO` (0.93). Called in the server worker right before
+    `classify_category`, which short-circuits to `_db_category` only on `_db_exact`.
+    The offline parser (`_local_distill_from_ocr`) uses `match_vendor_detailed` so it
+    canonicalises + stashes `_vendor_match_src` automatically. `_parse_llm_record` is
+    NOT canonicalised.
+  * **Box mapping.** `locate_field_boxes` falls back to `data["_vendor_match_src"]`
+    when the canonical vendor scores 0 against every OCR line (e.g. the on-image box
+    for "The Home Depot" via the slogan line) — additive, inert when the key is absent.
+  * Tests: `tests/test_vendor_db.py` (+11), `test_classification.py` (+4, one existing
+    numeric-76 test re-pointed off Office Depot, which now correctly classifies `mats`),
+    `test_local_fallback.py` (+2), `test_field_markup.py` (+2).
 
 - **2026-06-23 (inbound email/IMAP receipt intake):** Suite **641 → 660** green.
   Implements the recommended gas-receipt-import path from `GAS_RECEIPT_IMPORT.md`,

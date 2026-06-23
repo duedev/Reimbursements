@@ -1,5 +1,5 @@
 """Tests for vendor/keyword-based category classification."""
-from process_receipts import classify_category
+from process_receipts import classify_category, canonicalize_vendor
 
 
 def test_fuel_vendor_match_overrides_model_category():
@@ -72,9 +72,50 @@ def test_hotel_with_raw_ocr_stays_misc():
 
 
 def test_price_ending_in_76_is_not_a_fuel_vendor():
-    data = {"vendor": "Office Depot", "category": "misc",
+    # A non-brand vendor with a store #76 and a $9.76 price must not read as fuel
+    # (the numeric "76" brand is word/punctuation-guarded against digits and #/$).
+    data = {"vendor": "Corner Market", "category": "misc",
             "ai_summary": "Printer paper",
-            "_raw_ocr": "OFFICE DEPOT STORE #76\nPAPER 9.76\nTOTAL 9.76"}
+            "_raw_ocr": "CORNER MARKET STORE #76\nPAPER 9.76\nTOTAL 9.76"}
+    assert classify_category(data) == "misc"
+
+
+# ── Known-vendor canonicalization (rules-based, no LLM) ───────────────────────
+
+def test_exact_match_canonicalizes_name_and_sets_category():
+    # A glyph-garbled fuel brand is rewritten to its canonical name and the
+    # category is settled by the database (not the model's wrong guess).
+    data = {"vendor": "7-ELEUEN", "category": "misc",
+            "_raw_ocr": "7-ELEUEN\nUNLEADED\nTOTAL $40.00"}
+    canonicalize_vendor(data)
+    assert data["vendor"] == "7-Eleven"
+    assert data["_db_exact"] is True and data["_db_category"] == "fuel"
+    assert classify_category(data) == "fuel"
+
+
+def test_canonicalize_via_raw_ocr_when_vendor_blank():
+    # Logo-only vendor (no machine text) but the printed slogan is in the OCR.
+    data = {"vendor": "", "_raw_ocr": "THANK YOU\nHOW DOERS GET MORE DONE\nTOTAL $88.00"}
+    canonicalize_vendor(data)
+    assert data["vendor"] == "The Home Depot"
+    assert classify_category(data) == "mats"
+
+
+def test_fuzzy_only_match_does_not_rename_but_hints():
+    # A near-miss (0.88 ≤ ratio < 0.93) sets a category hint only — never renames
+    # the displayed vendor, and does NOT short-circuit classification.
+    data = {"vendor": "Costo"}
+    canonicalize_vendor(data)
+    assert data["vendor"] == "Costo"             # not rewritten to "Costco"
+    assert "_db_exact" not in data
+    assert data.get("_db_category") == "misc"    # hint recorded
+
+
+def test_correct_unknown_vendor_is_not_clobbered():
+    data = {"vendor": "Joe's Corner Cafe", "category": "misc"}
+    canonicalize_vendor(data)
+    assert data["vendor"] == "Joe's Corner Cafe"
+    assert "_db_exact" not in data
     assert classify_category(data) == "misc"
 
 

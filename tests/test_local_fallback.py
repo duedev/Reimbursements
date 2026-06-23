@@ -51,6 +51,27 @@ def test_local_parse_category_mats():
     assert out["category"] == "mats"
 
 
+def test_local_parse_seven_eleven_via_glyph():
+    # Real-world 7-Eleven OCR where the stylized V reads as U.
+    txt = "7-ELEUEN\n2500 BROADWAY\nUNLEADED REGULAR\n12.004 GAL\nTOTAL $42.18\n06/03/2026"
+    out = pr._local_distill_from_ocr(txt)
+    assert out["vendor"] == "7-Eleven"
+    assert out["category"] == "fuel"
+    assert out["amount"] == 42.18
+    assert out["date"] == "2026-06-03"
+    assert out["_vendor_match_src"] == "7-eleven"
+
+
+def test_local_parse_home_depot_via_slogan():
+    # The Home Depot logo isn't machine-readable; the printed slogan is.
+    txt = "HOW DOERS GET MORE DONE\n#6342\n2X4 LUMBER 12.50\nTOTAL $88.42\n06/04/2026"
+    out = pr._local_distill_from_ocr(txt)
+    assert out["vendor"] == "The Home Depot"
+    assert out["category"] == "mats"
+    assert out["amount"] == 88.42
+    assert out["_vendor_match_src"] == "how doers get more done"
+
+
 def test_local_parse_picks_grand_total_not_tendered_cash():
     txt = ("DINER\nSUBTOTAL $43.75\nTAX $1.45\nTOTAL $45.20\n"
            "AMOUNT TENDERED $60.00\nCHANGE $14.80")
