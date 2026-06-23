@@ -1064,7 +1064,7 @@
     .section-heading { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
     .section-desc strong { color: var(--text); }
-    /* Developer-mode bits — hidden unless the "Developer mode" toggle is on.
+    /* Advanced-settings bits — hidden unless the "Advanced settings" toggle is on.
        Gates both the deep-technical settings (.adv-only) and the enhanced
        workspace stats (.dev-only) off the same body.hide-advanced class. */
     body.hide-advanced .adv-only,
@@ -1151,6 +1151,13 @@
       padding: 1px 6px; border-radius: 4px; letter-spacing: 0.03em;
       background: rgba(45,212,130,0.14); color: var(--success);
       border: 1px solid rgba(45,212,130,0.3); }
+
+    /* Warning threshold chips */
+    .wt-chip {
+      font-size: 11px; padding: 2px 8px; border-radius: 99px;
+      background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35);
+      color: var(--warning); white-space: nowrap;
+    }
 
     /* Board search */
     .board-search {
@@ -1384,38 +1391,21 @@
   </button>
 </header>
 
-<!-- Host folder paths — the real folders on your computer -->
-<div class="paths-banner" id="paths-banner">
-  <span class="path-item">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-    </svg>
-    Drop receipts in:
-    <code id="watch-folder-path" title="Click to open" onclick="document.getElementById('open-watch-folder-btn').click()">loading…</code>
-    <button class="copy-btn" id="open-watch-folder-btn" title="Open intake folder" aria-label="Open intake folder">Open</button>
-  </span>
-  <span class="path-item">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-6m4 6V7m4 10v-3M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
-    </svg>
-    Reports:
-    <code id="folder-path" title="Click to open" onclick="document.getElementById('open-folder-btn').click()">loading…</code>
-    <button class="copy-btn" id="open-folder-btn" title="Open reports folder" aria-label="Open reports folder">Open</button>
-  </span>
-  <span class="path-item hidden" id="export-path-item">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
-    </svg>
-    Auto-export:
-    <code id="export-folder-path" title="Click to copy" onclick="copyFolderPath('export-folder-path')">—</code>
-  </span>
-</div>
+<!-- Folder paths (hidden — accessible in Settings → Folders) -->
+<span id="watch-folder-path" class="sr-only" aria-hidden="true"></span>
+<span id="folder-path" class="sr-only" aria-hidden="true"></span>
+<span id="export-folder-path" class="sr-only" aria-hidden="true"></span>
+<span id="export-path-item" class="sr-only" aria-hidden="true"></span>
+<span id="open-watch-folder-btn" class="sr-only" aria-hidden="true"></span>
+<span id="open-folder-btn" class="sr-only" aria-hidden="true"></span>
 
 <nav class="tab-bar" role="tablist" aria-label="Main sections">
   <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-workspace"
           data-tab="workspace" onclick="switchTab('workspace')">Workspace</button>
   <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-settings"
           data-tab="settings" onclick="switchTab('settings')">Settings</button>
+  <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-guides"
+          data-tab="guides" onclick="switchTab('guides')">Guides</button>
   <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-info"
           data-tab="info" onclick="switchTab('info')">Info</button>
 </nav>
@@ -1534,9 +1524,6 @@
         <button class="btn btn-outline-accent btn-sm" id="queue-intake-btn"
                 title="Add every file currently in the intake folder to the queue">Queue intake files</button>
       </span>
-      <button class="btn btn-amber btn-sm hidden" id="send-email-btn" style="margin-left:auto">
-        Send Report Now
-      </button>
     </div>
     <!-- Unsupported intake files: anything copied into the intake folder that
          isn't an image or PDF is quarantined and surfaced here for review/delete. -->
@@ -1587,6 +1574,12 @@
           <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
         New Batch
+      </button>
+      <button class="btn btn-amber btn-md hidden" id="send-email-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+        </svg>
+        Send Report Now
       </button>
     </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -1642,6 +1635,14 @@
       </div>
     </div>
     <div id="kanban-body">
+    <!-- Warning threshold chips — shown when any spending/date limit is configured -->
+    <div id="warning-thresholds-row" style="display:none;margin-bottom:8px;align-items:center;gap:6px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--muted);margin-right:2px">Limits:</span>
+      <span id="wt-fuel-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
+      <span id="wt-mats-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
+      <span id="wt-misc-chip" class="wt-chip hidden" title="Click to configure spending limits" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
+      <span id="wt-age-chip" class="wt-chip hidden" title="Click to configure date warnings" onclick="switchTab('settings');setTimeout(()=>document.getElementById('audit-card')?.scrollIntoView({behavior:'smooth'}),200)" style="cursor:pointer"></span>
+    </div>
     <div class="board-search">
       <input type="text" id="board-search-input" placeholder="Search receipts… (vendor, file, category)"
              autocomplete="off" aria-label="Search receipts" title="Press / to focus">
@@ -1689,8 +1690,8 @@
     </div><!-- /kanban-body -->
   </div>
 
-  <!-- Processing & Errors (combined) — below receipt progress -->
-  <div class="card hidden" id="progress-card">
+  <!-- Processing & Errors (combined) — below receipt progress; shown only in advanced mode -->
+  <div class="card hidden adv-only" id="progress-card">
     <div class="card-title" style="display:flex;align-items:center;cursor:pointer" onclick="toggleSection('progress-body','progress-toggle')">
       Processing &amp; Errors
       <button class="section-toggle collapsed" id="progress-toggle" tabindex="-1">
@@ -1756,7 +1757,7 @@
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
     <label class="check-label" style="margin:0">
       <input type="checkbox" id="advanced-toggle">
-      Developer mode <span style="color:var(--muted)">— show AI model selection, image-processing internals, maintenance tools, and enhanced stats on the workspace (hidden by default to keep things simple)</span>
+      Advanced settings <span style="color:var(--muted)">— show AI model selection, image-processing internals, maintenance tools, and enhanced stats on the workspace (hidden by default to keep things simple)</span>
     </label>
   </div>
 
@@ -2030,7 +2031,7 @@
         <p class="section-desc">
           Automatically generate the spreadsheet into the export folder on a schedule.
           Point the export folder at a Dropbox / Google Drive / OneDrive sync folder for
-          automatic cloud upload — or add a Dropbox token / enable email below.
+          automatic cloud upload — or enable email delivery below.
         </p>
         <div class="fields" style="grid-template-columns:auto auto 1fr;align-items:end;gap:12px">
           <label class="check-label">
@@ -2045,13 +2046,9 @@
             <input type="text" id="sched-days" value="thu">
           </label>
         </div>
-        <div class="fields" style="grid-template-columns:1fr auto;align-items:end;gap:12px;margin-top:10px">
-          <label>
-            Dropbox access token <span style="color:var(--muted);font-weight:400">(optional — leave blank to keep saved token)</span>
-            <input type="password" id="sched-dropbox" placeholder="sl.B...">
-          </label>
-          <label class="check-label" style="padding-bottom:8px">
-            <input type="checkbox" id="sched-email"> Email report
+        <div style="margin-top:10px">
+          <label class="check-label">
+            <input type="checkbox" id="sched-email"> Email report when done
           </label>
         </div>
         <div class="action-row">
@@ -2462,12 +2459,66 @@
 
   </div><!-- /tab-settings -->
 
+  <!-- ════════════════════════ Guides tab ════════════════════════ -->
+  <div class="tab-panel hidden" id="tab-guides">
+
+  <div class="card">
+    <div class="card-title">Enabling Multi-User Mode</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Set <code class="inline-code">MULTIUSER_ENABLED=true</code> in your environment (in your <code class="inline-code">.env</code> file or <code class="inline-code">docker-compose.yml</code> under <code class="inline-code">environment:</code>).</li>
+      <li>Restart the server — <code class="inline-code">docker compose restart app</code> or stop/start the Python process.</li>
+      <li>On first launch, navigate to <code class="inline-code">/setup</code> in your browser to create the admin account.</li>
+      <li>Create additional users from <strong>Settings</strong> (admin-only section, visible when signed in as admin).</li>
+      <li>Each user gets a fully isolated workspace — receipts, results, and run logs are kept separate.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6"><strong>Note:</strong> The AI model, server endpoint, and rate-limit settings are shared across all users — configure them in Settings → AI Model (admin view).</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Google Drive Receipt Import</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Go to <strong>Settings → Google Drive Intake</strong> and click <strong>Connect Google Drive</strong>. Complete the OAuth flow in the browser window that opens. Alternatively, paste a refresh token directly.</li>
+      <li>Set the <strong>Folder ID</strong> to the Google Drive folder you want to use as your receipts inbox. The folder ID is the last part of the folder's URL in Drive.</li>
+      <li>Set a poll interval (e.g. 5 minutes). The app will check the folder on that schedule and import any new image or PDF files.</li>
+      <li>Drop receipt photos into that Drive folder from your phone, computer, or the Drive app — they appear automatically on the Workspace board.</li>
+      <li><strong>Optional — Gmail→Drive bridge:</strong> use the Gmail filter (see the Gmail Receipt Filter guide) to copy receipt emails' attachments into the same folder automatically.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">Google Drive is an <strong>opt-in</strong> cloud capture source. The receipt files move from Drive into the local pipeline — no data is sent anywhere else. Disconnect any time from Settings → Google Drive Intake → Disconnect.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Gmail Receipt Filter</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Go to <strong>Settings → Email Intake</strong> and click <strong>Download Gmail filter</strong> to download the filter XML file.</li>
+      <li>In Gmail: open <strong>Settings → See all settings → Filters and Blocked Addresses → Import filters</strong>, then upload the XML file.</li>
+      <li>The filter labels matching receipt emails with the label <strong>"Receipts"</strong> and skips the inbox, keeping your inbox clean.</li>
+      <li>Configure the <strong>Email Intake</strong> settings to poll the <strong>Receipts</strong> label (set <em>Mailbox / Label</em> to <code class="inline-code">Receipts</code>).</li>
+      <li>All receipt emails labelled by the filter — fuel, store confirmations, etc. — are then auto-imported each poll cycle.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">The filter matches by <strong>keywords</strong> (e.g. "receipt", "purchase confirmation", "your order") rather than sender domain — so it captures receipts from any store, including those that use privacy-relay or forwarding addresses.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Email Receipt Import (IMAP)</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Works best with <strong>Gmail + App Password</strong> (no OAuth required). In your Google Account: <strong>Security → 2-Step Verification → App Passwords</strong> → create one for "Mail".</li>
+      <li>In <strong>Settings → Email Intake</strong>: enter your Gmail address, paste the App Password, and set the <em>Mailbox / Label</em> to <code class="inline-code">Receipts</code> (or <code class="inline-code">INBOX</code> to read all mail).</li>
+      <li>Set a poll interval (e.g. 5 minutes) and click <strong>Save settings</strong>, then <strong>Test connection</strong> to verify.</li>
+      <li>Forward any receipt emails to your Gmail address. The app polls the mailbox and imports each email's attachments (images / PDFs) and body text as receipts.</li>
+      <li>Combine with the <strong>Gmail Receipt Filter</strong> (see above) to automatically label incoming receipt emails so only relevant mail is imported.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">Email is processed locally — the app connects directly to Gmail via IMAP (no cloud intermediary). Your Gmail App Password is stored in the local secrets file, never in the main config.</p>
+  </div>
+
+  </div><!-- /tab-guides -->
+
   <!-- ════════════════════════ Info tab ════════════════════════ -->
   <div class="tab-panel hidden" id="tab-info">
 
   <div class="card">
     <div class="card-title">About</div>
-    <p style="font-size:14px;line-height:1.65;color:var(--text)">This app reads your receipt photos, extracts vendor, date, and amount using OCR and an AI model — running on-host or via OpenRouter's free cloud models — and generates a polished Excel reimbursement report.</p>
+    <p style="font-size:14px;line-height:1.65;color:var(--text)">This app reads your receipt photos and emails, extracts vendor, date, and amount using built-in OCR and an AI model (running on-host or via OpenRouter's free cloud models), and generates a polished Excel reimbursement report. Processing happens locally by default; AI calls go to your configured model endpoint — on-host, Docker bundled, or OpenRouter cloud (opt-in).</p>
+    <p style="font-size:13px;color:var(--muted);margin-top:8px;line-height:1.6"><strong>Privacy:</strong> Receipt images may be sent to your configured model endpoint. When using OpenRouter, images are sent to OpenRouter's servers unless you set the "send OCR text only" mode in Settings → AI Model. The on-host and Docker bundled modes keep all data on your machine.</p>
   </div>
 
   <div class="card">
@@ -2562,13 +2613,14 @@
   </div>
 
   <div class="card">
-    <div class="card-title">What happens to each receipt (full pipeline)</div>
+    <div class="card-title">Pipeline Overview</div>
     <p style="font-size:13px;line-height:1.6;color:var(--muted);margin:0 0 12px">
       Every receipt runs through the same ordered steps. Each is tagged with how it works:
       <span class="pl-tag pl-rules">rules-based</span> = no AI, runs offline;
-      <span class="pl-tag pl-ai">AI / model</span> = a model call;
+      <span class="pl-tag pl-ai">AI / model</span> = calls your configured model endpoint;
       <span class="pl-tag pl-priv-local">image stays local</span> /
-      <span class="pl-tag pl-priv-sends">sends the image</span> shows whether the picture leaves your machine.
+      <span class="pl-tag pl-priv-sends">sends the image</span> shows whether the receipt picture is sent to the endpoint.
+      Steps 3 (LLM OCR) and 5 (vision rescue) send the image to your model endpoint — local, Docker, or OpenRouter depending on your Settings.
     </p>
     <style>
       .pl-tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-radius:5px;padding:1px 6px;vertical-align:middle;white-space:nowrap}
@@ -4848,6 +4900,19 @@ function _applyModeUI(mode) {
   } else {
     _updateHostUrlHint();
   }
+
+  // Auto-configure rate limiting based on the selected mode.
+  // OpenRouter: enable limiting at 20 req/min. Local/Docker: disable (no quota).
+  const rateEnabled = document.getElementById('proc-rate-enabled');
+  const rateRpm     = document.getElementById('proc-rate-rpm');
+  if (rateEnabled && rateRpm) {
+    if (isOR) {
+      rateEnabled.checked = true;
+      if (!rateRpm.value || parseInt(rateRpm.value) > 20) rateRpm.value = '20';
+    } else {
+      rateEnabled.checked = false;
+    }
+  }
 }
 
 // On-host mode sends a placeholder API key, so a cloud URL here fails silently
@@ -5221,7 +5286,34 @@ async function loadAuditSettings() {
     document.getElementById('audit-mats').value = lim.mats ?? '';
     document.getElementById('audit-misc').value = lim.misc ?? '';
     document.getElementById('audit-age').value  = d.max_age_days ?? '';
+    _renderWarningChips(lim, d.max_age_days);
   } catch (_) {}
+}
+
+function _renderWarningChips(lim, maxAge) {
+  const row = document.getElementById('warning-thresholds-row');
+  if (!row) return;
+  const setChip = (id, label, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (val != null && val !== '' && !isNaN(val)) {
+      el.textContent = label;
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  };
+  const fuel = lim && lim.fuel != null ? lim.fuel : null;
+  const mats = lim && lim.mats != null ? lim.mats : null;
+  const misc = lim && lim.misc != null ? lim.misc : null;
+  setChip('wt-fuel-chip', fuel != null ? `Fuel >$${fuel}` : '', fuel);
+  setChip('wt-mats-chip', mats != null ? `Mats >$${mats}` : '', mats);
+  setChip('wt-misc-chip', misc != null ? `Misc >$${misc}` : '', misc);
+  setChip('wt-age-chip', maxAge != null && maxAge !== '' ? `Age >${maxAge}d` : '', maxAge);
+  // Show the row only if at least one chip is visible
+  const anyVisible = ['wt-fuel-chip','wt-mats-chip','wt-misc-chip','wt-age-chip']
+    .some(id => { const el = document.getElementById(id); return el && !el.classList.contains('hidden'); });
+  row.style.display = anyVisible ? 'flex' : 'none';
 }
 
 let _auditSaveTimer = null;
@@ -5245,6 +5337,13 @@ async function saveAuditSettings() {
       const msg = document.getElementById('audit-saved-msg');
       msg.style.opacity = '1';
       setTimeout(() => { msg.style.opacity = '0'; }, 1800);
+      // Refresh the workspace warning chips
+      const lim = {
+        fuel: numOrNull('audit-fuel'),
+        mats: numOrNull('audit-mats'),
+        misc: numOrNull('audit-misc'),
+      };
+      _renderWarningChips(lim, numOrNull('audit-age'));
     } else {
       showToast(`Could not save: ${d.error}`, false);
     }
@@ -6318,12 +6417,11 @@ async function _saveSchedule() {
       time:    document.getElementById('sched-time').value.trim() || '17:00',
       days:    document.getElementById('sched-days').value.trim() || 'thu',
       email:   document.getElementById('sched-email').checked,
-      dropbox_token: document.getElementById('sched-dropbox').value.trim(),
+      dropbox_token: '',
     }),
   });
   const d = await res.json();
   if (!res.ok || !d.ok) throw new Error(d.error || `Server error: ${res.status}`);
-  document.getElementById('sched-dropbox').value = '';
   _renderSchedStatus(d);
 }
 
@@ -7034,6 +7132,7 @@ async function muSubmit() {
     _muHideOverlay();
     const me = await fetch('/me').then(x => x.json()).catch(() => null);
     _muShowUserChip(me);
+    _muFillEmployee(me);
     _bootApp();
   } finally {
     btn.disabled = false;
@@ -7053,9 +7152,31 @@ async function initMultiuser() {
   const me = await fetch('/me').then(r => r.json()).catch(() => ({ authenticated: false }));
   if (me && me.authenticated) {
     _muShowUserChip(me);
+    _muFillEmployee(me);
     _bootApp();
   } else {
     _muShowOverlay(status.needs_setup);   // boot deferred until sign-in
+  }
+}
+
+// Auto-fill the Employee Name field from the logged-in account in multi-user mode.
+function _muFillEmployee(me) {
+  const emp = document.getElementById('employee');
+  if (!emp || !me) return;
+  const username = me.username || me.user_id || '';
+  if (username) {
+    emp.value = username;
+    emp.disabled = true;
+    emp.title = 'Auto-filled from your account in multi-user mode';
+    // Add a small note if not already present
+    const label = emp.closest('label');
+    if (label && !label.querySelector('.mu-emp-note')) {
+      const note = document.createElement('span');
+      note.className = 'mu-emp-note';
+      note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:2px;display:block';
+      note.textContent = '(auto-filled from your account)';
+      label.appendChild(note);
+    }
   }
 }
 
