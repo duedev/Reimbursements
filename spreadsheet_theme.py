@@ -505,6 +505,12 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
     """Add a sheet with embedded receipt images.  8-column layout mirrors Summary.
     Returns anchor cell refs (e.g. ["A3", "A35"]) for hyperlinks from the Summary sheet."""
     ws = wb.create_sheet(title=sheet_name)
+    # Print setup for image sheets: fit to 1 page wide (portrait)
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    from openpyxl.worksheet.properties import PageSetupProperties
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_options.horizontalCentered = True
 
     # Apply same column widths as Summary sheet
     for col_letter, width in COLUMN_WIDTHS.items():
@@ -780,6 +786,13 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     ws = wb.create_sheet(title="Insights", index=1)
     ws.sheet_properties.tabColor = TAB_COLORS["Insights"]
     ws.sheet_view.showGridLines = False
+    # Print setup: landscape, fit to 1 page wide
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    from openpyxl.worksheet.properties import PageSetupProperties
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_options.horizontalCentered = True
     for letter, width in (("A", 22), ("B", 12), ("C", 14), ("D", 4),
                           ("E", 16), ("F", 16), ("G", 16), ("H", 16)):
         ws.column_dimensions[letter].width = width

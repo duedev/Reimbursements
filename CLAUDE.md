@@ -420,6 +420,51 @@ to the model — nothing hidden or clipped.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-23 (UI/UX polish batch — 13 changes):** Suite **710** green.
+  All changes are `templates/index.html` + `spreadsheet_theme.py`; no backend
+  code or test changes.
+  * **Send-email button relocated** — `#send-email-btn` moved from the upload row
+    into the Export Report card's `.gen-actions` div (beside `#generate-btn`).
+    Visible only when email is configured.
+  * **Processing & Errors is `adv-only`** — `#progress-card` gains `adv-only` so
+    it is hidden when Advanced settings is off. The per-batch pipeline detail is
+    now a power-user view, not the default.
+  * **Dropbox field removed** — the Scheduled Export card's Dropbox access-token
+    field (`#sched-dropbox`) is gone; the slot is replaced with an "Email report
+    when done" checkbox. Help text updated; `_saveSchedule()` now sends an empty
+    `dropbox_token`.
+  * **"Developer mode" → "Advanced settings"** — the toggle label text and its
+    CSS comment are both renamed; the same `advancedMode` localStorage key, the
+    same `#advanced-toggle` id, and the same `adv-only`/`dev-only` CSS mechanism
+    are unchanged.
+  * **Paths banner removed** — the `#paths-banner` div (inbox/output/export folder
+    paths cluttering the workspace header) is replaced with hidden `sr-only` `<span>`
+    elements that preserve every id referenced in JS (`watch-folder-path`,
+    `folder-path`, `export-folder-path`, `export-path-item`, `open-watch-folder-btn`,
+    `open-folder-btn`).
+  * **Multi-user: auto-fill employee field** — `_muFillEmployee(me)` is called from
+    `initMultiuser()` and the sign-in submit handler; it sets `#employee` to the
+    logged-in username and disables the field with a "(auto-filled from your account)"
+    note appended to the label.
+  * **Warning threshold chips** — a compact `#warning-thresholds-row` appears above
+    the kanban board-search whenever at least one spending/date limit is active.
+    Each chip shows the category + limit; clicking navigates to the audit card in
+    Settings. `_renderWarningChips(limits, maxAgeDays)` is called by
+    `loadAuditSettings()` and after `saveAuditSettings()`.
+  * **Rate-limit auto-configure on mode switch** — `_applyModeUI(mode)` now sets
+    `#proc-rate-enabled` and `#proc-rate-rpm` automatically: OpenRouter → enabled
+    at 20 req/min; local/Docker → disabled.
+  * **Guides tab** — new "Guides" nav tab (`#tab-guides`) with four setup-guide
+    cards: Multi-User Mode, Google Drive Receipt Import, Gmail Receipt Filter, and
+    Email Receipt Import (IMAP). Each card is a step-by-step numbered list.
+  * **Info tab updated** — About card: removed "nothing leaves your machine" claim,
+    added a privacy note distinguishing on-host vs OpenRouter. Pipeline Overview card:
+    title simplified, intro clarifies which steps send data to the model endpoint.
+  * **Spreadsheet print setup** — `_build_image_sheet` (portrait, `fitToWidth=1`,
+    `horizontalCentered`) and `_build_insights_sheet` (landscape, `fitToWidth=1`,
+    `horizontalCentered`) in `spreadsheet_theme.py` now set page setup so exported
+    sheets print cleanly without overflow.
+
 - **2026-06-23 (filable e-receipt copy + keyword Gmail filter intake):** Suite
   **693 → 710** green. Driven by a real run where the email intake (pointed at a
   whole Gmail INBOX) tried to read 42 non-receipt emails — Google security alerts,
