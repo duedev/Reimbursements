@@ -151,6 +151,15 @@ _persist_lock = threading.Lock()
 
 _last_context = multiuser.container_proxy("last_context")
 
+# The workbook produced by the most recent POST /generate-spreadsheet, kept so the
+# "Send Report Now" button can email the exact file the user just generated —
+# without rebuilding it and without depending on the separate watch-mode state
+# file (the old behaviour, which read an unrelated empty store and failed with
+# "no receipts in state"). The .xlsx itself lives on disk in OUT_FOLDER; this just
+# remembers which one and how many receipts it covered.
+_last_report_path: str | None = None
+_last_report_count: int = 0
+
 # Per-batch processing-time log, for comparing model speed across runs. Newest
 # first, capped; survives restarts via the (per-user) state file.
 _benchmarks   = multiuser.container_proxy("benchmarks")
@@ -3225,6 +3234,12 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     if not output_path or not Path(output_path).exists():
         return HTMLResponse("Spreadsheet generation failed", status_code=500)
 
+    # Keep the just-built workbook in memory so "Send Report Now" can email this
+    # exact file later (even after the board is cleared) instead of rebuilding.
+    global _last_report_path, _last_report_count
+    _last_report_path = str(output_path)
+    _last_report_count = len(results_copy)
+
     filename = Path(output_path).name
 
     async def file_stream():
@@ -6152,12 +6167,72 @@ async def watch_status():
 
 @app.post("/watch/send-email")
 async def watch_send_email():
+    """Email the reimbursement report ("Send Report Now").
+
+    Emails the workbook from the most recent Generate (kept in memory) so it sends
+    the exact file the user just produced. If no report has been generated yet, one
+    is built on the fly from the live web-UI results. This deliberately does NOT use
+    the separate watch-mode state file (the old behaviour, which read an unrelated,
+    usually-empty store and failed with "no receipts in state — nothing to build").
+    """
+    from watch_mode import load_email_config, send_workbook_email
+
+    # Check email is configured FIRST so the UI can guide the user to set up Gmail
+    # instead of showing a cryptic failure.
+    cfg = load_email_config()
+    if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
+        return JSONResponse(
+            {"ok": False, "needs_email_setup": True,
+             "error": "Email isn't set up yet. Add your SMTP account in "
+                      "Settings → Email Delivery (for Gmail, create an App Password)."},
+            status_code=400,
+        )
+
+    global _last_report_path, _last_report_count
+    path = _last_report_path
+    count = _last_report_count
+
+    # No workbook kept (e.g. the app restarted, or the user never clicked Generate)
+    # — build one now from the live completed results so Send Report Now still works.
+    if not path or not Path(path).exists():
+        with _results_lock:
+            results_copy = copy.deepcopy(_results)
+        if not results_copy:
+            return JSONResponse(
+                {"ok": False,
+                 "error": "No report to send yet — process some receipts and click "
+                          "Generate Spreadsheet first."},
+                status_code=404,
+            )
+        employee = (
+            _last_context.get("employee")
+            or _load_config().get("default_employee")
+            or "Employee"
+        )
+        try:
+            _detect_duplicates(results_copy)
+            built = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: generate_spreadsheet(
+                    results=results_copy, output_dir=OUT_FOLDER, employee_name=employee
+                ),
+            )
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"Report generation failed: {exc}"},
+                status_code=500,
+            )
+        if not built or not Path(built).exists():
+            return JSONResponse(
+                {"ok": False, "error": "Report generation failed."}, status_code=500
+            )
+        path = _last_report_path = str(built)
+        count = _last_report_count = len(results_copy)
+
     try:
-        from watch_mode import load_state, send_report
-        state  = load_state()
-        client = _pr.make_client()
-        result = send_report(state, client=client)
-        status = 200 if result.get("ok") else 503
-        return JSONResponse(result, status_code=status)
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: send_workbook_email(Path(path), count or 0)
+        )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 503)
