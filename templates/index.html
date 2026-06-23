@@ -706,6 +706,34 @@
                    padding-right: 4px; }
     .model-strip::-webkit-scrollbar { width: 8px; }
     .model-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── Settings tab: condense related cards into a responsive grid ──────────
+       auto-fit so short cards sit 2-up on wide screens and stack to one column
+       on narrow/mobile; crucially, adv-only/dev-only cards that are display:none
+       collapse out cleanly (no empty grid holes). The large AI Model and the tall
+       Image Processing cards span the full width; the rest flow two-up. Visual
+       grouping is done with `order` so the DOM (ids/handlers/structure) is
+       untouched. */
+    .settings-grid { display: grid; gap: 18px; align-items: start;
+                     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+    .settings-grid > .card { margin: 0; }            /* the grid gap handles spacing */
+    #config-card, #processing-card { grid-column: 1 / -1; }   /* large/tall → full width */
+    #config-card       { order: 1; }
+    #processing-card   { order: 2; }
+    #settings-card     { order: 3; }   /* Folders & Scheduled Export … */
+    #email-card        { order: 4; }   /* … beside Email Delivery (delivered by email) */
+    #email-intake-card { order: 5; }   /* the two inbound capture sources together */
+    #gdrive-card       { order: 6; }
+    #audit-card        { order: 7; }   /* Spending & Date Warnings … */
+    #admin-card        { order: 8; }   /* … beside Maintenance (both dev/ops) */
+    #benchmark-card    { order: 9; }   /* Benchmark near Maintenance (both dev/ops) */
+
+    /* Benchmark table — capped height + scroll so up to BENCH_MAX_ENTRIES=100
+       rows can't blow out the card/page (mirrors the .model-strip treatment). */
+    #bench-body { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
+    #bench-body::-webkit-scrollbar { width: 8px; }
+    #bench-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
     .model-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
     .model-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--border); }
     .model-dot.loaded { background: var(--success); }
@@ -1732,6 +1760,11 @@
     </label>
   </div>
 
+  <!-- Settings cards condensed into a responsive grid (see .settings-grid CSS):
+       short related cards sit side-by-side on wide screens and stack on mobile;
+       hidden adv-only cards collapse out cleanly. -->
+  <div class="settings-grid">
+
   <!-- AI Models -->
   <div class="card adv-only" id="config-card">
     <div class="card-title">AI Model</div>
@@ -2410,6 +2443,8 @@
       </button>
     </div>
   </div>
+
+  </div><!-- /.settings-grid -->
 
   </div><!-- /tab-settings -->
 

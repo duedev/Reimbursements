@@ -313,7 +313,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **691 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **693 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -395,6 +395,24 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (Settings tab layout rework + scroll-capped benchmark):** Suite
+  **691 → 693** green. `templates/index.html` only — layout/CSS, **no behaviour
+  change**: every id, endpoint, JS handler, and the advanced/developer-mode gates are
+  untouched.
+  * **Responsive grid.** The Settings cards are wrapped in a new `.settings-grid`
+    (`display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr))`) so short
+    related cards sit 2-up on wide screens and stack to one column on mobile; `auto-fit`
+    means hidden `adv-only`/`dev-only` cards collapse out with no empty holes. The large
+    **AI Model** and tall **Image Processing** cards span full width (`grid-column:1/-1`).
+  * **Grouping via CSS `order`** (not DOM moves, so ids/handlers/structural tests are
+    untouched): Folders & Scheduled Export beside Email Delivery; the two inbound capture
+    cards (Email Intake + Google Drive Intake) together; Spending & Date Warnings beside
+    Maintenance; Benchmark near Maintenance.
+  * **Benchmark scroll-capped.** `#bench-body` gets `max-height:300px; overflow-y:auto`
+    (mirrors `.model-strip`) so up to `BENCH_MAX_ENTRIES=100` rows can't blow out the page.
+  * Tests: `tests/test_ui_layout.py` (+2 — grid present/wraps the cards, bench cap);
+    the duplicate-id test stays green.
 
 - **2026-06-23 (Google Drive receipt capture + Gmail→Drive ingestion):** Suite
   **679 → 691** green. Implements Phase 1 + Phase 2 of `GOOGLE_DRIVE_IMPORT.md` (its
