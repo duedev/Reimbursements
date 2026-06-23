@@ -1,13 +1,61 @@
-# MULTIUSER.md — Multi-user / Multi-tenant Design Plan
+# MULTIUSER.md — Multi-user / Multi-tenant Design & Implementation
 
-> **Status: PLAN ONLY.** No behavioral code changes are being made now. This
-> document inventories the single-user assumptions baked into the current app and
-> lays out an incremental, shippable path to supporting multiple isolated users
-> *if and when we decide to.* Until then, **single-user remains the default and
-> only supported mode.**
+> **Status: IMPLEMENTED (in-process multi-tenant, Option B), default OFF.**
+> Multi-user mode now ships behind the `MULTIUSER_ENABLED` flag. With it **off**
+> (the default) the app is byte-for-byte the single-user app — all 618 pre-existing
+> tests pass unchanged. With it **on**, several people share one instance, each
+> fully isolated. The original design study below is preserved for context; see
+> **"What shipped"** immediately after this banner for the as-built summary.
 >
 > Line numbers below are approximate (the source files move) — treat them as
 > "where to look," not exact anchors.
+
+---
+
+## What shipped (as-built)
+
+**Mechanism.** Rather than thread a `user_id` through ~95 routes (a huge, leak-prone
+diff), the per-user globals in `server.py` were replaced with **context proxies**
+(`multiuser.py`) that forward every operation to the *current* user's
+`Workspace`, resolved from a `contextvars.ContextVar`. The contextvar is bound per
+HTTP request (a global FastAPI dependency `_bind_ws` reading `request.state.user_id`),
+per worker task (from each queue item's `user_id` tag), and per maintenance-loop
+iteration. When nothing is bound — module import, the single-user path, most tests —
+the proxies resolve to the **default** workspace, i.e. today's exact objects/paths.
+Because the single-user path runs *through* the proxies too, a missed scope surfaces
+as a loud test failure, not a silent cross-user leak.
+
+**Isolated per user (`Workspace`):** receipt images on disk (`intake/processing/
+receipts/unsupported/archive` rooted at `output/users/<id>/`), the crash-safe state
+file, the kanban board, results, run-log (`current_run`/`runs`), benchmarks,
+per-user form defaults (`last_context`), the stall caches, and the SSE event stream
+(each subscriber is tagged with its user; `_broadcast` delivers only to the owner).
+
+**Shared / instance-level (one model per box):** the work queue (items are
+user-tagged; the worker drains one user's items per cycle — simple round-robin
+fairness), the LLM endpoint/model selection, the concurrency gate, the rate limiter,
+the app **config** (`.app_config.json` — model/pipeline/audit/processing settings),
+SMTP/secrets, and the OpenRouter daily usage tally.
+
+**Auth (`users.py`):** local username/password, `pbkdf2_hmac`-hashed (no new deps),
+with stateless HMAC-signed session tokens in a signed HttpOnly cookie (signing key in
+`.app_secrets.json`, auto-generated). Endpoints: `GET /multiuser/status`, `GET /me`,
+`POST /login`, `POST /logout`, `POST /setup` (one-time first-admin), and admin-gated
+`GET/POST /users`, `DELETE /users/{id}`, `POST /users/{id}/password|admin`. A fresh
+box seeds an admin from `MULTIUSER_ADMIN_USER`/`_PASSWORD` or offers a first-run
+"create the first account" step in the SPA. The SPA shows a sign-in overlay + a
+"signed in as … · Sign out" header chip and defers the app boot until authenticated.
+The pre-existing coarse `APP_AUTH_TOKEN` gate still layers in front.
+
+**Deferred (documented follow-ups):** per-user *settings/config* (model prefs are
+instance-wide for now — one VRAM); per-user *intake-folder watching* (the disk
+watcher serves the shared/default intake folder; users upload via the UI);
+per-user SMTP/scheduler; a cross-user admin dashboard. None of these are isolation
+gaps — they're shared-resource or convenience features.
+
+**Tests:** `tests/test_multiuser.py` (+23) — identity rules, password/session crypto,
+in-memory + on-disk + over-HTTP isolation, auth gating, admin-only management,
+traversal safety, and single-user-unchanged.
 
 ---
 

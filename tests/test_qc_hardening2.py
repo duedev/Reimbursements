@@ -80,7 +80,8 @@ def test_make_client_keeps_retries_local(monkeypatch):
 # ── SSE queue is bounded ──────────────────────────────────────────────────────
 def test_sse_subscriber_queue_is_bounded(monkeypatch):
     monkeypatch.setattr(server, "SSE_QUEUE_MAX", 3)
-    q = server._add_subscriber()
+    sub = server._add_subscriber()
+    q = sub.q
     try:
         assert q.maxsize == 3
         for i in range(10):
@@ -91,7 +92,7 @@ def test_sse_subscriber_queue_is_bounded(monkeypatch):
             drained.append(q.get_nowait())
         assert drained[-1]["n"] == 9          # newest retained
     finally:
-        server._remove_subscriber(q)
+        server._remove_subscriber(sub)
 
 
 # ── _persist_state concurrency ────────────────────────────────────────────────

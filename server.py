@@ -24,14 +24,16 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
 import app_secrets
+import multiuser
 import process_receipts as _pr
 import scheduler
+import users
 from process_receipts import (
     LLM_TIMEOUT,
     LLM_MAX_RETRIES,
@@ -67,20 +69,40 @@ from process_receipts import (
 HOST_OUTPUT_PATH = os.getenv("HOST_OUTPUT_PATH", "")
 
 # ── Folder / config paths ──────────────────────────────────────────────────────
-
-INTAKE_FOLDER      = Path(RECEIPTS_FOLDER)
-OUT_FOLDER         = Path(OUTPUT_FOLDER)
-IMAGES_FOLDER      = OUT_FOLDER / "receipts"    # completed receipt images land here
-PROCESSING_FOLDER  = OUT_FOLDER / "processing"  # in-flight and failed images live here
-REJECTED_FOLDER    = OUT_FOLDER / "unsupported" # files dropped in intake we can't read
+#
+# In single-user mode these names behave exactly as before: real Path constants
+# rooted at OUTPUT_FOLDER. In multi-user mode they are *context proxies* that
+# resolve to the current user's Workspace folders (multiuser.cur_ws()), so every
+# existing ``IMAGES_FOLDER / x`` / ``.mkdir()`` / ``.iterdir()`` call site is
+# transparently per-user with no edit. The default workspace below pins the
+# single-user layout so behaviour (and tests that monkeypatch these names) are
+# unchanged. See multiuser.py for the proxy mechanics.
+_DEFAULT_OUT = Path(OUTPUT_FOLDER)
+_default_ws  = multiuser.Workspace(multiuser.DEFAULT_USER, _DEFAULT_OUT)
+# Pin the default workspace to today's exact single-user folder layout (the base
+# Workspace would otherwise put intake under <root>/intake, etc.).
+_default_ws.intake_folder     = Path(RECEIPTS_FOLDER)
+_default_ws.images_folder     = _DEFAULT_OUT / "receipts"     # completed receipt images
+_default_ws.processing_folder = _DEFAULT_OUT / "processing"   # in-flight and failed images
+_default_ws.rejected_folder   = _DEFAULT_OUT / "unsupported"  # files we can't read
 # Receipts the user chose to keep (not delete) after exporting land here. It sits
 # OUTSIDE the scanned working folders, so archived receipts never resurface as
 # "orphaned" files in the maintenance scan.
-ARCHIVE_FOLDER     = OUT_FOLDER / "archive"
+_default_ws.archive_folder    = _DEFAULT_OUT / "archive"
+_default_ws.state_file        = _DEFAULT_OUT / ".app_state.json"  # crash-safe snapshot
+multiuser.configure(_default_ws, users_base=_DEFAULT_OUT / "users")
+
+INTAKE_FOLDER      = multiuser.path_proxy("intake_folder")
+OUT_FOLDER         = multiuser.path_proxy("out_folder")
+IMAGES_FOLDER      = multiuser.path_proxy("images_folder")
+PROCESSING_FOLDER  = multiuser.path_proxy("processing_folder")
+REJECTED_FOLDER    = multiuser.path_proxy("rejected_folder")
+ARCHIVE_FOLDER     = multiuser.path_proxy("archive_folder")
 # CONFIG_FILE is the single authoritative app-config path, defined once in
 # process_receipts and imported here so the server, watcher, and scheduler all
-# read/write the same file (see process_receipts.CONFIG_FILE).
-STATE_FILE    = OUT_FOLDER / ".app_state.json"   # crash-safe results/board snapshot
+# read/write the same file (see process_receipts.CONFIG_FILE). It stays a SHARED,
+# instance-level file in multi-user mode (one model/pipeline config per box).
+STATE_FILE    = multiuser.path_proxy("state_file")   # crash-safe results/board snapshot
 
 # ── Stall checker config ───────────────────────────────────────────────────────
 
@@ -100,51 +122,58 @@ SSE_POLL_SECS      = float(os.getenv("SSE_POLL_SECS", "0.25"))
 SSE_HEARTBEAT_SECS = float(os.getenv("SSE_HEARTBEAT_SECS", "15"))
 
 # ── Global state ───────────────────────────────────────────────────────────────
+#
+# Per-user containers are *context proxies* (multiuser.cur_ws()) so the single-user
+# path and the existing tests see today's behaviour, while each logged-in user gets
+# an isolated board/results/run-log in multi-user mode. Genuinely shared infra —
+# the work queue, the SSE subscriber list, the worker, the concurrency gate (one
+# model/VRAM per box) — stays a plain global. See multiuser.py.
 
+# The work queue is SHARED; each item carries a ``user_id`` so the worker can route
+# its board/results writes to the right workspace (the LLM is serial anyway).
 _work_queue: deque = deque()
 _work_lock   = threading.Lock()
 
-_kanban: dict[str, dict] = {}
-_kanban_lock = threading.Lock()
+_kanban       = multiuser.container_proxy("kanban")
+_kanban_lock  = multiuser.lock_proxy("kanban_lock")
 
-_results: list[dict] = []
-_results_lock = threading.Lock()
+_results      = multiuser.container_proxy("results")
+_results_lock = multiuser.lock_proxy("results_lock")
 
 # Serialises the .app_state.json write so two concurrent persisters (e.g. the
 # worker thread + an event-loop handler) can't interleave their write/replace and
-# publish a half-written file.
+# publish a half-written file. Shared (the unique-tmp name already keeps per-user
+# state files from colliding).
 _persist_lock = threading.Lock()
 
-_last_context: dict = {"employee": "Employee", "job_name": "", "job_number": ""}
+_last_context = multiuser.container_proxy("last_context")
 
 # Per-batch processing-time log, for comparing model speed across runs. Newest
-# first, capped; survives restarts via the state file.
-_benchmarks: list[dict] = []
-_bench_lock = threading.Lock()
+# first, capped; survives restarts via the (per-user) state file.
+_benchmarks   = multiuser.container_proxy("benchmarks")
+_bench_lock   = multiuser.lock_proxy("bench_lock")
 BENCH_MAX_ENTRIES = 100
 
 # Full per-run (per-batch) log — every detail of one processing run: the exact
 # instructions/prompts sent to the model, every image-processing + extraction
 # step per receipt, and the full streamed log. Newest first, capped, persisted.
-# `_current_run` is the run being assembled while a batch drains (None when idle);
-# every `type:"log"` broadcast is captured into it, so the Run Log viewer and the
-# Processing & Errors panel see the same stream.
-_runs: list[dict] = []
-_runs_lock = threading.Lock()
+# The run being assembled while a batch drains lives at ``cur_ws().current_run``
+# (None when idle); every `type:"log"` broadcast is captured into it, so the Run
+# Log viewer and the Processing & Errors panel see the same stream.
+_runs         = multiuser.container_proxy("runs")
+_runs_lock    = multiuser.lock_proxy("runs_lock")
 RUNS_MAX_ENTRIES = int(os.getenv("RUNS_MAX_ENTRIES", "25"))
 RUN_MAX_LINES = int(os.getenv("RUN_MAX_LINES", "4000"))
-_current_run: "dict | None" = None
-_current_run_lock = threading.Lock()
-_run_seq = 0
+_current_run_lock = multiuser.lock_proxy("current_run_lock")
 
-_seen_intake: set[str] = set()
-_seen_lock   = threading.Lock()
+_seen_intake  = multiuser.container_proxy("seen_intake")
+_seen_lock    = multiuser.lock_proxy("seen_lock")
 
 # Why each quarantined file in REJECTED_FOLDER was moved there, keyed by its
 # on-disk name. The folder is the source of truth for *which* files exist; this
 # just remembers the human-readable reason to show alongside each one.
-_rejected_reasons: dict[str, str] = {}
-_rejected_lock    = threading.Lock()
+_rejected_reasons = multiuser.container_proxy("rejected_reasons")
+_rejected_lock    = multiuser.lock_proxy("rejected_lock")
 
 _worker_cancel = threading.Event()
 
@@ -201,20 +230,20 @@ _concurrency_gate = _ConcurrencyGate()
 _worker_thread: threading.Thread | None = None
 _worker_start_lock = threading.Lock()
 
-_subscribers: list[Queue] = []
+_subscribers: list = []   # list[_Subscriber] — each tagged with its owner user_id
 _sub_lock = threading.Lock()
 # Cap each SSE client's pending-event queue so a slow/stuck client (or a stalled
 # proxy) can't grow memory without bound during a busy batch. On overflow the
 # oldest event is dropped; the next full_state re-syncs the board.
 SSE_QUEUE_MAX = int(os.getenv("SSE_QUEUE_MAX", "2000"))
 
-# Item metadata cache — preserves queue item data for stall recovery
-_item_cache: dict[str, dict] = {}
-_item_cache_lock = threading.Lock()
+# Item metadata cache — preserves queue item data for stall recovery (per-user)
+_item_cache      = multiuser.container_proxy("item_cache")
+_item_cache_lock = multiuser.lock_proxy("item_cache_lock")
 
-# Status change timestamps — used by stall checker
-_status_timestamps: dict[str, float] = {}
-_status_ts_lock = threading.Lock()
+# Status change timestamps — used by stall checker (per-user)
+_status_timestamps = multiuser.container_proxy("status_timestamps")
+_status_ts_lock    = multiuser.lock_proxy("status_ts_lock")
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
@@ -912,16 +941,23 @@ def _broadcast(event: dict) -> None:
     # record of the same stream — no extra plumbing at the ~20 log call sites.
     if event.get("type") == "log":
         _append_run_line(event.get("message", ""), event.get("level", "info"))
+    # In multi-user mode an event belongs to the user whose context is broadcasting
+    # it (the request handler's user, or the worker task's user) and is delivered
+    # ONLY to that user's SSE clients — so one user never sees another's board/log.
+    # Single-user mode: everyone is "default", so this is a no-op filter.
+    target = multiuser.cur_ws().user_id
     with _sub_lock:
-        for q in list(_subscribers):
+        for sub in list(_subscribers):
+            if multiuser.ENABLED and sub.user_id != target:
+                continue
             try:
-                q.put_nowait(event)
+                sub.q.put_nowait(event)
             except Full:
                 # Slow/stuck client: drop its oldest queued event to bound memory,
                 # then enqueue the newest so it still gets the latest state.
                 try:
-                    q.get_nowait()
-                    q.put_nowait(event)
+                    sub.q.get_nowait()
+                    sub.q.put_nowait(event)
                 except Exception:
                     pass
             except Exception:
@@ -939,7 +975,7 @@ def _append_run_line(message: str, level: str = "info") -> None:
     """Append one log line to the run currently being assembled, if any.
     Thread-safe and capped so a giant batch can't grow the buffer unbounded."""
     with _current_run_lock:
-        run = _current_run
+        run = multiuser.cur_ws().current_run
         if run is None:
             return
         lines = run["lines"]
@@ -949,19 +985,63 @@ def _append_run_line(message: str, level: str = "info") -> None:
             del lines[:len(lines) - RUN_MAX_LINES]
 
 
-def _add_subscriber() -> Queue:
+class _Subscriber:
+    """An SSE client's event queue tagged with the user it belongs to, so
+    ``_broadcast`` can deliver each event only to its owner's clients."""
+    __slots__ = ("q", "user_id")
+
+    def __init__(self, q: Queue, user_id: str):
+        self.q = q
+        self.user_id = user_id
+
+
+def _add_subscriber(user_id: str | None = None) -> _Subscriber:
     q: Queue = Queue(maxsize=SSE_QUEUE_MAX)
+    sub = _Subscriber(q, user_id or multiuser.cur_ws().user_id)
     with _sub_lock:
-        _subscribers.append(q)
-    return q
+        _subscribers.append(sub)
+    return sub
 
 
-def _remove_subscriber(q: Queue) -> None:
+def _remove_subscriber(sub: "_Subscriber") -> None:
     with _sub_lock:
         try:
-            _subscribers.remove(q)
+            _subscribers.remove(sub)
         except ValueError:
             pass
+
+
+def _pending_count(user_id: str) -> int:
+    """How many queued (not-yet-processed) items belong to ``user_id``. The work
+    queue is shared, so each item is user-tagged; single-user mode counts them all."""
+    with _work_lock:
+        if not multiuser.ENABLED:
+            return len(_work_queue)
+        return sum(1 for it in _work_queue
+                   if it.get("user_id", multiuser.DEFAULT_USER) == user_id)
+
+
+def _tag_item(item: dict) -> dict:
+    """Stamp a queue item with the enqueuing user so the worker routes its board /
+    results writes to the right workspace. Idempotent; defaults to the current
+    request/task user (the default user in single-user mode)."""
+    item.setdefault("user_id", multiuser.cur_ws().user_id)
+    return item
+
+
+def _watch_workspaces() -> list:
+    """Workspaces the background loops (watcher, stall checker) should scan: just
+    the default in single-user mode; the default plus every user with data on disk
+    in multi-user mode."""
+    if not multiuser.ENABLED:
+        return [multiuser.default_workspace()]
+    seen = {multiuser.DEFAULT_USER}
+    out = [multiuser.default_workspace()]
+    for uid in multiuser.discover_user_ids():
+        if uid not in seen:
+            out.append(multiuser.get_workspace(uid))
+            seen.add(uid)
+    return out
 
 
 # ── Kanban helpers ─────────────────────────────────────────────────────────────
@@ -1097,14 +1177,43 @@ def _restore_state() -> None:
             _runs.extend(r for r in runs if isinstance(r, dict))
             del _runs[RUNS_MAX_ENTRIES:]
 
-    or_usage = payload.get("openrouter_usage")
-    if isinstance(or_usage, dict):
-        _pr.set_openrouter_usage(or_usage.get("date"), or_usage.get("count"))
+    # OpenRouter usage is an instance-level (cross-user) daily tally — only the
+    # default workspace's state file is its source of truth, so per-user restores
+    # don't clobber it with a stale copy.
+    if multiuser.cur_ws().user_id == multiuser.DEFAULT_USER:
+        or_usage = payload.get("openrouter_usage")
+        if isinstance(or_usage, dict):
+            _pr.set_openrouter_usage(or_usage.get("date"), or_usage.get("count"))
 
     with _results_lock:
         n = len(_results)
     if n:
-        print(f"[state] Restored {n} completed receipt(s) from previous session")
+        who = "" if multiuser.cur_ws().user_id == multiuser.DEFAULT_USER else f" for {multiuser.cur_ws().user_id}"
+        print(f"[state] Restored {n} completed receipt(s) from previous session{who}")
+
+
+def _restore_all() -> None:
+    """Restore the default workspace and every per-user workspace with data on disk
+    (multi-user mode). Single-user mode restores just the default."""
+    _restore_state()
+    if multiuser.ENABLED:
+        for uid in multiuser.discover_user_ids():
+            tok = multiuser.bind_user(uid)
+            try:
+                _restore_state()
+            finally:
+                multiuser.reset(tok)
+
+
+def _persist_all() -> None:
+    """Persist every known workspace (used on shutdown). Per-call persists during
+    runtime are already scoped to the acting user via the context proxies."""
+    for ws in multiuser.iter_workspaces():
+        tok = multiuser.bind(ws)
+        try:
+            _persist_state()
+        finally:
+            multiuser.reset(tok)
 
 
 # ── Background worker ──────────────────────────────────────────────────────────
@@ -1197,11 +1306,12 @@ def _llm_instructions_payload() -> dict:
 
 
 def _begin_run(batch: list) -> dict:
-    """Start assembling a fresh run log for a batch; capture what we'll send."""
-    global _current_run, _run_seq
-    _run_seq += 1
+    """Start assembling a fresh run log for a batch; capture what we'll send.
+    The run is held on the current user's workspace (per-user run log)."""
+    ws = multiuser.cur_ws()
+    ws.run_seq += 1
     run = {
-        "id":            datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{_run_seq:04d}",
+        "id":            datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{ws.run_seq:04d}",
         "ts_start":      datetime.now().isoformat(timespec="seconds"),
         "ts_end":        None,
         "count":         len(batch),
@@ -1211,7 +1321,7 @@ def _begin_run(batch: list) -> dict:
         "receipts":      [],
     }
     with _current_run_lock:
-        _current_run = run
+        ws.current_run = run
     return run
 
 
@@ -1236,8 +1346,9 @@ def _record_run_receipt(fname: str, status: str, data, steps, *, error: str = ""
         "steps":        [dict(s) for s in (steps or [])],
     }
     with _current_run_lock:
-        if _current_run is not None:
-            _current_run["receipts"].append(entry)
+        _run = multiuser.cur_ws().current_run
+        if _run is not None:
+            _run["receipts"].append(entry)
 
     head = f"▸ {fname}"
     if entry["new_filename"] and entry["new_filename"] != fname:
@@ -1261,8 +1372,8 @@ def _record_run_receipt(fname: str, status: str, data, steps, *, error: str = ""
 
 
 def _finalize_run(run: "dict | None", total_seconds: "float | None") -> None:
-    """Close out a run and push it onto the newest-first, capped history."""
-    global _current_run
+    """Close out a run and push it onto the newest-first, capped history.
+    Runs in the current user's workspace context (bound by the caller)."""
     if run is None:
         return
     run["ts_end"] = datetime.now().isoformat(timespec="seconds")
@@ -1271,17 +1382,24 @@ def _finalize_run(run: "dict | None", total_seconds: "float | None") -> None:
     with _runs_lock:
         _runs.insert(0, run)
         del _runs[RUNS_MAX_ENTRIES:]
+    ws = multiuser.cur_ws()
     with _current_run_lock:
-        if _current_run is run:
-            _current_run = None
+        if ws.current_run is run:
+            ws.current_run = None
 
 
 def _abort_current_run() -> None:
-    """Salvage a half-built run after a worker crash so it isn't stranded."""
-    with _current_run_lock:
-        run = _current_run
-    if run is not None:
-        _finalize_run(run, None)
+    """Salvage a half-built run after a worker crash so it isn't stranded — across
+    every workspace, since the crash may have unbound the worker's user context."""
+    for ws in multiuser.iter_workspaces():
+        with ws.current_run_lock:
+            run = ws.current_run
+        if run is not None:
+            tok = multiuser.bind(ws)
+            try:
+                _finalize_run(run, None)
+            finally:
+                multiuser.reset(tok)
 
 
 def _format_run_text(run: dict) -> str:
@@ -1354,15 +1472,36 @@ def _receipts_output_dir() -> Path:
 
 
 def _drain_once() -> bool:
-    """Process one batch from the queue. Returns False when the queue was empty."""
+    """Process one batch from the queue. Returns False when the queue was empty.
+
+    The shared work queue carries items from every user; one call processes the
+    items belonging to the oldest-queued user as a single batch (its own run log,
+    bound to that user's workspace) and leaves other users' items for the next
+    call — a simple round-robin that stops one flooding user from starving another.
+    In single-user mode every item is "default", so this is one batch as before.
+    """
     with _work_lock:
-        batch = list(_work_queue) if _work_queue else []
-        if batch:
-            _work_queue.clear()
+        if not _work_queue:
+            return False
+        batch_uid = _work_queue[0].get("user_id", multiuser.DEFAULT_USER)
+        batch = [it for it in _work_queue
+                 if it.get("user_id", multiuser.DEFAULT_USER) == batch_uid]
+        rest  = [it for it in _work_queue
+                 if it.get("user_id", multiuser.DEFAULT_USER) != batch_uid]
+        _work_queue.clear()
+        _work_queue.extend(rest)
 
-    if not batch:
-        return False
+    token = multiuser.bind_user(batch_uid)
+    try:
+        _run_batch(batch, batch_uid)
+    finally:
+        multiuser.reset(token)
+    return True
 
+
+def _run_batch(batch: list, batch_uid: str) -> None:
+    """Process one user's batch — the caller has bound that user's workspace, so
+    every board/results/run-log/persist call below is scoped to them."""
     _batch_t0 = time.perf_counter()
     # Reset the per-batch LLM-OCR throttle breaker so a previous batch's free-tier
     # throttling doesn't carry over and pre-suspend the vision pass for this one.
@@ -1379,6 +1518,10 @@ def _drain_once() -> bool:
     client = _pr.make_client()
 
     def _gated_extract(*args):
+        # Pool tasks don't inherit the worker thread's contextvars, so re-bind this
+        # batch's user inside the task — the per-receipt status callback writes the
+        # kanban and broadcasts under it.
+        tok = multiuser.bind_user(batch_uid)
         # The pool is sized to a fixed ceiling; this gate enforces the live
         # "process N at a time" limit so the slider takes effect mid-batch.
         _concurrency_gate.acquire()
@@ -1386,6 +1529,7 @@ def _drain_once() -> bool:
             return _extract_receipt_with_status(*args)
         finally:
             _concurrency_gate.release()
+            multiuser.reset(tok)
 
     futures_map: dict = {}
     ceiling = max(CONCURRENCY_CEILING, int(_pr.MAX_PARALLEL_REQUESTS or 0))
@@ -1572,8 +1716,7 @@ def _drain_once() -> bool:
     with _results_lock:
         _detect_duplicates(_results)
         n_done = len(_results)
-    with _work_lock:
-        n_pending = len(_work_queue)
+    n_pending = _pending_count(batch_uid)
     elapsed = time.perf_counter() - _batch_t0
     bench = _record_benchmark(len(batch), elapsed, run.get("receipts"))
     _emit_log(f"[worker] Batch finished — {len(run['receipts'])} receipt(s) in "
@@ -1582,7 +1725,6 @@ def _drain_once() -> bool:
     _persist_state()
     _broadcast({"type": "batch_done", "completed": n_done, "pending": n_pending,
                 "benchmark": bench, "run_id": run["id"]})
-    return True
 
 
 def _aggregate_step_durations(receipts: list | None) -> list[dict]:
@@ -1804,7 +1946,12 @@ def _rejected_items() -> list[dict]:
 # ── Background watcher ─────────────────────────────────────────────────────────
 
 def _run_watcher() -> None:
-    """Poll INTAKE_FOLDER every 5 seconds and auto-queue new image/PDF files."""
+    """Poll INTAKE_FOLDER every 5 seconds and auto-queue new image/PDF files.
+
+    In multi-user mode this watches the shared/default intake folder (files dropped
+    there process as the default user); regular users add receipts through the web
+    UI, which scopes them to the uploader. Per-user watched folders are a follow-up
+    (see MULTIUSER.md)."""
     while not _worker_cancel.is_set():
         try:
             if INTAKE_FOLDER.exists():
@@ -1835,7 +1982,7 @@ def _run_watcher() -> None:
                                 }
                                 _cache_item(item)
                                 with _work_lock:
-                                    _work_queue.append(item)
+                                    _work_queue.append(_tag_item(item))
                                 _update_kanban(m.name, "queued", None)
                                 _broadcast({
                                     "type":     "kanban_update",
@@ -1875,7 +2022,7 @@ def _run_watcher() -> None:
                         }
                         _cache_item(item)
                         with _work_lock:
-                            _work_queue.append(item)
+                            _work_queue.append(_tag_item(item))
                         _update_kanban(p.name, "queued", None)
                         _broadcast({
                             "type":     "kanban_update",
@@ -1902,7 +2049,7 @@ def _run_watcher() -> None:
                                 }
                                 _cache_item(item)
                                 with _work_lock:
-                                    _work_queue.append(item)
+                                    _work_queue.append(_tag_item(item))
                                 _update_kanban(page_path.name, "queued", None)
                                 _broadcast({
                                     "type":     "kanban_update",
@@ -1942,40 +2089,40 @@ def _run_stall_checker() -> None:
         if _ensure_worker_alive():
             _broadcast({"type": "log", "message": "[watchdog] worker thread restarted"})
 
-        now = time.time()
-        stalled: list[str] = []
+        # Scan each user's board for stalled items (single-user: just the default).
+        for _ws in _watch_workspaces():
+            _stok = multiuser.bind(_ws)
+            try:
+                _stall_scan_once()
+            except Exception as exc:
+                _broadcast({"type": "log", "message": f"[stall] scan error: {exc}"})
+            finally:
+                multiuser.reset(_stok)
 
-        with _kanban_lock:
-            for fname, entry in list(_kanban.items()):
-                if entry["status"] not in ("ocr", "distilling"):
-                    continue
-                with _status_ts_lock:
-                    ts = _status_timestamps.get(fname, now)
-                if now - ts > STALL_TIMEOUT_SECS:
-                    stalled.append(fname)
 
-        for fname in stalled:
-            with _item_cache_lock:
-                cached = _item_cache.get(fname)
+def _stall_scan_once() -> None:
+    """Detect + re-queue items stuck in ocr/distilling for the current workspace."""
+    now = time.time()
+    stalled: list[str] = []
 
-            if not cached:
-                # Try processing folder (exact + fuzzy extension match)
-                stem = Path(fname).stem
-                for name in [fname] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
-                    candidate = PROCESSING_FOLDER / name
-                    if candidate.exists():
-                        cached = {
-                            "filename":   fname,
-                            "path":       str(candidate),
-                            "employee":   _last_context.get("employee", "Employee"),
-                            "job_name":   _last_context.get("job_name", ""),
-                            "job_number": _last_context.get("job_number", ""),
-                        }
-                        break
+    with _kanban_lock:
+        for fname, entry in list(_kanban.items()):
+            if entry["status"] not in ("ocr", "distilling"):
+                continue
+            with _status_ts_lock:
+                ts = _status_timestamps.get(fname, now)
+            if now - ts > STALL_TIMEOUT_SECS:
+                stalled.append(fname)
 
-            if not cached:
-                # Last resort: look in intake folder
-                candidate = INTAKE_FOLDER / fname
+    for fname in stalled:
+        with _item_cache_lock:
+            cached = _item_cache.get(fname)
+
+        if not cached:
+            # Try processing folder (exact + fuzzy extension match)
+            stem = Path(fname).stem
+            for name in [fname] + [stem + ext for ext in (".jpg", ".jpeg", ".png", ".webp")]:
+                candidate = PROCESSING_FOLDER / name
                 if candidate.exists():
                     cached = {
                         "filename":   fname,
@@ -1984,28 +2131,41 @@ def _run_stall_checker() -> None:
                         "job_name":   _last_context.get("job_name", ""),
                         "job_number": _last_context.get("job_number", ""),
                     }
+                    break
 
-            if not cached:
-                _update_kanban(fname, "failed", {"_error": "Stalled — image path unavailable for retry"})
-                _broadcast({
-                    "type": "kanban_update", "filename": fname,
-                    "status": "failed",
-                    "data": {"_error": "Stalled — image path unavailable for retry"},
-                    "model": "",
-                })
-                _broadcast({"type": "log", "message": f"[stall] {fname} stuck with no recoverable path — marked failed"})
-                continue
+        if not cached:
+            # Last resort: look in intake folder
+            candidate = INTAKE_FOLDER / fname
+            if candidate.exists():
+                cached = {
+                    "filename":   fname,
+                    "path":       str(candidate),
+                    "employee":   _last_context.get("employee", "Employee"),
+                    "job_name":   _last_context.get("job_name", ""),
+                    "job_number": _last_context.get("job_number", ""),
+                }
 
-            item = dict(cached)
-            with _work_lock:
-                _work_queue.appendleft(item)
-            _update_kanban(fname, "queued", None)
+        if not cached:
+            _update_kanban(fname, "failed", {"_error": "Stalled — image path unavailable for retry"})
             _broadcast({
                 "type": "kanban_update", "filename": fname,
-                "status": "queued", "data": {}, "model": "",
+                "status": "failed",
+                "data": {"_error": "Stalled — image path unavailable for retry"},
+                "model": "",
             })
-            _broadcast({"type": "stall_recovered", "filename": fname})
-            _broadcast({"type": "log", "message": f"[stall] {fname} was stuck — re-queued automatically"})
+            _broadcast({"type": "log", "message": f"[stall] {fname} stuck with no recoverable path — marked failed"})
+            continue
+
+        item = _tag_item(dict(cached))
+        with _work_lock:
+            _work_queue.appendleft(_tag_item(item))
+        _update_kanban(fname, "queued", None)
+        _broadcast({
+            "type": "kanban_update", "filename": fname,
+            "status": "queued", "data": {}, "model": "",
+        })
+        _broadcast({"type": "stall_recovered", "filename": fname})
+        _broadcast({"type": "log", "message": f"[stall] {fname} was stuck — re-queued automatically"})
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -2058,7 +2218,8 @@ def _on_schedule_result(report: dict) -> None:
 async def lifespan(app: FastAPI):
     global _schedule_wakeup
     _schedule_wakeup = asyncio.Event()   # bind to this app's running loop
-    _restore_state()
+    users.ensure_seed()          # seed an admin from env on a fresh multi-user box
+    _restore_all()               # restore the default + every per-user workspace
     _apply_processing_config()   # restore UI-saved auto-crop / compress / local-OCR settings
     _apply_audit_config()        # restore UI-saved spending/date warning thresholds
     _first_run_provider_default()  # zero-click OpenRouter free router if a key is set & nothing chosen
@@ -2084,9 +2245,26 @@ async def lifespan(app: FastAPI):
     yield
     sched_task.cancel()
     _worker_cancel.set()
+    _persist_all()               # flush every workspace's state on shutdown
 
 
-app = FastAPI(title="Receipt Processor", lifespan=lifespan)
+# ── Per-user identity binding ───────────────────────────────────────────────────
+# A single global dependency binds the request's resolved user (set by the auth
+# middleware on request.state) as the current Workspace for the whole handler and
+# its deep calls — so the context proxies (_results / IMAGES_FOLDER / …) scope to
+# the right user. Single-user mode resolves everyone to "default" (unchanged).
+
+async def _bind_ws(request: Request):
+    uid = getattr(request.state, "user_id", multiuser.DEFAULT_USER)
+    token = multiuser.bind_user(uid)
+    try:
+        yield
+    finally:
+        multiuser.reset(token)
+
+
+app = FastAPI(title="Receipt Processor", lifespan=lifespan,
+              dependencies=[Depends(_bind_ws)])
 
 
 # ── Optional shared-secret auth ─────────────────────────────────────────────────
@@ -2097,44 +2275,56 @@ app = FastAPI(title="Receipt Processor", lifespan=lifespan)
 # var is unset the gate is a no-op, preserving the open localhost behaviour.
 # The token is read per-request so it can be configured without a code change.
 _AUTH_EXEMPT_PATHS = {"/", "/manifest.json", "/icon.svg"}
+# Paths reachable WITHOUT a logged-in session in multi-user mode: the shell page +
+# icons (the SPA renders its own login overlay), and the auth endpoints themselves.
+# Everything else 401s until the user signs in, so no data endpoint is exposed.
+_MU_EXEMPT_PATHS = _AUTH_EXEMPT_PATHS | {
+    "/login", "/logout", "/me", "/multiuser/status", "/setup",
+}
 
 
 @app.middleware("http")
 async def _auth_guard(request: Request, call_next):
-    token = os.getenv("APP_AUTH_TOKEN", "")
-    if not token:
-        return await call_next(request)
-
-    import secrets as _secrets
     path = request.url.path
+    set_token_cookie: str | None = None
 
-    # Always let the shell page + its icons load so the token can be supplied
-    # via ?token= on the URL; the page's API/SSE calls are still protected.
-    if path in _AUTH_EXEMPT_PATHS:
-        resp = await call_next(request)
-        supplied = request.query_params.get("token", "")
-        if supplied and _secrets.compare_digest(supplied, token):
-            # Persist the token so the SPA's cookie-only requests (receipt images,
-            # the SSE stream) keep authenticating across reloads, browser restarts,
-            # and PWA relaunches — the old session cookie was dropped on restart,
-            # which over a tunnel left the shell loading but every image/API call
-            # 401-ing. SameSite=Lax (not Strict) so following a link/bookmark to the
-            # app still sends it; Secure only when actually served over HTTPS so a
-            # plain-HTTP LAN install can still set the cookie.
-            https = (request.url.scheme == "https"
-                     or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
-            resp.set_cookie("auth_token", token, max_age=31_536_000, path="/",
-                            httponly=True, samesite="lax", secure=https)
-        return resp
+    # ── Coarse instance-wide shared-secret gate (APP_AUTH_TOKEN), unchanged. ──
+    token = os.getenv("APP_AUTH_TOKEN", "")
+    if token:
+        import secrets as _secrets
+        if path in _AUTH_EXEMPT_PATHS:
+            # Let the shell page + icons load so the token can be supplied via
+            # ?token=; drop it as a cookie so the SPA's later cookie-only requests
+            # (images, SSE) authenticate. SameSite=Lax; Secure only over HTTPS.
+            supplied = request.query_params.get("token", "")
+            if supplied and _secrets.compare_digest(supplied, token):
+                set_token_cookie = token
+        else:
+            supplied = (
+                request.headers.get("X-Auth-Token", "")
+                or request.cookies.get("auth_token", "")
+                or request.query_params.get("token", "")
+            )
+            if not (supplied and _secrets.compare_digest(supplied, token)):
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    supplied = (
-        request.headers.get("X-Auth-Token", "")
-        or request.cookies.get("auth_token", "")
-        or request.query_params.get("token", "")
-    )
-    if not (supplied and _secrets.compare_digest(supplied, token)):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return await call_next(request)
+    # ── Per-user identity (multi-user mode). Single-user → everyone is "default". ──
+    user_id = multiuser.DEFAULT_USER
+    if multiuser.ENABLED:
+        sess_uid = users.verify_session(request.cookies.get(users.SESSION_COOKIE, ""))
+        if sess_uid:
+            user_id = sess_uid
+        elif path not in _MU_EXEMPT_PATHS:
+            return JSONResponse({"error": "login_required"}, status_code=401)
+    request.state.user_id = user_id
+
+    resp = await call_next(request)
+    if set_token_cookie is not None:
+        https = (request.url.scheme == "https"
+                 or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
+        resp.set_cookie("auth_token", set_token_cookie, max_age=31_536_000, path="/",
+                        httponly=True, samesite="lax", secure=https)
+    return resp
 
 
 # ── Static / template routes ───────────────────────────────────────────────────
@@ -2152,6 +2342,174 @@ async def manifest():
 @app.get("/icon.svg")
 async def icon():
     return FileResponse("templates/icon.svg", media_type="image/svg+xml")
+
+
+# ── Multi-user auth / account routes ────────────────────────────────────────────
+# All no-ops / "single admin user" in single-user mode (MULTIUSER_ENABLED off), so
+# the SPA can call them unconditionally.
+
+class LoginRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+def _set_session_cookie(resp, request: Request, token: str) -> None:
+    https = (request.url.scheme == "https"
+             or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
+    resp.set_cookie(users.SESSION_COOKIE, token, max_age=users.SESSION_TTL_SECS,
+                    path="/", httponly=True, samesite="lax", secure=https)
+
+
+@app.get("/multiuser/status")
+async def multiuser_status():
+    """Whether multi-user mode is on, and whether the first admin still needs
+    creating — drives the SPA's login overlay."""
+    return {
+        "enabled": multiuser.ENABLED,
+        "needs_setup": bool(multiuser.ENABLED and users.user_count() == 0),
+    }
+
+
+@app.get("/me")
+async def whoami(request: Request):
+    """The current identity. Single-user mode reports a synthetic admin so the SPA
+    behaves identically to today."""
+    if not multiuser.ENABLED:
+        return {"multiuser": False, "authenticated": True,
+                "user_id": multiuser.DEFAULT_USER, "display": "", "is_admin": True}
+    sess = users.verify_session(request.cookies.get(users.SESSION_COOKIE, ""))
+    if not sess:
+        return {"multiuser": True, "authenticated": False,
+                "needs_setup": users.user_count() == 0}
+    rec = users.get_user(sess) or {}
+    return {"multiuser": True, "authenticated": True, "user_id": sess,
+            "display": rec.get("display") or sess, "is_admin": bool(rec.get("is_admin"))}
+
+
+@app.post("/login")
+async def login(req: LoginRequest, request: Request):
+    if not multiuser.ENABLED:
+        return JSONResponse({"error": "multiuser_disabled"}, status_code=400)
+    uid = (req.username or "").strip().lower()
+    if not users.authenticate(uid, req.password):
+        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+    resp = JSONResponse({"ok": True, "user_id": uid, "is_admin": users.is_admin(uid)})
+    _set_session_cookie(resp, request, users.make_session(uid))
+    return resp
+
+
+@app.post("/logout")
+async def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(users.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.post("/setup")
+async def setup_first_admin(req: LoginRequest, request: Request):
+    """Create the very first admin on a fresh multi-user instance, then log them
+    in. Only works while no users exist (otherwise it'd be an open account-creation
+    hole)."""
+    if not multiuser.ENABLED:
+        return JSONResponse({"error": "multiuser_disabled"}, status_code=400)
+    if users.user_count() > 0:
+        return JSONResponse({"error": "already_setup"}, status_code=400)
+    try:
+        users.create_user(req.username, req.password, is_admin=True)
+    except users.UserError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    uid = (req.username or "").strip().lower()
+    resp = JSONResponse({"ok": True, "user_id": uid, "is_admin": True})
+    _set_session_cookie(resp, request, users.make_session(uid))
+    return resp
+
+
+def _admin_or_403(request: Request):
+    """Return the caller's user_id if they're an admin in multi-user mode, else a
+    JSONResponse(403) the caller should return."""
+    if not multiuser.ENABLED:
+        return JSONResponse({"error": "multiuser_disabled"}, status_code=400)
+    uid = getattr(request.state, "user_id", "")
+    if not users.is_admin(uid):
+        return JSONResponse({"error": "admin_only"}, status_code=403)
+    return uid
+
+
+class NewUserRequest(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+    display: str = ""
+
+
+class PasswordRequest(BaseModel):
+    password: str
+
+
+class AdminFlagRequest(BaseModel):
+    is_admin: bool
+
+
+@app.get("/users")
+async def users_list(request: Request):
+    guard = _admin_or_403(request)
+    if isinstance(guard, JSONResponse):
+        return guard
+    return {"users": users.list_users()}
+
+
+@app.post("/users")
+async def users_create(req: NewUserRequest, request: Request):
+    guard = _admin_or_403(request)
+    if isinstance(guard, JSONResponse):
+        return guard
+    try:
+        rec = users.create_user(req.username, req.password,
+                                is_admin=req.is_admin, display=req.display)
+    except users.UserError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"ok": True, "user": rec}
+
+
+@app.delete("/users/{uid}")
+async def users_delete(uid: str, request: Request):
+    guard = _admin_or_403(request)
+    if isinstance(guard, JSONResponse):
+        return guard
+    if uid == guard:
+        return JSONResponse({"error": "cannot_delete_self"}, status_code=400)
+    try:
+        users.delete_user(uid)
+    except users.UserError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.post("/users/{uid}/password")
+async def users_set_password(uid: str, req: PasswordRequest, request: Request):
+    # Admins can reset anyone's password; a user may change their own.
+    if not multiuser.ENABLED:
+        return JSONResponse({"error": "multiuser_disabled"}, status_code=400)
+    caller = getattr(request.state, "user_id", "")
+    if caller != uid and not users.is_admin(caller):
+        return JSONResponse({"error": "admin_only"}, status_code=403)
+    try:
+        users.set_password(uid, req.password)
+    except users.UserError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.post("/users/{uid}/admin")
+async def users_set_admin(uid: str, req: AdminFlagRequest, request: Request):
+    guard = _admin_or_403(request)
+    if isinstance(guard, JSONResponse):
+        return guard
+    try:
+        users.set_admin(uid, req.is_admin)
+    except users.UserError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"ok": True}
 
 
 # ── Queue endpoints ────────────────────────────────────────────────────────────
@@ -2225,7 +2583,7 @@ async def queue_add(
                     }
                     _cache_item(item)
                     with _work_lock:
-                        _work_queue.append(item)
+                        _work_queue.append(_tag_item(item))
                     _update_kanban(page_path.name, "queued", None)
                     _broadcast({
                         "type": "kanban_update", "filename": page_path.name,
@@ -2250,7 +2608,7 @@ async def queue_add(
             }
             _cache_item(item)
             with _work_lock:
-                _work_queue.append(item)
+                _work_queue.append(_tag_item(item))
             _update_kanban(dest.name, "queued", None)
             _broadcast({
                 "type": "kanban_update", "filename": dest.name,
@@ -2344,7 +2702,7 @@ async def queue_add_intake(
             }
             _cache_item(item)
             with _work_lock:
-                _work_queue.append(item)
+                _work_queue.append(_tag_item(item))
             _update_kanban(p.name, "queued", None)
             _broadcast({
                 "type": "kanban_update", "filename": p.name,
@@ -2371,7 +2729,7 @@ async def queue_add_intake(
                     }
                     _cache_item(item)
                     with _work_lock:
-                        _work_queue.append(item)
+                        _work_queue.append(_tag_item(item))
                     _update_kanban(page_path.name, "queued", None)
                     _broadcast({
                         "type": "kanban_update", "filename": page_path.name,
@@ -2430,14 +2788,15 @@ async def queue_status():
 
 @app.get("/events")
 async def events_global():
-    """Global SSE stream — all connected clients receive all events."""
-    q = _add_subscriber()
+    """Per-user SSE stream — each client receives only its own user's events
+    (single-user mode: one user, so effectively a global stream as before)."""
+    sub = _add_subscriber()
+    q = sub.q
 
-    # Send full state snapshot on connect
+    # Send full state snapshot on connect (the caller's own board/queue/results)
     with _kanban_lock:
         kanban_snapshot = {fn: dict(v) for fn, v in _kanban.items()}
-    with _work_lock:
-        n_pending = len(_work_queue)
+    n_pending = _pending_count(sub.user_id)
     with _results_lock:
         n_completed = len(_results)
     full_state = {
@@ -2469,7 +2828,7 @@ async def events_global():
                 yield f"data: {json.dumps(msg)}\n\n"
                 last_beat = time.monotonic()
         finally:
-            _remove_subscriber(q)
+            _remove_subscriber(sub)
 
     return StreamingResponse(
         generate(),
@@ -3386,7 +3745,7 @@ async def retry_receipt(body: RetryRequest):
     }
     _cache_item(item)
     with _work_lock:
-        _work_queue.appendleft(item)
+        _work_queue.appendleft(_tag_item(item))
 
     _update_kanban(filename, "queued", None)
     _persist_state()
@@ -3460,7 +3819,7 @@ async def queue_unstick():
             continue
         item = dict(cached)
         with _work_lock:
-            _work_queue.appendleft(item)
+            _work_queue.appendleft(_tag_item(item))
         _update_kanban(fname, "queued", None)
         _broadcast({
             "type": "kanban_update", "filename": fname,
@@ -3525,7 +3884,7 @@ async def queue_nudge():
         if not cached:
             continue
         with _work_lock:
-            _work_queue.append(dict(cached))
+            _work_queue.append(_tag_item(dict(cached)))
         _update_kanban(fname, "queued", None)
         _broadcast({
             "type": "kanban_update", "filename": fname,

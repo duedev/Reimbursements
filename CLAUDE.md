@@ -214,6 +214,39 @@ to the model — nothing hidden or clipped.
   to genuine error *reasons* (so the verbose per-step dump doesn't flood it).
 - Tests: `tests/test_run_log.py` (+17).
 
+## Multi-user mode (`MULTIUSER_ENABLED`, default OFF)
+
+- **`multiuser.py`** — `Workspace` (per-user folders/state/board/results/run-log),
+  a registry (`get_workspace`/`iter_workspaces`/`discover_user_ids`), a `contextvars`
+  current-workspace (`cur_ws()`/`bind_user()`/`reset()`), and the **context proxies**
+  (`container_proxy`/`lock_proxy`/`path_proxy`) that `server.py` assigns its per-user
+  globals to. **Default OFF ⇒ everything resolves to the default workspace = today's
+  exact module objects/paths** (so the single-user path and existing tests are
+  unchanged). **Gotcha:** the per-user globals (`_results`, `_kanban`, `IMAGES_FOLDER`,
+  `STATE_FILE`, …) are *proxies* — don't reassign them; tests monkeypatch the folder
+  names (which replaces the proxy, fine) but must only *mutate* the container ones.
+- **Binding sites:** per HTTP request (global FastAPI dep `_bind_ws` ← middleware-set
+  `request.state.user_id`), per worker task (`_gated_extract` re-binds from the item's
+  `user_id`; `_drain_once` processes one user's items per cycle), per maintenance loop
+  (`_watch_workspaces()` for stall/persist). The work queue + SSE list stay shared;
+  items are `_tag_item`-stamped and `_broadcast` filters subscribers by `user_id`.
+- **`users.py`** — local username/password (`pbkdf2_hmac`), stateless HMAC session
+  cookie (`SESSION_COOKIE`; key via `app_secrets` `session_secret`). `valid_user_id`
+  is the traversal guard (strict slug; reserved ids). Auth routes live in `server.py`
+  (`/login` `/logout` `/setup` `/me` `/multiuser/status` `/users…`); `_auth_guard`
+  enforces a session in MU mode. SPA: sign-in overlay + header user chip + `_bootApp`
+  gated by `initMultiuser()`.
+- **Instance-shared (not per-user):** LLM model/endpoint, `.app_config.json`, rate
+  limiter, concurrency gate, SMTP/secrets, OpenRouter usage. See `MULTIUSER.md` for
+  the full as-built summary + deferred follow-ups.
+
+## Gas-receipt import research
+
+- **`GAS_RECEIPT_IMPORT.md`** — research write-up (no code). TL;DR: no public
+  per-consumer gas-brand receipt API; recommended future path is inbound email/IMAP
+  ingestion into the existing pipeline, optional Shell/WEX fleet connector for
+  business-card holders.
+
 ## Config / state / paths
 
 - `OUTPUT_FOLDER` (default `output/`), `RECEIPTS_FOLDER` (default `receipts/`).
@@ -225,7 +258,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **618 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **641 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -307,6 +340,48 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-06-23 (multi-user mode + gas-receipt import research):** Suite **618 → 641**
+  green. Two requests: make the app multi-user friendly, and research importing
+  receipts from gas-provider sites.
+  * **Multi-user mode (in-process multi-tenant, default OFF — `MULTIUSER_ENABLED`).**
+    With the flag off the app is byte-for-byte single-user (all 618 prior tests
+    unchanged); on, several people share one instance, each fully isolated. New
+    `multiuser.py`: a `Workspace` per user (per-user folders under
+    `output/users/<id>/`, state file, board, results, run-log, benchmarks,
+    last_context, stall caches) + a registry + **context proxies** that replace
+    `server.py`'s per-user globals (`_results`/`_kanban`/`IMAGES_FOLDER`/`STATE_FILE`/…)
+    and forward to the *current* user's workspace, resolved from a `contextvars`
+    var bound per request (global dep `_bind_ws` ← `request.state.user_id`), per
+    worker task (each queue item is `user_id`-tagged; `_drain_once` drains one
+    user's items per cycle = round-robin fairness), and per maintenance loop. The
+    proxy approach means single-user runs through the same path, so a missed scope
+    fails loudly in tests rather than leaking. SSE subscribers are user-tagged and
+    `_broadcast` delivers only to the owner. New `users.py`: local username/password
+    (`pbkdf2_hmac`, no new deps) + stateless HMAC-signed session cookie (key in
+    `.app_secrets.json`). Endpoints `GET /multiuser/status`, `/me`, `POST /login`,
+    `/logout`, `/setup` (one-time first admin), admin-gated `GET/POST /users`,
+    `DELETE /users/{id}`, `POST /users/{id}/password|admin`; `_auth_guard` extended
+    to require a session in MU mode (login overlay served; everything else 401s).
+    SPA gained a sign-in/first-run overlay, a "signed in as … · Sign out" header
+    chip, and a boot gated on auth. **Shared/instance-level (one model per box):**
+    the LLM model/endpoint, config (`.app_config.json`), rate limiter, concurrency
+    gate, SMTP/secrets, OpenRouter usage. **Deferred** (not isolation gaps): per-user
+    *settings*, per-user intake-folder watching (watcher serves the default folder;
+    users upload via UI), per-user SMTP/scheduler. Docs: `MULTIUSER.md` flipped to
+    "implemented" with an as-built summary; `.env.example` documents the new env
+    vars. Tests: `tests/test_multiuser.py` (+23).
+  * **Gas-receipt import research → `GAS_RECEIPT_IMPORT.md`** (write-up only, no code).
+    Bottom line: **no major US gas brand (Chevron/Texaco incl.) exposes a public
+    per-consumer receipt API** — consumer digital receipts live only inside each
+    brand's app, the only sanctioned export being opt-in **email receipts**.
+    Itemized (Level III) fuel data *is* available by API but only B2B/fleet and
+    contract-gated (Shell Fleet API; the WEX-administered Chevron & Texaco Business
+    Card). Recommended path for this app: **inbound email/IMAP ingestion** into the
+    existing local pipeline (universal, privacy-preserving), with an optional
+    Shell/WEX fleet connector behind a setting for business-card holders. Scraping
+    brand sites is not viable (login/MFA/anti-bot/ToS); Plaid/Knot/Stripe can flag a
+    fuel purchase but never return the itemized receipt.
 
 - **2026-06-20 (QC hardening round 2 — MEDIUM/LOW audit backlog):** Suite **589 → 618**
   green. Cleared the lower-severity items the 5-audit QC pass had left open:
