@@ -7,8 +7,18 @@ WORKDIR /app
 # e-receipts render to a faithful JPEG "copy of the receipt" (see
 # process_receipts.render_receipt_copy); without it the app still produces a
 # pure-Python text-image copy, so this is a fidelity upgrade, not a hard dep.
+# wkhtmltopdf was removed from Debian Bookworm repos; fetch the .deb from the
+# upstream packaging releases (supports amd64 and arm64).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 libglib2.0-0 libgl1 wkhtmltopdf \
+        libgomp1 libglib2.0-0 libgl1 \
+        wget ca-certificates \
+    && ARCH=$(dpkg --print-architecture) \
+    && wget -q \
+        "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${ARCH}.deb" \
+        -O /tmp/wkhtmltox.deb \
+    && apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb \
+    && rm /tmp/wkhtmltox.deb \
+    && apt-get purge -y --auto-remove wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Unprivileged account the app actually runs as (see docker-entrypoint.py).
