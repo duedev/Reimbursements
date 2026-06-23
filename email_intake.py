@@ -285,12 +285,57 @@ def sender_address(msg: Message) -> str:
     return (m.group(0).lower() if m else raw.lower()).strip()
 
 
+# DuckDuckGo Email Protection (and similar privacy relays) rewrite the From: header
+# to  <local>_at_<domain>_<youralias>@duck.com  so the real sender is buried in the
+# local-part — e.g. a Chevron receipt arrives as
+#   no-reply_at_notifications.chevronmobileapp.com_drhamilton@duck.com
+# Recover <local>@<domain> so a domain allowlist matches relayed receipts.
+_DUCK_RELAY_RE = re.compile(r"^(?P<local>[^@]+?)_at_(?P<rest>[^@]+)@duck\.com$", re.I)
+
+
+def decode_relay_sender(addr: str) -> str:
+    """Unwrap a DuckDuckGo-relayed From: to the original sender; passthrough else."""
+    m = _DUCK_RELAY_RE.match(addr or "")
+    if not m:
+        return addr
+    local  = m.group("local")
+    domain = m.group("rest").rsplit("_", 1)[0]   # strip the trailing _<youralias>
+    if local and "." in domain:
+        return f"{local}@{domain}".lower()
+    return addr
+
+
 def sender_allowed(msg: Message, allow_senders: list[str]) -> bool:
     if not allow_senders:
         return True
     addr = sender_address(msg)
-    return any(a and (addr == a or addr.endswith("@" + a.lstrip("@")) or a in addr)
-               for a in allow_senders)
+    # Match against both the literal From: and the relay-decoded original sender, so
+    # a privacy-relayed (Duck) receipt still matches its brand domain.
+    candidates = {addr, decode_relay_sender(addr)}
+    for a in allow_senders:
+        a = (a or "").strip().lstrip("@").lower()
+        if not a:
+            continue
+        if any(c == a or c.endswith("@" + a) or a in c for c in candidates):
+            return True
+    return False
+
+
+# Verified fuel/receipt sender domains — research + a real received Chevron receipt
+# header. Used as an OPTIONAL secondary allowlist; the PRIMARY intake mechanism is a
+# Gmail keyword filter → label (see gmail_filter.py / GMAIL_RECEIPTS_FILTER_SETUP.md),
+# because most fuel brands don't email receipts, don't publish a sender domain, and
+# forwarding/relays rewrite From: anyway. Only reasonably-sourced domains here — no
+# guesses. (`earnify.com` is deliberately excluded — it's an unrelated ad company.)
+FUEL_RECEIPT_SENDERS = [
+    "shell.com", "fuelrewards.com", "email.fuelrewards.com",  # Shell — official
+    "gasbuddy.com",                                           # GasBuddy — official safe-sender
+    "notifications.chevronmobileapp.com",                     # Chevron/Texaco — real receipt header
+    "rewards.sheetz.com",                                     # Sheetz — DNS/SPF = Salesforce MC
+    "upside.com", "getupside.com",                            # Upside
+    "circlekeasy.com", "kwiktrip.com", "murphyusa.com",       # medium confidence
+    "murphydriverewards.com", "maverik.com", "speedway.com",
+]
 
 
 def message_subject(msg: Message) -> str:

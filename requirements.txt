@@ -17,3 +17,9 @@ onnxruntime>=1.16
 # these; they are lazy-imported and MOCKED in tests (not in requirements-test.txt).
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.2.0
+# Faithful "copy of the receipt" for emailed (HTML) e-receipts: imgkit wraps the
+# wkhtmltoimage binary (installed in the Docker image) to render the real email to
+# a JPEG the report embeds. Lazy-imported and OPTIONAL — without the binary the
+# pipeline falls back to a pure-Python (PIL) text→image copy, so it's not needed in
+# tests. See process_receipts.render_receipt_copy.
+imgkit>=1.2.3

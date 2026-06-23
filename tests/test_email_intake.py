@@ -160,6 +160,36 @@ def test_render_fallback_off_by_default(tmp_path, monkeypatch):
     assert any(s.get("step") == "render" for s in steps)
 
 
+# ── Sender allowlist + privacy-relay decoding ──────────────────────────────────
+
+def test_decode_duck_relay_sender():
+    raw = "no-reply_at_notifications.chevronmobileapp.com_drhamilton@duck.com"
+    assert ei.decode_relay_sender(raw) == "no-reply@notifications.chevronmobileapp.com"
+    # A normal address is returned unchanged.
+    assert ei.decode_relay_sender("a@b.com") == "a@b.com"
+
+
+def test_sender_allowed_matches_duck_relayed_brand():
+    m = email.message.EmailMessage()
+    m["From"] = ("Chevron <no-reply_at_notifications.chevronmobileapp.com"
+                 "_drhamilton@duck.com>")
+    # The brand domain matches even though the literal From: ends in @duck.com.
+    assert ei.sender_allowed(m, ["notifications.chevronmobileapp.com"])
+    # An unrelated allowlist entry does not match.
+    assert not ei.sender_allowed(m, ["shell.com"])
+    # Empty allowlist still accepts everything (unchanged behaviour).
+    assert ei.sender_allowed(m, [])
+
+
+def test_fuel_receipt_senders_curated():
+    s = ei.FUEL_RECEIPT_SENDERS
+    assert "notifications.chevronmobileapp.com" in s   # real receipt header
+    assert "gasbuddy.com" in s and "rewards.sheetz.com" in s
+    assert "shell.com" in s and "fuelrewards.com" in s
+    # earnify.com is a different ad company — must never be allowlisted.
+    assert "earnify.com" not in s
+
+
 # ── IMAP poll orchestration (faked connection) ──────────────────────────────────
 
 class _FakeIMAP:
@@ -233,6 +263,23 @@ def test_test_and_pollnow_require_config(tmp_path, monkeypatch):
     # Nothing configured yet → test reports not-ok, poll-now 400.
     assert c.post("/settings/email-intake/test").json()["ok"] is False
     assert c.post("/settings/email-intake/poll-now").status_code == 400
+
+
+def test_intake_get_surfaces_fuel_senders_and_label():
+    c = TestClient(server.app)
+    got = c.get("/settings/email-intake").json()
+    assert "notifications.chevronmobileapp.com" in got["fuel_senders"]
+    assert got["recommended_label"] == "Receipts"
+
+
+def test_gmail_filter_download_endpoint():
+    c = TestClient(server.app)
+    r = c.get("/settings/email-intake/gmail-filter")
+    assert r.status_code == 200
+    assert "attachment" in r.headers.get("content-disposition", "")
+    body = r.text
+    assert "<feed" in body and "name='label' value='Receipts'" in body
+    assert "from:gasbuddy.com" in body
 
 
 def test_ingest_message_enqueues_onto_board(tmp_path, monkeypatch):

@@ -2328,6 +2328,20 @@
         <input type="text" id="ei-allow" placeholder="amazon.com, noreply@shell.com" autocomplete="off">
       </label>
     </div>
+    <div class="hint-box" id="ei-recommended" style="margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:rgba(59,130,246,0.06);font-size:13px;line-height:1.5">
+      <strong>Recommended:</strong> don't poll your whole inbox. In Gmail make a
+      <code id="ei-label-name">Receipts</code> label + filter so only real receipts
+      are pulled (keyword-based — survives forwarding &amp; privacy relays where a
+      sender list can't).
+      <div class="action-row" style="margin-top:8px">
+        <a class="btn btn-neutral btn-sm" id="ei-filter-link" href="/settings/email-intake/gmail-filter" download>⬇ Download Gmail filter (.xml)</a>
+        <button class="btn btn-neutral btn-sm" id="ei-senders-btn" type="button">Add verified fuel-receipt senders</button>
+      </div>
+      <div style="margin-top:6px;color:var(--muted)">
+        Then Gmail → Settings → <em>Filters and Blocked Addresses</em> → <em>Import filters</em>,
+        and set <strong>Mailbox / folder</strong> above to <code>Receipts</code>.
+      </div>
+    </div>
     <label class="toggle-row" style="margin-top:8px">
       <input type="checkbox" id="ei-body" checked>
       <span>Read HTML/text e-receipts that have no attachment (parses the email body — no OCR)</span>
@@ -6016,6 +6030,11 @@ async function loadEmailIntake() {
     document.getElementById('ei-plus').checked  = !!d.plus_routing;
     document.getElementById('ei-pass').placeholder = d.password_set ? '•••••••• (saved)' : '••••••••';
     document.getElementById('ei-plus-row').classList.toggle('hidden', !d.multiuser);
+    window._eiFuelSenders = d.fuel_senders || [];
+    if (d.recommended_label) {
+      const ln = document.getElementById('ei-label-name');
+      if (ln) ln.textContent = d.recommended_label;
+    }
     const status = document.getElementById('ei-config-status');
     status.textContent = d.configured ? (d.enabled ? '✓ Active' : '✓ Configured (off)')
                                        : (d.host ? '⚠ Incomplete' : '');
@@ -6039,6 +6058,14 @@ function _eiPayload() {
     use_ssl:       true,
   };
 }
+
+document.getElementById('ei-senders-btn')?.addEventListener('click', () => {
+  const allow = document.getElementById('ei-allow');
+  const have  = new Set(allow.value.split(',').map(s => s.trim()).filter(Boolean));
+  (window._eiFuelSenders || []).forEach(s => have.add(s));
+  allow.value = Array.from(have).join(', ');
+  showToast('Added verified fuel-receipt senders — Save to apply', true);
+});
 
 document.getElementById('ei-save-btn').addEventListener('click', async () => {
   const btn = document.getElementById('ei-save-btn');
