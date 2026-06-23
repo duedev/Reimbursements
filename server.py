@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 import app_secrets
+import email_intake
 import multiuser
 import process_receipts as _pr
 import scheduler
@@ -1690,7 +1691,11 @@ def _run_batch(batch: list, batch_uid: str) -> None:
             final_path = rename_receipt_image(path, data, category, dest_dir)
             data["_new_filename"] = final_path.name
             data["_file"]         = fname
-            data["_image_path"]   = str(final_path)
+            # A text-source receipt (emailed HTML/plain body) has no picture, so
+            # don't point _image_path at the .html/.txt — the spreadsheet/preview
+            # then show a clean "image not available" instead of a decode error.
+            if not data.get("_text_source"):
+                data["_image_path"] = str(final_path)
 
             with _results_lock:
                 _results.append(data)
@@ -2238,6 +2243,7 @@ async def lifespan(app: FastAPI):
     _ensure_worker_alive()       # start the self-healing worker thread
     threading.Thread(target=_run_watcher,       daemon=True).start()
     threading.Thread(target=_run_stall_checker, daemon=True).start()
+    threading.Thread(target=_run_email_poller,  daemon=True).start()  # IMAP receipt intake
     sched_task = asyncio.create_task(scheduler.run_scheduler(
         _get_schedule_config, _schedule_results_snapshot,
         _on_schedule_result, _schedule_wakeup,
@@ -5003,6 +5009,254 @@ async def test_email_settings():
     except Exception as exc:
         result = {"ok": False, "error": str(exc)}
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+# ── Inbound email (IMAP) receipt intake ─────────────────────────────────────────
+# Poll a dedicated mailbox and feed forwarded receipts (any vendor) into the same
+# queue/board as uploads. See email_intake.py + GAS_RECEIPT_IMPORT.md. The inbox is
+# instance-level (one mailbox per box); in multi-user mode config is admin-only and
+# plus-addressing (receipts+<user>@…) can route a message to that user.
+
+def _email_intake_config() -> email_intake.ImapConfig:
+    return email_intake.ImapConfig.from_dict(_load_config().get("email_intake"))
+
+
+def _imap_password() -> str:
+    return app_secrets.get_secret("imap_password", "email_intake", "password", "IMAP_PASSWORD")
+
+
+def _email_seen_path() -> Path:
+    return multiuser.default_workspace().out_folder / ".email_seen.json"
+
+
+def _load_email_seen() -> set[str]:
+    try:
+        p = _email_seen_path()
+        if p.exists():
+            data = json.loads(p.read_text())
+            if isinstance(data, list):
+                return set(str(x) for x in data)
+    except Exception:
+        pass
+    return set()
+
+
+def _save_email_seen(seen: set[str]) -> None:
+    try:
+        p = _email_seen_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Keep the newest 5000 ids so the guard file can't grow without bound.
+        p.write_text(json.dumps(list(seen)[-5000:]))
+    except Exception as exc:
+        print(f"[email] could not persist seen ids: {exc}")
+
+
+def _enqueue_receipt_file(path: Path, *, employee: str = "Email Import",
+                          job_name: str = "", job_number: str = "") -> bool:
+    """Drop one staged receipt file (image / PDF / text body) onto the work queue,
+    expanding a PDF into pages. Mirrors the upload path; tags the current user."""
+    suffix = path.suffix.lower()
+    targets: list[Path] = []
+    if suffix in PDF_EXTENSIONS:
+        try:
+            pages = pdf_to_images(path, path.parent / f"_pdf_{path.stem}")
+            path.unlink(missing_ok=True)
+            targets = list(pages)
+        except Exception as exc:
+            _emit_log(f"[email] PDF error {path.name}: {exc}", level="error")
+            return False
+    elif suffix in IMAGE_EXTENSIONS or _pr._is_text_source(path):
+        targets = [path]
+    else:
+        return False
+
+    queued = False
+    for t in targets:
+        if _is_active_in_kanban(t.name):
+            continue
+        with _seen_lock:
+            _seen_intake.add(t.name)
+        item = {"filename": t.name, "path": str(t), "employee": employee,
+                "job_name": job_name, "job_number": job_number}
+        _cache_item(item)
+        with _work_lock:
+            _work_queue.append(_tag_item(item))
+        _update_kanban(t.name, "queued", None)
+        _broadcast({"type": "kanban_update", "filename": t.name,
+                    "status": "queued", "data": {}, "model": ""})
+        queued = True
+    return queued
+
+
+def _ingest_email_message(msg, artifacts) -> bool:
+    """Handle one parsed email: route to a user (plus-addressing), stage each
+    receipt artifact to that user's workspace, and enqueue it."""
+    cfg = _email_intake_config()
+    user_id = multiuser.DEFAULT_USER
+    if multiuser.ENABLED and cfg.plus_routing:
+        tag = email_intake.route_user(msg)
+        if tag and multiuser.valid_user_id(tag) and users.get_user(tag):
+            user_id = tag
+
+    token = multiuser.bind_user(user_id)
+    try:
+        staged_dir = IMAGES_FOLDER / f"_email_{uuid4().hex[:8]}"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        employee = _last_context.get("employee") or "Email Import"
+        queued_any = False
+        for art in artifacts:
+            name = Path(art.filename).name
+            dest = staged_dir / name
+            try:
+                if isinstance(art.data, str):
+                    dest.write_text(art.data)
+                else:
+                    dest.write_bytes(art.data)
+            except Exception as exc:
+                _emit_log(f"[email] could not stage {name}: {exc}", level="error")
+                continue
+            if _enqueue_receipt_file(dest, employee=employee):
+                queued_any = True
+        subj = email_intake.message_subject(msg)
+        whom = "" if user_id == multiuser.DEFAULT_USER else f" → {user_id}"
+        _emit_log(f"[email] {subj or '(no subject)'}: {len(artifacts)} receipt(s) queued{whom}")
+        if queued_any:
+            _ensure_worker_alive()
+        return queued_any
+    finally:
+        multiuser.reset(token)
+
+
+def _run_email_poller() -> None:
+    """Background loop: poll the configured IMAP mailbox and ingest new receipts."""
+    seen = _load_email_seen()
+    while not _worker_cancel.is_set():
+        cfg = _email_intake_config()
+        interval = cfg.poll_seconds if cfg.poll_seconds else 120
+        if cfg.enabled and cfg.host and cfg.username:
+            pw = _imap_password()
+            if pw:
+                try:
+                    summary = email_intake.poll_once(cfg, pw, _ingest_email_message,
+                                                     already_seen=seen)
+                    for mid in summary.get("seen_ids", []):
+                        seen.add(mid)
+                    if summary.get("seen_ids"):
+                        _save_email_seen(seen)
+                    if summary.get("receipts"):
+                        _emit_log(f"[email] {cfg.username}: {summary['messages']} message(s), "
+                                  f"{summary['receipts']} receipt(s) ingested")
+                except Exception as exc:
+                    _emit_log(f"[email] poll error: {exc}", level="error")
+        _worker_cancel.wait(timeout=max(15, interval))
+
+
+class EmailIntakeRequest(BaseModel):
+    enabled:       bool = False
+    host:          str = ""
+    port:          int = 993
+    username:      str = ""
+    password:      str = ""     # blank = keep previously saved app password
+    use_ssl:       bool = True
+    mailbox:       str = "INBOX"
+    poll_seconds:  int = 120
+    mark_seen:     bool = True
+    process_body:  bool = True
+    plus_routing:  bool = False
+    allow_senders: str = ""
+
+
+def _email_admin_or_403(request: Request):
+    """The IMAP inbox is instance-level + holds credentials: admin-only in MU mode."""
+    if multiuser.ENABLED and not users.is_admin(getattr(request.state, "user_id", "")):
+        return JSONResponse({"error": "admin_only"}, status_code=403)
+    return None
+
+
+@app.get("/settings/email-intake")
+async def get_email_intake(request: Request):
+    guard = _email_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _email_intake_config()
+    out = cfg.to_public_dict()
+    out["password_set"] = bool(_imap_password())
+    out["configured"] = bool(cfg.host and cfg.username and _imap_password())
+    out["multiuser"] = multiuser.ENABLED
+    return JSONResponse(out)
+
+
+@app.post("/settings/email-intake")
+async def set_email_intake(body: EmailIntakeRequest, request: Request):
+    guard = _email_admin_or_403(request)
+    if guard is not None:
+        return guard
+    try:
+        cfg = _load_config()
+        block = cfg.get("email_intake") or {}
+        block.update({
+            "enabled":       bool(body.enabled),
+            "host":          body.host.strip(),
+            "port":          int(body.port or 993),
+            "username":      body.username.strip(),
+            "use_ssl":       bool(body.use_ssl),
+            "mailbox":       body.mailbox.strip() or "INBOX",
+            "poll_seconds":  max(15, int(body.poll_seconds or 120)),
+            "mark_seen":     bool(body.mark_seen),
+            "process_body":  bool(body.process_body),
+            "plus_routing":  bool(body.plus_routing),
+            "allow_senders": [s.strip() for s in (body.allow_senders or "").split(",") if s.strip()],
+        })
+        block.pop("password", None)   # never keep the secret in the synced config
+        if body.password:             # blank keeps the previously saved password
+            app_secrets.save_secret("imap_password", body.password)
+        cfg["email_intake"] = block
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/settings/email-intake/test")
+async def test_email_intake(request: Request):
+    guard = _email_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _email_intake_config()
+    pw = _imap_password()
+
+    def _run():
+        return email_intake.test_connection(cfg, pw)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/settings/email-intake/poll-now")
+async def poll_email_now(request: Request):
+    guard = _email_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _email_intake_config()
+    pw = _imap_password()
+    if not (cfg.host and cfg.username and pw):
+        return JSONResponse({"ok": False, "error": "Configure host, username and app password first."},
+                            status_code=400)
+
+    seen = _load_email_seen()
+
+    def _run():
+        return email_intake.poll_once(cfg, pw, _ingest_email_message, already_seen=seen)
+    try:
+        summary = await asyncio.get_event_loop().run_in_executor(None, _run)
+        for mid in summary.get("seen_ids", []):
+            seen.add(mid)
+        _save_email_seen(seen)
+        return JSONResponse({"ok": True, **summary})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 # ── Scheduled export endpoints ─────────────────────────────────────────────────

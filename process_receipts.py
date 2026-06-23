@@ -144,6 +144,24 @@ ARCHIVE_EXTENSIONS   = {".zip"}
 # (not the archive) are what gets queued, so SUPPORTED_EXTENSIONS — the set the
 # pipeline treats as directly processable — deliberately stays images + PDFs.
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
+# Text "receipt sources" — a digital e-receipt's HTML/plain body, saved to a file
+# by the email intake. The pipeline distils these straight from text (no OCR, no
+# image-prep): the text is already clean, so OCR would only add noise. See
+# `_extract_receipt_with_status`'s text-source branch and `email_intake.py`.
+TEXT_EXTENSIONS      = {".html", ".htm", ".txt"}
+# Optional fallback (#2): when a text-body receipt won't distil, render the HTML to
+# an image and run the normal OCR path. Needs an external renderer (e.g. imgkit /
+# wkhtmltoimage) — OFF by default so the dependency is never forced; degrades to
+# manual review when disabled or the renderer isn't installed.
+RENDER_HTML_FALLBACK = os.getenv("EMAIL_RENDER_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_text_source(path: "Path") -> bool:
+    try:
+        return Path(path).suffix.lower() in TEXT_EXTENSIONS
+    except Exception:
+        return False
+
 IMAGE_MAX_PX         = 1568
 # Hard cap on pages rendered from a single PDF — a huge or maliciously-crafted
 # PDF could otherwise exhaust disk by expanding to thousands of JPEGs. Override
@@ -2248,6 +2266,35 @@ def _img_size(path: Path) -> Optional[tuple]:
         return None
 
 
+def _maybe_render_text_source(path: Path, step_log: Optional[list]) -> Optional[Path]:
+    """Optional fallback (#2): render an HTML e-receipt body to an image so the
+    normal OCR path can read it. OFF unless ``RENDER_HTML_FALLBACK`` is set AND an
+    HTML renderer is installed — so the heavyweight dependency is never forced and
+    the receipt cleanly degrades to manual review when it isn't available.
+
+    Returns the rendered image path, or None (→ caller flags for manual review).
+    """
+    if not RENDER_HTML_FALLBACK or Path(path).suffix.lower() not in (".html", ".htm"):
+        return None
+    try:
+        import imgkit  # type: ignore  # wraps wkhtmltoimage — optional, lazily imported
+    except Exception:
+        _append_step(step_log, "render", "Render HTML",
+                     "render fallback enabled but no HTML renderer installed "
+                     "(pip install imgkit + wkhtmltoimage) — manual review", ok=False)
+        return None
+    try:
+        out = Path(path).with_suffix(".rendered.png")
+        imgkit.from_file(str(path), str(out), options={"quiet": "", "format": "png"})
+        if out.exists() and out.stat().st_size > 0:
+            _append_step(step_log, "render", "Render HTML",
+                         "rendered the e-receipt to an image for OCR", ok=True)
+            return out
+    except Exception as exc:
+        _append_step(step_log, "render", "Render HTML", f"render failed: {exc}", ok=False)
+    return None
+
+
 def _extract_receipt_with_status(
     client: OpenAI,
     image_path: Path,
@@ -2274,36 +2321,38 @@ def _extract_receipt_with_status(
     # Image-preparation pre-passes (rules-based, no LLM). Each is recorded in the
     # step log when it actually changes the file, so the per-receipt card AND the
     # run log show exactly what was done to the picture before OCR — the user
-    # asked for "all details", including image processing.
+    # asked for "all details", including image processing. Skipped entirely for a
+    # text-source receipt (an emailed HTML/plain body), which has no image.
     #
     # Orientation pre-pass — bake the photo's EXIF rotation into the pixels FIRST,
     # so every later step (OCR, the vision model, the markup boxes, the preview)
     # sees text the right way up. A deeper OCR-guided rotation check runs inside the
     # OCR step below, where the engine's read tells us which way is actually upright.
-    if autorotate_image_file(image_path):
-        _append_step(step_log, "exif_rotate", "Auto-rotate (EXIF)",
-                     "baked the camera's orientation tag into the pixels", ok=True)
-    # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
-    # receipt to high-contrast grayscale in place so both the OCR engine (which
-    # reads the file directly) and the vision model (via encode_image) get the
-    # cleaner image. In-place, suffix preserved → no downstream path changes.
-    if grayscale_image_file(image_path):
-        _append_step(step_log, "grayscale", "Grayscale",
-                     "converted to high-contrast black & white", ok=True)
-    # Autocrop the uniform photo border next, still BEFORE OCR — this is the
-    # canonical greyscale → autocrop → OCR order (autocrop_receipt is conservative:
-    # it no-ops unless it can trim a clear border). OCR then reads the cropped
-    # image, which is also the one shown in the UI, so the field-markup boxes stay
-    # pixel-aligned with the preview. Gated by AUTOCROP_ENABLED.
-    _crop_before = _img_size(image_path)
-    if autocrop_image_file(image_path):
-        _crop_after = _img_size(image_path)
-        if _crop_before and _crop_after:
-            detail = (f"trimmed border {_crop_before[0]}×{_crop_before[1]} → "
-                      f"{_crop_after[0]}×{_crop_after[1]}")
-        else:
-            detail = "trimmed uniform border"
-        _append_step(step_log, "autocrop", "Auto-crop", detail, ok=True)
+    if not _is_text_source(image_path):
+        if autorotate_image_file(image_path):
+            _append_step(step_log, "exif_rotate", "Auto-rotate (EXIF)",
+                         "baked the camera's orientation tag into the pixels", ok=True)
+        # Black-&-white pre-pass — runs BEFORE any OCR/LLM call. Converts the stored
+        # receipt to high-contrast grayscale in place so both the OCR engine (which
+        # reads the file directly) and the vision model (via encode_image) get the
+        # cleaner image. In-place, suffix preserved → no downstream path changes.
+        if grayscale_image_file(image_path):
+            _append_step(step_log, "grayscale", "Grayscale",
+                         "converted to high-contrast black & white", ok=True)
+        # Autocrop the uniform photo border next, still BEFORE OCR — this is the
+        # canonical greyscale → autocrop → OCR order (autocrop_receipt is conservative:
+        # it no-ops unless it can trim a clear border). OCR then reads the cropped
+        # image, which is also the one shown in the UI, so the field-markup boxes stay
+        # pixel-aligned with the preview. Gated by AUTOCROP_ENABLED.
+        _crop_before = _img_size(image_path)
+        if autocrop_image_file(image_path):
+            _crop_after = _img_size(image_path)
+            if _crop_before and _crop_after:
+                detail = (f"trimmed border {_crop_before[0]}×{_crop_before[1]} → "
+                          f"{_crop_after[0]}×{_crop_after[1]}")
+            else:
+                detail = "trimmed uniform border"
+            _append_step(step_log, "autocrop", "Auto-crop", detail, ok=True)
 
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
@@ -2372,6 +2421,41 @@ def _extract_receipt_with_status(
         if engine:
             data["_ocr_engine"] = engine
         return _finish(data, ocr_seconds, distill_seconds)
+
+    # TEXT SOURCE: an emailed HTML/plain-text receipt body (no image). The text is
+    # already digital and cleaner than OCR — strip any HTML and hand it straight to
+    # the distiller (which falls back to the offline parser when no LLM is set). No
+    # image-prep, no OCR, no image is ever sent. Optional render fallback below.
+    if _is_text_source(image_path):
+        _set_llm_error(None)
+        _cb("ocr", model="email-text")
+        try:
+            raw = Path(image_path).read_text(errors="replace")
+        except Exception:
+            raw = ""
+        if Path(image_path).suffix.lower() in (".html", ".htm"):
+            from email_intake import strip_html_to_text  # lazy: avoid import cycle
+            body = strip_html_to_text(raw)
+        else:
+            body = raw
+        body = (body or "").strip()
+        if body:
+            _append_step(step_log, "email_text", "Email body",
+                         f"read {len(body)} chars of receipt text (digital — no OCR needed)",
+                         ok=True)
+            data = _distill_text(body, 0.0, engine="email-text")
+            if data is not None:
+                data["_text_source"] = True
+                return data
+        else:
+            _append_step(step_log, "email_text", "Email body",
+                         "no readable text in the message body", ok=False)
+        # Fallback (#2, optional): render the HTML to an image and OCR it. Off unless
+        # RENDER_HTML_FALLBACK and a renderer are present; otherwise → manual review.
+        rendered = _maybe_render_text_source(image_path, step_log)
+        if rendered is None:
+            return None
+        image_path = rendered   # fall through to the normal OCR path on the render
 
     try:
         # Clear any LLM failure reason left on this (reused) worker thread by a
