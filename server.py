@@ -446,12 +446,22 @@ def _docker_llm_url() -> str:
 
     The ``model-server`` hostname only resolves *inside* the docker-compose
     network.  When the app itself runs on the host (no ``/.dockerenv``), the same
-    bundled server is reachable on its published port at ``127.0.0.1:11434``.
+    bundled server is reachable on its published port at ``127.0.0.1:1234``.
     Using the service name in that case strands the connection on an unresolvable
     host — so pick the address that actually works for where we're running.
     """
     host = "model-server" if _in_docker() else "127.0.0.1"
-    return f"http://{host}:11434/v1"
+    return f"http://{host}:1234/v1"
+
+
+def _is_docker_bundled_url(url: str) -> bool:
+    """True when *url* points to the bundled model-server compose service.
+
+    Catches the case where the URL was injected via environment variable (not
+    saved config), so there is no ``server_type`` key to inspect.
+    """
+    u = (url or "").lower()
+    return "model-server:" in u or (_in_docker() and "host.docker.internal:" in u)
 
 
 def _probe_llm_url(base_url: str, timeout: float = 1.5) -> tuple[bool, int]:
@@ -480,17 +490,18 @@ def _candidate_llm_urls() -> list[str]:
 
     The currently-configured URL is tried first (so a working setup is never
     disturbed), then the well-known endpoints for the common deployments: a host
-    LM Studio on :1234, the bundled Docker ``model-server`` on :11434, and the
+    LM Studio on :1234, the bundled Docker ``model-server`` on :1234, and the
     ``host.docker.internal`` variants used when the app itself runs in Docker.
+    The legacy :11434 ports are kept as final fallbacks for users with old configs.
     """
     cands = [
         getattr(_pr, "LMSTUDIO_BASE_URL", "") or "",
         "http://127.0.0.1:1234/v1",
         "http://localhost:1234/v1",
         "http://host.docker.internal:1234/v1",
-        _docker_llm_url(),                       # runtime-aware bundled server
-        "http://127.0.0.1:11434/v1",
-        "http://host.docker.internal:11434/v1",
+        _docker_llm_url(),                       # runtime-aware bundled server (:1234)
+        "http://127.0.0.1:11434/v1",             # legacy fallback (old bundled port)
+        "http://host.docker.internal:11434/v1",  # legacy fallback (old bundled port)
     ]
     seen: set[str] = set()
     out: list[str] = []
@@ -4099,6 +4110,11 @@ async def get_llm_server_settings():
     cfg = _load_config()
     llm_srv = cfg.get("llm_server") or {}
     server_type = llm_srv.get("server_type", "custom")
+    effective = getattr(_pr, "LMSTUDIO_BASE_URL", "")
+    # Infer docker mode when the URL was injected via env pointing at the bundled server
+    # (no saved server_type key in that case, so we must check the effective URL too).
+    if server_type != "docker" and _is_docker_bundled_url(effective):
+        server_type = "docker"
     if server_type == "docker":
         configured = _docker_llm_url()
     elif llm_srv.get("base_url"):
@@ -4108,7 +4124,7 @@ async def get_llm_server_settings():
     return JSONResponse({
         "server_type":        server_type,
         "base_url":           configured,
-        "effective_base_url": getattr(_pr, "LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
+        "effective_base_url": effective or configured,
         "provider":           (cfg.get("provider") or "local").strip(),
     })
 
@@ -4159,11 +4175,16 @@ async def get_llm_provider():
     # than On-host, so it can tell "never configured" apart from "chose local".
     configured = bool(cfg.get("provider") or cfg.get("llm_server")
                       or cfg.get("llm_model_config") or cfg.get("openrouter"))
+    effective_url = getattr(_pr, "LMSTUDIO_BASE_URL", "")
+    local_server_type = llm_srv.get("server_type", "custom")
+    # Infer docker mode when URL was injected via env pointing at the bundled server.
+    if local_server_type != "docker" and _is_docker_bundled_url(effective_url):
+        local_server_type = "docker"
     return JSONResponse({
         "provider":   provider,
         "configured": configured,
         "local": {
-            "server_type": llm_srv.get("server_type", "custom"),
+            "server_type": local_server_type,
             "base_url":    llm_srv.get("base_url", "") or "",
         },
         "openrouter": {
@@ -4303,12 +4324,15 @@ async def llm_server_availability():
     provider = (cfg.get("provider") or "local").strip()
     llm_srv  = cfg.get("llm_server") or {}
     srv_type = llm_srv.get("server_type", "custom")
+    effective_url = getattr(_pr, "LMSTUDIO_BASE_URL", "")
     # On a fresh config (no explicit choice) the default mode is OpenRouter, so the
     # header chip and the mode selector agree before the user picks anything.
     configured = bool(cfg.get("provider") or cfg.get("llm_server")
                       or cfg.get("llm_model_config") or cfg.get("openrouter"))
     active_mode = ("openrouter" if (provider == "openrouter" or not configured)
-                   else ("docker" if srv_type == "docker" else "host"))
+                   else ("docker" if (srv_type == "docker"
+                                      or _is_docker_bundled_url(effective_url))
+                         else "host"))
 
     # On-host candidate = the saved custom URL (if any) else the LM Studio default.
     host_url = ("http://127.0.0.1:1234/v1"

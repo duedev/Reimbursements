@@ -40,7 +40,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery & scheduling** — Watch-mode daemon and a built-in weekly scheduler can email the report over SMTP or drop it into a synced cloud folder
 - **Optional cloud capture sources (opt-in, off by default)** — Pull receipts in from a mailbox over **IMAP** (forward receipts to a dedicated Gmail), or from a **Google Drive** folder you fill from your phone or via a Gmail→Drive Apps Script. Both are off until you configure them. Like the optional OpenRouter LLM mode, these are disclosed cloud surfaces: Drive intake stores an OAuth refresh token (kept out of the synced config, `drive.readonly` scope, one-click disconnect/revoke) — the receipts it pulls were already in your Gmail/Drive. Local OCR + the offline parser are unaffected, and the receipt image still only reaches a cloud LLM if you separately enabled that. See `GOOGLE_DRIVE_IMPORT.md` and `GMAIL_TO_DRIVE_SETUP.md`
-- **Self-healing LLM connection** — The app auto-detects a working LLM endpoint at startup and whenever the configured one reads unreachable (LM Studio on `:1234`, the bundled Docker server on `:11434`, and the `host.docker.internal` variants), with a one-click **🔎 Auto-detect** in Settings
+- **Self-healing LLM connection** — The app auto-detects a working LLM endpoint at startup and whenever the configured one reads unreachable (LM Studio on `:1234`, the bundled Docker server on `:1234`, and the `host.docker.internal` variants), with a one-click **🔎 Auto-detect** in Settings
 - **On-image field markup** — The review modal and full-screen lightbox draw colour-coded boxes over the receipt showing exactly where the vendor, date, and amount were read, plus a zoomed callout of each so the extracted value can be checked against the print at a glance
 - **Opt-in spending & date warnings** — Off by default; set per-category dollar caps and a max receipt age in **Settings → Spending & Date Warnings** to have over-limit or stale receipts flagged
 - **Benchmarks** — Each batch's timing is logged and rolled into throughput/trend insights in the Benchmark settings card (copy-as-CSV)
@@ -105,7 +105,7 @@ OpenAI-compatible API the app talks to.
 ```bash
 # The default bundled model is unsloth's Qwen3-VL-2B-Instruct (UD-Q5_K_XL) + its
 # F16 mmproj — no download URLs to set. Just point the app at the bundled server:
-LMSTUDIO_BASE_URL=http://model-server:11434/v1 \
+LMSTUDIO_BASE_URL=http://model-server:1234/v1 \
   docker compose --profile bundled-llm up --build
 ```
 
