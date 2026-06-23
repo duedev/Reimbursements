@@ -22,7 +22,7 @@ services:
     environment:
       # Defaults to an external LM Studio on the host. To use the BUNDLED model
       # instead, start with `--profile bundled-llm` and set
-      # LMSTUDIO_BASE_URL=http://model-server:11434/v1 (see README "Bundled LLM").
+      # LMSTUDIO_BASE_URL=http://model-server:1234/v1 (see README "Bundled LLM").
       - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
       # Optional shared-secret auth. When set, every request must present it
       # (header X-Auth-Token, cookie, or open the page once with ?token=…).
@@ -69,7 +69,7 @@ services:
       - ./watch_state:/data/watch_state
       - ./config:/data/config   # shared secrets store (local, non-synced)
     environment:
-      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - LMSTUDIO_BASE_URL=http://model-server:1234/v1
       - SECRETS_PATH=/data/config/secrets.json
       - WATCH_INBOX=/data/watch_inbox
       - WATCH_STAGED=/data/processing
@@ -93,7 +93,7 @@ services:
   # model weights are baked into the image (offline at runtime; the image is
   # ~2-3 GB for a 2B vision model). Opt in with the "bundled-llm" profile:
   #
-  #   LMSTUDIO_BASE_URL=http://model-server:11434/v1 \
+  #   LMSTUDIO_BASE_URL=http://model-server:1234/v1 \
   #     docker compose --profile bundled-llm up --build
   #
   # Swap the model via build args (see Dockerfile.model). A vision model is
@@ -112,7 +112,7 @@ services:
     # Exposed on localhost too, so the model is reachable from a host LM Studio
     # client / curl for debugging. The app talks to it over the compose network.
     ports:
-      - "127.0.0.1:11434:11434"
+      - "127.0.0.1:1234:1234"
     # GPU offload is opt-in (host needs the NVIDIA container toolkit). CPU-only
     # works out of the box; uncomment to accelerate:
     # deploy:
@@ -121,7 +121,7 @@ services:
     #       devices:
     #         - capabilities: ["gpu"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:11434/v1/models"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:1234/v1/models"]
       interval: 15s
       timeout: 5s
       start_period: 40s
