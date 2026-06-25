@@ -88,6 +88,9 @@ class Workspace:
         self.rejected_folder   = self.root / "unsupported"
         self.archive_folder    = self.root / "archive"
         self.state_file        = self.root / ".app_state.json"
+        # Per-user secrets (Google refresh token, etc.) live alongside the state file
+        # so one user's connected accounts never leak into another's workspace.
+        self.secrets_file      = self.root / ".app_secrets.json"
 
         # In-memory runtime state (the same shapes server.py has always used).
         self.results: list[dict] = []

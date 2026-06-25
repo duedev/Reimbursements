@@ -2482,9 +2482,16 @@
       <button class="btn btn-neutral btn-sm" id="gd-connect-btn">🔗 Connect Google</button>
       <button class="btn btn-neutral btn-sm" id="gd-test-btn">🔌 Test connection</button>
       <button class="btn btn-neutral btn-sm" id="gd-poll-btn">⬇ Check for receipts now</button>
+      <button class="btn btn-neutral btn-sm hidden" id="gd-provision-btn"
+              title="Create a 'Receipt App' folder in your Drive with an Intake folder to scan receipts into and an Output folder where each report (workbook + receipt images) is saved in a dated subfolder.">📁 Set up Drive folders</button>
       <button class="btn btn-cancel btn-sm hidden" id="gd-disconnect-btn">Disconnect &amp; revoke</button>
       <span id="gd-status" class="status-note"></span>
     </div>
+    <p class="status-note hidden" id="gd-provisioned-note" style="margin-top:6px">
+      ✓ Drive folders set up — receipts scanned into <strong>Receipt App/Intake</strong> are
+      pulled in, and each report is saved to <strong>Receipt App/Output/&lt;date&gt;</strong>
+      (workbook + receipt images).
+    </p>
     <!-- One-time consent: open the URL, approve, paste back the code (or the full
          redirected localhost URL — the app extracts ?code=). -->
     <div id="gd-connect-panel" class="hidden" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px">
@@ -6425,6 +6432,10 @@ async function loadGDrive() {
     document.getElementById('gd-poll').value      = d.poll_interval || 300;
     document.getElementById('gd-client-secret').placeholder = d.client_secret_set ? '•••••••• (saved)' : '••••••••';
     document.getElementById('gd-disconnect-btn').classList.toggle('hidden', !d.connected);
+    // The "Set up Drive folders" button appears once connected; the note shows once
+    // the Intake/Output tree has been provisioned.
+    document.getElementById('gd-provision-btn').classList.toggle('hidden', !d.connected);
+    document.getElementById('gd-provisioned-note').classList.toggle('hidden', !d.provisioned);
     const status = document.getElementById('gd-config-status');
     if (d.connected) {
       status.textContent = d.enabled ? '✓ Connected & active' : '✓ Connected (off)';
@@ -6563,6 +6574,26 @@ document.getElementById('gd-poll-btn').addEventListener('click', async () => {
     status.textContent = `Failed: ${err.message}`;
     status.style.color = 'var(--danger)';
   } finally { btn.disabled = false; btn.textContent = '⬇ Check for receipts now'; }
+});
+
+document.getElementById('gd-provision-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-provision-btn');
+  const status = document.getElementById('gd-status');
+  btn.disabled = true; btn.textContent = 'Setting up…'; status.textContent = '';
+  try {
+    const d = await (await fetch('/settings/gdrive/provision', { method: 'POST' })).json();
+    if (d.ok) {
+      status.textContent = 'Drive folders ready (Receipt App / Intake + Output).';
+      status.style.color = 'var(--success)';
+      loadGDrive();
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '📁 Set up Drive folders'; }
 });
 
 async function loadSchedule() {

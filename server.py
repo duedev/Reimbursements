@@ -3377,6 +3377,15 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     _record_sent(results_copy, filename)
     _persist_state()
 
+    # Mirror the report into the user's Drive Output/<date>/ folder (workbook + the
+    # processed receipt images) when Drive output upload is enabled. Best-effort, off
+    # the request path so a slow/failed upload never blocks the download.
+    _img_paths = [r.get("_image_path") for r in results_copy if r.get("_image_path")]
+    _date_str = time.strftime("%Y-%m-%d")
+    threading.Thread(
+        target=lambda: _gdrive_upload_report(output_path, _img_paths, _date_str),
+        daemon=True).start()
+
     async def file_stream():
         with open(output_path, "rb") as f:
             while chunk := f.read(65536):
@@ -5580,6 +5589,30 @@ def _gdrive_poll(cfg: gdrive_intake.GDriveConfig, seen: set[str]) -> dict:
     return summary
 
 
+def _gdrive_upload_report(workbook_path, receipt_paths, date_str: str) -> dict | None:
+    """Best-effort: upload a finished report (workbook + receipt images) to the
+    provisioned ``Receipt App/Output/<date_str>/`` Drive folder. No-op unless Drive
+    is connected, the tree was provisioned, and output upload is enabled."""
+    block = _load_config().get("gdrive") or {}
+    if not block.get("upload_output"):
+        return None
+    output_id = (block.get("tree") or {}).get("output", "")
+    if not output_id or not _gdrive_token():
+        return None
+    service = _build_gdrive_service()
+    if service is None:
+        return None
+    try:
+        summary = gdrive_intake.upload_report_bundle(
+            service, output_id, date_str, workbook_path, receipt_paths)
+        _emit_log(f"[gdrive] uploaded report to Output/{date_str} "
+                  f"({len(summary.get('receipts', []))} receipt(s))")
+        return summary
+    except Exception as exc:
+        _emit_log(f"[gdrive] report upload failed: {exc}", level="error")
+        return None
+
+
 def _run_gdrive_poller() -> None:
     """Background loop: poll the configured Drive folder for new receipts."""
     seen = _load_gdrive_seen()
@@ -5628,6 +5661,9 @@ async def get_gdrive(request: Request):
     out["connected"] = bool(_gdrive_token())
     out["configured"] = bool(cfg.folder_id and cfg.client_id and _gdrive_token())
     out["multiuser"] = multiuser.ENABLED
+    _block = _load_config().get("gdrive") or {}
+    out["provisioned"] = bool((_block.get("tree") or {}).get("output"))
+    out["upload_output"] = bool(_block.get("upload_output"))
     return JSONResponse(out)
 
 
@@ -5657,6 +5693,38 @@ async def set_gdrive(body: GDriveSettingsRequest, request: Request):
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/settings/gdrive/provision")
+async def gdrive_provision(request: Request):
+    """Create (or reuse) the ``Receipt App/{Intake,Output}`` tree in the user's Drive,
+    point the poller's intake at the provisioned Intake folder, and enable uploading
+    finished reports into dated Output subfolders. Requires a connected account with
+    the drive.file scope."""
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    if not _gdrive_token():
+        return JSONResponse({"ok": False, "error": "Connect Google Drive first."},
+                            status_code=400)
+    service = _build_gdrive_service()
+    if service is None:
+        return JSONResponse({"ok": False, "error": "Could not build the Drive client."},
+                            status_code=400)
+    try:
+        tree = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: gdrive_intake.provision_tree(service))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Provisioning failed: {exc}"},
+                            status_code=400)
+    cfg = _load_config()
+    block = cfg.get("gdrive") or {}
+    block["tree"] = tree
+    block["folder_id"] = tree["intake"]    # poller now reads the provisioned Intake
+    block["upload_output"] = True
+    cfg["gdrive"] = block
+    _save_config(cfg)
+    return JSONResponse({"ok": True, "tree": tree})
 
 
 @app.get("/settings/gdrive/auth-url")

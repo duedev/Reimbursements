@@ -40,7 +40,18 @@ except Exception:  # pragma: no cover - keep the module importable standalone
 _SCOPE_URLS = {
     "drive.readonly": "https://www.googleapis.com/auth/drive.readonly",
     "drive.file":     "https://www.googleapis.com/auth/drive.file",
+    # Identity + Gmail (receive) scopes for the optional "Sign in with Google" path
+    # that doubles as the per-user intake bridge. Sending always goes through the
+    # shared ESP, so gmail.send is deliberately NOT requested.
+    "openid":         "openid",
+    "email":          "https://www.googleapis.com/auth/userinfo.email",
+    "profile":        "https://www.googleapis.com/auth/userinfo.profile",
+    "gmail.readonly": "https://www.googleapis.com/auth/gmail.readonly",
 }
+
+# The scope set "Sign in with Google" requests: identity (login) + Drive tree
+# (drive.file) + Gmail receive (gmail.readonly). No gmail.send — see above.
+GOOGLE_LOGIN_SCOPES = ("openid", "email", "profile", "drive.file", "gmail.readonly")
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 # Bound network calls so an unreachable host fails fast rather than hanging a poll.
 GDRIVE_TIMEOUT = int(os.getenv("GDRIVE_TIMEOUT", "30"))
@@ -266,6 +277,91 @@ def revoke_token(refresh_token: str) -> bool:
             return 200 <= resp.status < 300
     except Exception:
         return False
+
+
+# ── Drive folder tree + output upload (write side; needs drive.file scope) ────────
+# Auto-provision one "Receipt App" tree in the user's Drive: an Intake/ folder the
+# user scans/drops receipts into (the poller pulls from it) and an Output/ folder
+# where each report run lands in a dated subfolder holding the workbook AND the
+# processed receipt images. Uses drive.file scope, so the app only ever sees the
+# folders/files it created — never the rest of the user's Drive.
+
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+def _media_file(path, mime: str | None = None):
+    """Build a MediaFileUpload (lazy import so the module loads without the libs).
+    Monkeypatched in tests the way ``_download_media`` is."""
+    from googleapiclient.http import MediaFileUpload  # lazy
+    return MediaFileUpload(str(path), mimetype=mime, resumable=False)
+
+
+def ensure_folder(service, name: str, parent_id: str | None = None) -> str:
+    """Find (or create) a folder by ``name`` under ``parent_id`` and return its id.
+
+    Idempotent: a second call with the same name+parent returns the existing id, so
+    the tree is provisioned once and reused. Only app-created folders are visible
+    under the drive.file scope, which is exactly what we want.
+    """
+    safe = (name or "").replace("'", "\\'")
+    q = (f"name = '{safe}' and mimeType = '{_FOLDER_MIME}' and trashed = false")
+    if parent_id:
+        q += f" and '{parent_id}' in parents"
+    resp = service.files().list(
+        q=q, spaces="drive", fields="files(id, name)", pageSize=10,
+    ).execute()
+    files = resp.get("files") or []
+    if files:
+        return files[0]["id"]
+    body = {"name": name, "mimeType": _FOLDER_MIME}
+    if parent_id:
+        body["parents"] = [parent_id]
+    created = service.files().create(body=body, fields="id").execute()
+    return created["id"]
+
+
+def upload_file(service, path, parent_id: str, *, name: str | None = None,
+                mime: str | None = None) -> str:
+    """Upload one local file into ``parent_id`` and return the new Drive file id."""
+    path = Path(path)
+    body = {"name": name or path.name, "parents": [parent_id]}
+    media = _media_file(path, mime)
+    created = service.files().create(
+        body=body, media_body=media, fields="id",
+    ).execute()
+    return created["id"]
+
+
+def provision_tree(service, root_name: str = "Receipt App") -> dict:
+    """Ensure the ``Receipt App/{Intake,Output}`` tree exists; return its folder ids
+    as ``{"root":…, "intake":…, "output":…}``."""
+    root = ensure_folder(service, root_name)
+    intake = ensure_folder(service, "Intake", root)
+    output = ensure_folder(service, "Output", root)
+    return {"root": root, "intake": intake, "output": output}
+
+
+def upload_report_bundle(service, output_parent_id: str, date_str: str,
+                         workbook_path, receipt_paths) -> dict:
+    """Upload a report run to ``Output/<date_str>/``: the workbook at the top and the
+    processed receipt images under a ``receipts/`` subfolder (the per-run archive).
+
+    Returns a summary ``{"date_folder":id, "workbook":id|None, "receipts":[ids]}``.
+    Individual receipt failures are skipped (best-effort), never aborting the run.
+    """
+    date_folder = ensure_folder(service, date_str, output_parent_id)
+    summary = {"date_folder": date_folder, "workbook": None, "receipts": []}
+    if workbook_path and Path(workbook_path).exists():
+        summary["workbook"] = upload_file(service, workbook_path, date_folder)
+    paths = [p for p in (receipt_paths or []) if p and Path(p).exists()]
+    if paths:
+        receipts_folder = ensure_folder(service, "receipts", date_folder)
+        for p in paths:
+            try:
+                summary["receipts"].append(upload_file(service, p, receipts_folder))
+            except Exception:
+                continue
+    return summary
 
 
 def test_connection(service, config: GDriveConfig) -> dict:
