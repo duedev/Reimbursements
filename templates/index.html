@@ -1841,6 +1841,27 @@
        hidden adv-only cards collapse out cleanly. -->
   <div class="settings-grid">
 
+  <!-- Users (multi-user admin only; shown by loadUsers() when signed in as admin) -->
+  <div class="card" id="users-card" style="display:none;grid-column:1/-1">
+    <div class="card-title">Users</div>
+    <p class="section-desc">
+      Manage who can sign in to this instance. Each user gets a private board,
+      results, reports and folders no one else can see.
+    </p>
+    <div id="users-list" class="users-list"></div>
+    <div class="users-add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <input id="nu-username" placeholder="username" autocomplete="off"
+             style="flex:1;min-width:120px">
+      <input id="nu-password" type="password" placeholder="password (min 6 chars)"
+             autocomplete="new-password" style="flex:1;min-width:140px">
+      <label class="check-label" style="font-size:12px;gap:5px">
+        <input type="checkbox" id="nu-admin"> admin
+      </label>
+      <button class="btn btn-primary" id="nu-add-btn" onclick="createUser()">Add user</button>
+    </div>
+    <div id="users-msg" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+  </div>
+
   <!-- AI Models -->
   <div class="card adv-only" id="config-card">
     <div class="card-title">AI Model</div>
@@ -7239,8 +7260,11 @@ function _muShowUserChip(me) {
     document.getElementById('mu-userbox-name').textContent =
       (me.display || me.user_id) + (me.is_admin ? ' · admin' : '');
     box.classList.remove('hidden');
+    loadUsers(me);   // populate the admin Users card (no-op for non-admins)
   } else {
     box.classList.add('hidden');
+    const uc = document.getElementById('users-card');
+    if (uc) uc.style.display = 'none';
   }
 }
 
@@ -7276,6 +7300,97 @@ async function muSubmit() {
 async function muLogout() {
   try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
   location.reload();
+}
+
+// ── Admin: user management (Settings → Users) ─────────────────────────────────
+let _muCurrentUser = '';
+
+function _usersMsg(text, ok) {
+  const el = document.getElementById('users-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+}
+
+// Show + populate the Users card only for an admin in multi-user mode.
+async function loadUsers(me) {
+  const card = document.getElementById('users-card');
+  if (!card) return;
+  if (!me || !me.multiuser || !me.is_admin) { card.style.display = 'none'; return; }
+  _muCurrentUser = me.user_id || '';
+  card.style.display = '';
+  let list;
+  try { list = await fetch('/users').then(r => r.json()); }
+  catch (e) { return; }
+  const rows = (list.users || []).map(u => {
+    const isSelf = u.user_id === _muCurrentUser;
+    const adminBadge = u.is_admin
+      ? `<span class="k-review-badge k-approved-badge" title="Administrator">admin</span>` : '';
+    const adminBtn = isSelf ? ''
+      : `<button class="btn-sm" onclick="toggleAdmin('${escJs(u.user_id)}',${u.is_admin ? 'false' : 'true'})">${u.is_admin ? 'Revoke admin' : 'Make admin'}</button>`;
+    const delBtn = isSelf ? ''
+      : `<button class="btn-sm btn-danger" onclick="deleteUser('${escJs(u.user_id)}')">Delete</button>`;
+    return `<div class="users-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border,#2a2a2a)">
+      <span style="font-weight:600">${esc(u.display || u.user_id)}</span>
+      <span style="font-size:11px;color:var(--muted)">${esc(u.user_id)}</span>
+      ${adminBadge}
+      <span style="flex:1"></span>
+      <button class="btn-sm" onclick="resetPassword('${escJs(u.user_id)}')">Reset password</button>
+      ${adminBtn}${delBtn}
+    </div>`;
+  }).join('');
+  document.getElementById('users-list').innerHTML = rows ||
+    '<div style="font-size:12px;color:var(--muted)">No users yet.</div>';
+}
+
+async function createUser() {
+  const username = (document.getElementById('nu-username').value || '').trim();
+  const password = document.getElementById('nu-password').value || '';
+  const is_admin = document.getElementById('nu-admin').checked;
+  if (!username || !password) { _usersMsg('Username and password are required.', false); return; }
+  const r = await fetch('/users', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, is_admin }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) {
+    document.getElementById('nu-username').value = '';
+    document.getElementById('nu-password').value = '';
+    document.getElementById('nu-admin').checked = false;
+    _usersMsg('User created.', true);
+    loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser });
+  } else {
+    _usersMsg(j.error || 'Could not create the user.', false);
+  }
+}
+
+async function deleteUser(uid) {
+  if (!confirm(`Delete user "${uid}"? Their data folders remain on disk.`)) return;
+  const r = await fetch('/users/' + encodeURIComponent(uid), { method: 'DELETE' });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) { _usersMsg('User deleted.', true); loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser }); }
+  else _usersMsg(j.error || 'Could not delete the user.', false);
+}
+
+async function resetPassword(uid) {
+  const pw = prompt(`New password for "${uid}" (min 6 chars):`);
+  if (pw == null) return;
+  const r = await fetch('/users/' + encodeURIComponent(uid) + '/password', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw }),
+  });
+  const j = await r.json().catch(() => ({}));
+  _usersMsg(r.ok && j.ok ? 'Password updated.' : (j.error || 'Could not update the password.'), r.ok && j.ok);
+}
+
+async function toggleAdmin(uid, makeAdmin) {
+  const r = await fetch('/users/' + encodeURIComponent(uid) + '/admin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_admin: makeAdmin }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser });
+  else _usersMsg(j.error || 'Could not change admin status.', false);
 }
 
 async function initMultiuser() {

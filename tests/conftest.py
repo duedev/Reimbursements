@@ -42,6 +42,10 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     # generate/send can't mark a later test's identical receipt "already sent".
     mu_mod = sys.modules.get("multiuser")
     if mu_mod is not None:
+        # Multi-user now defaults ON in production; pin the suite to single-user so
+        # the ~700 existing tests keep exercising the byte-for-byte single-user path.
+        # Tests that need multi-user opt in via the `mu` fixture (which sets it True).
+        monkeypatch.setattr(mu_mod, "ENABLED", False, raising=False)
         try:
             ws = mu_mod.default_workspace()
             ws.sent_ledger.clear()

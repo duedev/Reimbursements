@@ -99,3 +99,11 @@ def test_benchmark_table_is_height_capped(page):
     # The benchmark table is scroll-capped so up to 100 rows can't blow out the page.
     assert "#bench-body { max-height:" in page
     assert "overflow-y: auto" in page
+
+
+def test_users_admin_card_present(page):
+    # The admin user-management card exists (shown by loadUsers for an admin in MU).
+    assert 'id="users-card"' in page
+    assert 'onclick="createUser()"' in page
+    assert "async function loadUsers(" in page
+    assert "/users" in page

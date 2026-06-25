@@ -41,9 +41,11 @@ from pathlib import Path
 
 # ── Feature flag & identity rules ───────────────────────────────────────────────
 
-# Read live off this attribute (not a frozen env snapshot) so tests can flip it
-# with ``monkeypatch.setattr(multiuser, "ENABLED", True)``.
-ENABLED: bool = os.getenv("MULTIUSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+# Multi-user is the DEFAULT now: an unset (or empty) ``MULTIUSER_ENABLED`` means ON.
+# Opt OUT explicitly with ``MULTIUSER_ENABLED=false`` (or 0/no/off) for a classic
+# single-user, no-login install. Read live off this attribute (not a frozen env
+# snapshot) so tests can flip it with ``monkeypatch.setattr(multiuser, "ENABLED", …)``.
+ENABLED: bool = os.getenv("MULTIUSER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 # The single-user / fallback identity. Real users may never claim this id, so the
 # default workspace's root (today's ``output/``) can never collide with a per-user

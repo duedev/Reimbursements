@@ -201,10 +201,39 @@ def test_end_to_end_data_isolation_over_http(mu):
 
 
 def test_single_user_mode_needs_no_login():
-    # Flag off (default): /me reports a synthetic admin and nothing is gated.
+    # Flag off (conftest pins it off): /me reports a synthetic admin, nothing gated.
+    # NB: production now DEFAULTS multi-user ON — see test_multiuser_default_on.
     c = TestClient(server.app)
     me = c.get("/me").json()
     assert me == {"multiuser": False, "authenticated": True,
                   "user_id": "default", "display": "", "is_admin": True}
     assert c.get("/stats").status_code == 200
     assert c.get("/multiuser/status").json()["enabled"] is False
+
+
+@pytest.mark.parametrize("env_val,expected", [
+    (None,    "True"),    # unset → ON (the new default)
+    ("",      "True"),    # empty → ON
+    ("true",  "True"),
+    ("1",     "True"),
+    ("false", "False"),   # explicit opt-out
+    ("0",     "False"),
+    ("off",   "False"),
+])
+def test_multiuser_default_on(env_val, expected):
+    """Import-time parsing: MULTIUSER_ENABLED now defaults ON. Run in a subprocess
+    so reloading the module can't disturb the in-process registry/proxies."""
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {k: v for k, v in os.environ.items() if k != "MULTIUSER_ENABLED"}
+    if env_val is not None:
+        env["MULTIUSER_ENABLED"] = env_val
+    out = subprocess.run(
+        [sys.executable, "-c", "import multiuser; print(multiuser.ENABLED)"],
+        cwd=root, env=env, capture_output=True, text=True,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == expected
