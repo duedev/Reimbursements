@@ -108,6 +108,12 @@ class Workspace:
         self.item_cache_lock = threading.Lock()
         self.status_timestamps: dict[str, float] = {}
         self.status_ts_lock = threading.Lock()
+        # Sent-ledger: identity of every receipt already included in a sent report,
+        # so re-adds can be skipped (with an override). ``last_report_date`` is a
+        # cheap max-receipt-date watermark for an at-a-glance "already sent" hint.
+        self.sent_ledger: list[dict] = []
+        self.sent_ledger_lock = threading.Lock()
+        self.last_report_date: str = ""
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"<Workspace {self.user_id!r} root={self.root}>"

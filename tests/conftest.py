@@ -38,6 +38,16 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     # Clear the OpenRouter daily-request tally so counts don't bleed across tests.
     if pr_mod is not None and hasattr(pr_mod, "reset_openrouter_usage"):
         pr_mod.reset_openrouter_usage()
+    # Clear the per-workspace sent-ledger so receipts recorded by one test's
+    # generate/send can't mark a later test's identical receipt "already sent".
+    mu_mod = sys.modules.get("multiuser")
+    if mu_mod is not None:
+        try:
+            ws = mu_mod.default_workspace()
+            ws.sent_ledger.clear()
+            ws.last_report_date = ""
+        except Exception:
+            pass
     if request.node.get_closest_marker("no_path_isolation"):
         yield
         return

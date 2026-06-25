@@ -589,6 +589,17 @@
     .k-card .k-amount  { color: var(--success); font-weight: 600; }
     .k-card .k-summary { font-size: 11px; color: var(--muted); margin-top: 5px; font-style: italic; line-height: 1.4; }
     .k-card .k-flag    { font-size: 11px; color: var(--danger); margin-top: 4px; }
+    .k-card .k-already-sent {
+      font-size: 11px; color: var(--warn, #d97706); margin-top: 5px;
+      background: rgba(217,119,6,0.10); border: 1px solid rgba(217,119,6,0.30);
+      border-radius: 6px; padding: 4px 6px; display: flex; align-items: center;
+      gap: 6px; flex-wrap: wrap;
+    }
+    .k-card .k-include-btn {
+      font-size: 10px; padding: 2px 7px; border-radius: 5px; cursor: pointer;
+      border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    }
+    .k-card .k-include-btn:hover { background: var(--accent); color: #fff; }
 
     .k-card .k-cat-badge {
       display: inline-block;
@@ -3332,6 +3343,19 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
       inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    // Sent-ledger: surface a receipt already included in a previously sent report,
+    // with an "Include anyway" override (and an "included" badge once overridden).
+    if (data._already_sent && !data._force_included) {
+      const rpt = (data._already_sent.report || '');
+      const when = (data._already_sent.date || '');
+      inner += `<div class="k-already-sent" title="This receipt's vendor/date/amount matches one already included in a sent report — it's excluded from the next report unless you include it.">`
+            + `&#128229; Already reported${rpt ? ' in ' + esc(rpt) : ''}${when ? ' (' + esc(when) + ')' : ''}`
+            + `<button class="k-include-btn" onclick="event.stopPropagation();forceIncludeReceipt('${escJs(filename)}',true)">Include anyway</button>`
+            + `</div>`;
+    } else if (data._force_included && data._already_sent) {
+      inner += `<div class="k-meta" style="color:var(--accent)">&#10003; Included despite earlier report`
+            + `<button class="k-include-btn" onclick="event.stopPropagation();forceIncludeReceipt('${escJs(filename)}',false)" style="margin-left:6px">Undo</button></div>`;
+    }
     if (data.notes) inner += `<div class="k-note" title="${esc(data.notes)}" style="font-size:11px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">&#128203; ${esc(data.notes.length > 60 ? data.notes.slice(0, 57) + '…' : data.notes)}</div>`;
     if (status === 'done' && data._proc_seconds) {
       const oi = _ocrEngineInfo(data._ocr_engine);
@@ -3939,6 +3963,24 @@ window.dismissCard = async function(filename) {
     });
   } catch (_) {}
   loadStats();
+  _updateGenerateCard();
+};
+
+// Override the sent-ledger skip: include (or re-exclude) a receipt flagged as
+// already reported in a previous report.
+window.forceIncludeReceipt = async function(filename, include) {
+  try {
+    const resp = await fetch('/results/force-include', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, include }),
+    });
+    const j = await resp.json();
+    if (j.ok && j.data) {
+      const card = receiptCards[filename];
+      if (card) { card.data = Object.assign({}, card.data, j.data); refreshCard(filename); }
+    }
+  } catch (_) {}
   _updateGenerateCard();
 };
 
