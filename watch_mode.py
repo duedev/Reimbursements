@@ -95,6 +95,10 @@ def load_email_config() -> dict:
         "from":    pick("smtp_from", "SMTP_FROM"),
         "to":      pick("email_to",  "EMAIL_TO"),
         "subject": pick("email_subject", "EMAIL_SUBJECT", "Weekly Reimbursement Report"),
+        # Optional per-report templates (placeholders like {employee}/{date}/{total});
+        # blank falls back to email_template defaults inside render_report_email.
+        "subject_template": pick("subject_template", "EMAIL_SUBJECT_TEMPLATE"),
+        "body_template":    pick("body_template", "EMAIL_BODY_TEMPLATE"),
     }
 
 
@@ -207,29 +211,45 @@ def build_report(state: dict, client: OpenAI | None = None) -> Path:
     return out_path
 
 
-def send_workbook_email(workbook_path: Path, receipt_count: int) -> dict:
-    """Email an existing workbook via the configured SMTP account.
+def send_workbook_email(workbook_path: Path, receipt_count: int,
+                        context: dict | None = None) -> dict:
+    """Email an existing workbook via the configured SMTP / ESP account.
 
     Shared by watch-mode reports and the scheduled-export task in scheduler.py.
+    When ``context`` is given (employee/date/total/job…), the subject and body are
+    rendered from the per-report templates (see email_template); otherwise a simple
+    default subject/body is used. Sending always uses the ONE shared identity — the
+    per-user detail lives in the templated content, not the sender.
     """
+    import email_template
+
     cfg = load_email_config()
     if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
         return {"ok": False, "error": "SMTP not configured. Set host, username, password and recipient in Settings → Email."}
 
     sender = cfg["from"] or cfg["user"]
     recipients = _recipients(cfg["to"])
+
+    ctx = dict(context or {})
+    ctx.setdefault("count", receipt_count)
+    ctx.setdefault("date", datetime.now().strftime("%B %d, %Y"))
+    ctx.setdefault("report_name", workbook_path.name)
+    full_ctx = email_template.build_context(**{
+        k: ctx[k] for k in ("employee", "count", "total", "date",
+                            "job_name", "job_number", "report_name") if k in ctx
+    })
+    subject, body_text = email_template.render_report_email(
+        full_ctx,
+        subject_template=cfg.get("subject_template") or cfg.get("subject"),
+        body_template=cfg.get("body_template"),
+    )
     try:
         msg = MIMEMultipart()
         msg["From"]    = sender
         msg["To"]      = cfg["to"]
-        msg["Subject"] = cfg["subject"]
+        msg["Subject"] = subject
 
-        body = MIMEText(
-            f"Please find attached the reimbursement report generated on "
-            f"{datetime.now().strftime('%B %d, %Y')}.\n\n"
-            f"Receipts processed: {receipt_count}\n",
-            "plain",
-        )
+        body = MIMEText(body_text, "plain")
         msg.attach(body)
 
         with open(workbook_path, "rb") as f:
@@ -288,7 +308,17 @@ def send_report(state: dict, client: OpenAI | None = None) -> dict:
     except Exception as exc:
         return {"ok": False, "error": f"Report generation failed: {exc}"}
 
-    result = send_workbook_email(out_path, len(state.get("receipts", [])))
+    receipts = state.get("receipts", [])
+    _total = 0.0
+    for r in receipts:
+        try:
+            _total += float(r.get("amount") or 0)
+        except (TypeError, ValueError):
+            pass
+    result = send_workbook_email(out_path, len(receipts), {
+        "employee": state.get("employee_name", EMPLOYEE_NAME),
+        "total": round(_total, 2),
+    })
     if result.get("ok"):
         state["last_emailed"] = datetime.now().date().isoformat()
         # Record every receipt that went into this report so the next one doesn't

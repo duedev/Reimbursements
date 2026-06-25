@@ -2325,6 +2325,30 @@
         <input type="text" id="email-subject" placeholder="Weekly Reimbursement Report" autocomplete="off">
       </label>
     </div>
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Per-report message templates (optional)</summary>
+      <p class="section-desc" style="margin-top:8px">
+        Reports always send from the one account above; these customise the subject &amp;
+        body per report. Placeholders:
+        <code>{employee}</code> <code>{date}</code> <code>{count}</code>
+        <code>{total}</code> <code>{job_name}</code> <code>{job_number}</code>
+        <code>{job_clause}</code> <code>{report_name}</code>. Leave blank for sensible
+        defaults. See <code>EMAIL_DELIVERABILITY.md</code>.
+      </p>
+      <div class="fields fields-1col">
+        <label>Subject template
+          <input type="text" id="email-subject-template"
+                 placeholder="Reimbursement report — {employee} — {date}" autocomplete="off">
+        </label>
+      </div>
+      <div class="fields fields-1col" style="margin-top:8px">
+        <label>Body template
+          <textarea id="email-body-template" rows="5"
+                    placeholder="Hello,&#10;&#10;Please find attached the reimbursement report for {employee}{job_clause}, generated on {date}.&#10;&#10;Receipts: {count}&#10;Total: {total}&#10;&#10;Thank you."
+                    style="width:100%;font-family:inherit"></textarea>
+        </label>
+      </div>
+    </details>
     <div class="action-row">
       <button class="btn btn-primary btn-sm" id="email-save-btn">Save email settings</button>
       <button class="btn btn-neutral btn-sm" id="email-test-btn">Send test email</button>
@@ -6210,6 +6234,8 @@ async function loadEmailSettings() {
     document.getElementById('email-from').value    = d.smtp_from || '';
     document.getElementById('email-to').value      = d.email_to || '';
     document.getElementById('email-subject').value = d.email_subject || '';
+    document.getElementById('email-subject-template').value = d.subject_template || '';
+    document.getElementById('email-body-template').value = d.body_template || '';
     // Show a placeholder dot-mask when a password is already stored
     document.getElementById('email-pass').placeholder = d.password_set ? '•••••••• (saved)' : '••••••••';
     const status = document.getElementById('email-config-status');
@@ -6232,6 +6258,8 @@ document.getElementById('email-save-btn').addEventListener('click', async () => 
         smtp_from:     document.getElementById('email-from').value.trim(),
         email_to:      document.getElementById('email-to').value.trim(),
         email_subject: document.getElementById('email-subject').value.trim(),
+        subject_template: document.getElementById('email-subject-template').value.trim(),
+        body_template:    document.getElementById('email-body-template').value,
       }),
     });
     const d = await res.json();

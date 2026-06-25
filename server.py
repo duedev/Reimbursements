@@ -5174,6 +5174,8 @@ class EmailSettingsRequest(BaseModel):
     smtp_from: str = ""
     email_to:  str = ""
     email_subject: str = "Weekly Reimbursement Report"
+    subject_template: str = ""   # blank = use email_subject / built-in default
+    body_template: str = ""      # blank = built-in default body
 
 
 @app.get("/settings/email")
@@ -5190,6 +5192,8 @@ async def get_email_settings():
         "smtp_from":     em["from"],
         "email_to":      em["to"],
         "email_subject": em["subject"],
+        "subject_template": em.get("subject_template", ""),
+        "body_template":    em.get("body_template", ""),
         "password_set":  password_set,
         "configured":    bool(em["host"] and em["user"] and em["to"] and password_set),
     })
@@ -5206,6 +5210,8 @@ async def save_email_settings(body: EmailSettingsRequest):
         email["smtp_from"]     = body.smtp_from.strip()
         email["email_to"]      = body.email_to.strip()
         email["email_subject"] = body.email_subject.strip() or "Weekly Reimbursement Report"
+        email["subject_template"] = body.subject_template.strip()
+        email["body_template"]    = body.body_template.strip()
         email.pop("smtp_pass", None)   # migrate any legacy secret out of the synced config
         if body.smtp_pass:             # blank keeps the previously saved password
             app_secrets.save_secret("smtp_pass", body.smtp_pass)
@@ -6423,9 +6429,24 @@ async def watch_send_email():
         count = _last_report_count = len(results_copy)
         built_results = results_copy
 
+    # Per-report context for the templated subject/body (sender stays shared).
+    with _results_lock:
+        _ctx_total = 0.0
+        for r in _results:
+            try:
+                _ctx_total += float(r.get("amount") or 0)
+            except (TypeError, ValueError):
+                pass
+        email_ctx = {
+            "employee":   _last_context.get("employee", ""),
+            "job_name":   _last_context.get("job_name", ""),
+            "job_number": _last_context.get("job_number", ""),
+            "total":      round(_ctx_total, 2),
+            "count":      count or 0,
+        }
     try:
         result = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: send_workbook_email(Path(path), count or 0)
+            None, lambda: send_workbook_email(Path(path), count or 0, email_ctx)
         )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

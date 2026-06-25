@@ -194,7 +194,7 @@ def test_watch_mode_ledger_skip_and_record(monkeypatch, tmp_path):
     out = tmp_path / "R1.xlsx"
     out.write_text("x")
     monkeypatch.setattr(wm, "generate_spreadsheet", lambda results, d, e: out)
-    monkeypatch.setattr(wm, "send_workbook_email", lambda p, n: {"ok": True})
+    monkeypatch.setattr(wm, "send_workbook_email", lambda p, n, ctx=None: {"ok": True})
     monkeypatch.setattr(wm, "load_email_config",
                         lambda: {"host": "h", "user": "u", "pass": "p", "to": "t",
                                  "from": "", "subject": "s", "port": 587})
