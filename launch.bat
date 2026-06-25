@@ -29,6 +29,12 @@ set "EXPORT_PATH="
 set /p EXPORT_PATH="   Tip: pick a Dropbox/Drive/OneDrive folder [%CD%\export]: "
 if "%EXPORT_PATH%"=="" set "EXPORT_PATH=%CD%\export"
 
+echo 4) AI model - where should the model that reads receipts run?
+echo    Bundled: ship a local model INSIDE Docker (offline, ~2-3 GB image).
+echo    Lite:    use an LM Studio on this computer, or OpenRouter (set up later).
+set "BUNDLE_LLM="
+set /p BUNDLE_LLM="   Bundle a local AI model? [y/N]: "
+
 if not exist "%INTAKE_PATH%" mkdir "%INTAKE_PATH%"
 if not exist "%OUTPUT_PATH%" mkdir "%OUTPUT_PATH%"
 if not exist "%EXPORT_PATH%" mkdir "%EXPORT_PATH%"
@@ -38,6 +44,20 @@ if not exist "%EXPORT_PATH%" mkdir "%EXPORT_PATH%"
     echo OUTPUT_PATH=%OUTPUT_PATH%
     echo EXPORT_PATH=%EXPORT_PATH%
 ) > .env
+if /i "%BUNDLE_LLM:~0,1%"=="y" (
+    (
+        echo COMPOSE_FILE=docker-compose.yml:docker-compose.bundled.yml
+        echo COMPOSE_PROFILES=bundled-llm
+        echo LMSTUDIO_BASE_URL=http://model-server:1234/v1
+    ) >> .env
+    echo Selected the bundled variant ^(AI model^).
+) else (
+    (
+        echo COMPOSE_FILE=docker-compose.yml:docker-compose.lite.yml
+        echo LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+    ) >> .env
+    echo Selected the lite variant ^(AI model^).
+)
 echo.
 echo Saved to .env - re-run "launch.bat --reconfigure" to change these.
 echo ---------------------------------------------------------------

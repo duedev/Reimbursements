@@ -95,6 +95,26 @@ python -m uvicorn server:app --reload
 
 ---
 
+## Choosing a build (bundled vs. lite)
+
+The same codebase ships as two self-selecting Docker variants — pick one with a
+compose overlay (the `launch.sh` / `launch.bat` wizard asks for you and writes the
+choice into `.env`):
+
+| Variant | Bundled model? | Bring up with | Env preset |
+|---|---|---|---|
+| **Lite** (default) | No — uses a host LM Studio or OpenRouter | `docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build` | `.env.lite.example` |
+| **Bundled** | Yes — always launches the in-Docker model | `docker compose -f docker-compose.yml -f docker-compose.bundled.yml up --build` | `.env.bundled.example` |
+
+- **Lite** is smaller and faster to start; bring your own model (an LM Studio on
+  the host at `http://host.docker.internal:1234/v1`, or OpenRouter via Settings →
+  AI Model). The bundled `model-server` is never built or started.
+- **Bundled** always runs a local model inside the stack (offline; ~2–3 GB image).
+  The `.env.bundled.example` preset sets `COMPOSE_PROFILES=bundled-llm` so a plain
+  `up` starts the model-server with no extra `--profile` flag.
+- Copy the matching preset to `.env` (it sets `COMPOSE_FILE` so plain
+  `docker compose up` uses the right overlay), or let the launcher do it.
+
 ## Bundled LLM (no external LM Studio)
 
 Prefer to run everything in one `docker compose up`? You can bundle a local model

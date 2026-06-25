@@ -1,0 +1,17 @@
+# Bundled-LLM variant overlay — ALWAYS launches the bundled local model.
+#
+#   cp .env.bundled.example .env        # sets COMPOSE_PROFILES=bundled-llm + the URL
+#   docker compose -f docker-compose.yml -f docker-compose.bundled.yml up --build
+#
+# The `model-server` service is defined (profile-gated) in the base
+# docker-compose.yml; `.env.bundled.example` sets COMPOSE_PROFILES=bundled-llm so
+# it always starts here, and this overlay points the app at it and waits for it to
+# pass its healthcheck before serving. The weights are baked into the image
+# (offline at runtime, ~2-3 GB) — swap them with MODEL_URL / MMPROJ_URL.
+services:
+  receipt-processor:
+    environment:
+      - LMSTUDIO_BASE_URL=http://model-server:1234/v1
+    depends_on:
+      model-server:
+        condition: service_healthy
