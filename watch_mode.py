@@ -40,6 +40,7 @@ from process_receipts import (
     make_client,
     rename_receipt_image,
     sort_key_for_receipt,
+    receipt_identity,
     _detect_duplicates,
 )
 
@@ -94,6 +95,10 @@ def load_email_config() -> dict:
         "from":    pick("smtp_from", "SMTP_FROM"),
         "to":      pick("email_to",  "EMAIL_TO"),
         "subject": pick("email_subject", "EMAIL_SUBJECT", "Weekly Reimbursement Report"),
+        # Optional per-report templates (placeholders like {employee}/{date}/{total});
+        # blank falls back to email_template defaults inside render_report_email.
+        "subject_template": pick("subject_template", "EMAIL_SUBJECT_TEMPLATE"),
+        "body_template":    pick("body_template", "EMAIL_BODY_TEMPLATE"),
     }
 
 
@@ -114,13 +119,23 @@ def load_state() -> dict:
             return json.loads(STATE_FILE.read_text())
         except Exception:
             pass
-    return {"employee_name": EMPLOYEE_NAME, "receipts": [], "last_emailed": None}
+    return {"employee_name": EMPLOYEE_NAME, "receipts": [], "last_emailed": None,
+            "sent_ledger": []}
 
 
 def save_state(state: dict) -> None:
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, default=str))
     tmp.replace(STATE_FILE)
+
+
+def _ledger_keys(state: dict) -> set:
+    """Identity keys of receipts already included in a sent report (this state)."""
+    out = set()
+    for e in state.get("sent_ledger") or []:
+        if isinstance(e, dict) and e.get("key"):
+            out.add(tuple(e["key"]))
+    return out
 
 
 # ── Processing ─────────────────────────────────────────────────────────────────
@@ -160,6 +175,13 @@ def process_inbox(client: OpenAI, state: dict) -> int:
         shutil.move(str(new_path), str(dest))
         print(f"[watch] Staged: {dest.name}  [{category.upper()}] ${data.get('amount', 0):.2f}")
 
+        # Sent-ledger dedup: a receipt already included in a previously sent report
+        # is staged (so it isn't re-processed) but not re-added to the report set.
+        key = receipt_identity(data)
+        if key[2] != 0 and key in _ledger_keys(state):
+            print(f"[watch] Already reported — skipping {dest.name}")
+            continue
+
         state["receipts"].append(data)
         save_state(state)
         processed += 1
@@ -172,6 +194,10 @@ def process_inbox(client: OpenAI, state: dict) -> int:
 def build_report(state: dict, client: OpenAI | None = None) -> Path:
     """Build the Excel from all accumulated state. Returns the output path."""
     results = list(state.get("receipts", []))
+    # Exclude any receipt already included in a previously sent report.
+    ledger = _ledger_keys(state)
+    if ledger:
+        results = [r for r in results if receipt_identity(r) not in ledger]
     if not results:
         raise ValueError("No receipts in state — nothing to build.")
 
@@ -185,29 +211,45 @@ def build_report(state: dict, client: OpenAI | None = None) -> Path:
     return out_path
 
 
-def send_workbook_email(workbook_path: Path, receipt_count: int) -> dict:
-    """Email an existing workbook via the configured SMTP account.
+def send_workbook_email(workbook_path: Path, receipt_count: int,
+                        context: dict | None = None) -> dict:
+    """Email an existing workbook via the configured SMTP / ESP account.
 
     Shared by watch-mode reports and the scheduled-export task in scheduler.py.
+    When ``context`` is given (employee/date/total/job…), the subject and body are
+    rendered from the per-report templates (see email_template); otherwise a simple
+    default subject/body is used. Sending always uses the ONE shared identity — the
+    per-user detail lives in the templated content, not the sender.
     """
+    import email_template
+
     cfg = load_email_config()
     if not all([cfg["host"], cfg["user"], cfg["pass"], cfg["to"]]):
         return {"ok": False, "error": "SMTP not configured. Set host, username, password and recipient in Settings → Email."}
 
     sender = cfg["from"] or cfg["user"]
     recipients = _recipients(cfg["to"])
+
+    ctx = dict(context or {})
+    ctx.setdefault("count", receipt_count)
+    ctx.setdefault("date", datetime.now().strftime("%B %d, %Y"))
+    ctx.setdefault("report_name", workbook_path.name)
+    full_ctx = email_template.build_context(**{
+        k: ctx[k] for k in ("employee", "count", "total", "date",
+                            "job_name", "job_number", "report_name") if k in ctx
+    })
+    subject, body_text = email_template.render_report_email(
+        full_ctx,
+        subject_template=cfg.get("subject_template") or cfg.get("subject"),
+        body_template=cfg.get("body_template"),
+    )
     try:
         msg = MIMEMultipart()
         msg["From"]    = sender
         msg["To"]      = cfg["to"]
-        msg["Subject"] = cfg["subject"]
+        msg["Subject"] = subject
 
-        body = MIMEText(
-            f"Please find attached the reimbursement report generated on "
-            f"{datetime.now().strftime('%B %d, %Y')}.\n\n"
-            f"Receipts processed: {receipt_count}\n",
-            "plain",
-        )
+        body = MIMEText(body_text, "plain")
         msg.attach(body)
 
         with open(workbook_path, "rb") as f:
@@ -266,9 +308,39 @@ def send_report(state: dict, client: OpenAI | None = None) -> dict:
     except Exception as exc:
         return {"ok": False, "error": f"Report generation failed: {exc}"}
 
-    result = send_workbook_email(out_path, len(state.get("receipts", [])))
+    receipts = state.get("receipts", [])
+    _total = 0.0
+    for r in receipts:
+        try:
+            _total += float(r.get("amount") or 0)
+        except (TypeError, ValueError):
+            pass
+    result = send_workbook_email(out_path, len(receipts), {
+        "employee": state.get("employee_name", EMPLOYEE_NAME),
+        "total": round(_total, 2),
+    })
     if result.get("ok"):
         state["last_emailed"] = datetime.now().date().isoformat()
+        # Record every receipt that went into this report so the next one doesn't
+        # re-send it (the sent-ledger dedup).
+        ledger = state.setdefault("sent_ledger", [])
+        seen = _ledger_keys(state)
+        now = int(time.time())
+        report_name = out_path.name
+        for r in state.get("receipts", []):
+            key = receipt_identity(r)
+            if key[2] == 0 or key in seen:
+                continue
+            seen.add(key)
+            ledger.append({
+                "key":      list(key),
+                "vendor":   r.get("vendor") or "",
+                "date":     r.get("date") or "",
+                "amount":   key[2],
+                "filename": r.get("_new_filename") or r.get("_file") or "",
+                "report":   report_name,
+                "sent_at":  now,
+            })
         save_state(state)
     return result
 

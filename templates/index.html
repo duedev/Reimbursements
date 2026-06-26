@@ -589,6 +589,17 @@
     .k-card .k-amount  { color: var(--success); font-weight: 600; }
     .k-card .k-summary { font-size: 11px; color: var(--muted); margin-top: 5px; font-style: italic; line-height: 1.4; }
     .k-card .k-flag    { font-size: 11px; color: var(--danger); margin-top: 4px; }
+    .k-card .k-already-sent {
+      font-size: 11px; color: var(--warn, #d97706); margin-top: 5px;
+      background: rgba(217,119,6,0.10); border: 1px solid rgba(217,119,6,0.30);
+      border-radius: 6px; padding: 4px 6px; display: flex; align-items: center;
+      gap: 6px; flex-wrap: wrap;
+    }
+    .k-card .k-include-btn {
+      font-size: 10px; padding: 2px 7px; border-radius: 5px; cursor: pointer;
+      border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    }
+    .k-card .k-include-btn:hover { background: var(--accent); color: #fff; }
 
     .k-card .k-cat-badge {
       display: inline-block;
@@ -1830,6 +1841,27 @@
        hidden adv-only cards collapse out cleanly. -->
   <div class="settings-grid">
 
+  <!-- Users (multi-user admin only; shown by loadUsers() when signed in as admin) -->
+  <div class="card" id="users-card" style="display:none;grid-column:1/-1">
+    <div class="card-title">Users</div>
+    <p class="section-desc">
+      Manage who can sign in to this instance. Each user gets a private board,
+      results, reports and folders no one else can see.
+    </p>
+    <div id="users-list" class="users-list"></div>
+    <div class="users-add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <input id="nu-username" placeholder="username" autocomplete="off"
+             style="flex:1;min-width:120px">
+      <input id="nu-password" type="password" placeholder="password (min 6 chars)"
+             autocomplete="new-password" style="flex:1;min-width:140px">
+      <label class="check-label" style="font-size:12px;gap:5px">
+        <input type="checkbox" id="nu-admin"> admin
+      </label>
+      <button class="btn btn-primary" id="nu-add-btn" onclick="createUser()">Add user</button>
+    </div>
+    <div id="users-msg" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+  </div>
+
   <!-- AI Models -->
   <div class="card adv-only" id="config-card">
     <div class="card-title">AI Model</div>
@@ -2293,6 +2325,30 @@
         <input type="text" id="email-subject" placeholder="Weekly Reimbursement Report" autocomplete="off">
       </label>
     </div>
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Per-report message templates (optional)</summary>
+      <p class="section-desc" style="margin-top:8px">
+        Reports always send from the one account above; these customise the subject &amp;
+        body per report. Placeholders:
+        <code>{employee}</code> <code>{date}</code> <code>{count}</code>
+        <code>{total}</code> <code>{job_name}</code> <code>{job_number}</code>
+        <code>{job_clause}</code> <code>{report_name}</code>. Leave blank for sensible
+        defaults. See <code>EMAIL_DELIVERABILITY.md</code>.
+      </p>
+      <div class="fields fields-1col">
+        <label>Subject template
+          <input type="text" id="email-subject-template"
+                 placeholder="Reimbursement report — {employee} — {date}" autocomplete="off">
+        </label>
+      </div>
+      <div class="fields fields-1col" style="margin-top:8px">
+        <label>Body template
+          <textarea id="email-body-template" rows="5"
+                    placeholder="Hello,&#10;&#10;Please find attached the reimbursement report for {employee}{job_clause}, generated on {date}.&#10;&#10;Receipts: {count}&#10;Total: {total}&#10;&#10;Thank you."
+                    style="width:100%;font-family:inherit"></textarea>
+        </label>
+      </div>
+    </details>
     <div class="action-row">
       <button class="btn btn-primary btn-sm" id="email-save-btn">Save email settings</button>
       <button class="btn btn-neutral btn-sm" id="email-test-btn">Send test email</button>
@@ -2426,9 +2482,16 @@
       <button class="btn btn-neutral btn-sm" id="gd-connect-btn">🔗 Connect Google</button>
       <button class="btn btn-neutral btn-sm" id="gd-test-btn">🔌 Test connection</button>
       <button class="btn btn-neutral btn-sm" id="gd-poll-btn">⬇ Check for receipts now</button>
+      <button class="btn btn-neutral btn-sm hidden" id="gd-provision-btn"
+              title="Create a 'Receipt App' folder in your Drive with an Intake folder to scan receipts into and an Output folder where each report (workbook + receipt images) is saved in a dated subfolder.">📁 Set up Drive folders</button>
       <button class="btn btn-cancel btn-sm hidden" id="gd-disconnect-btn">Disconnect &amp; revoke</button>
       <span id="gd-status" class="status-note"></span>
     </div>
+    <p class="status-note hidden" id="gd-provisioned-note" style="margin-top:6px">
+      ✓ Drive folders set up — receipts scanned into <strong>Receipt App/Intake</strong> are
+      pulled in, and each report is saved to <strong>Receipt App/Output/&lt;date&gt;</strong>
+      (workbook + receipt images).
+    </p>
     <!-- One-time consent: open the URL, approve, paste back the code (or the full
          redirected localhost URL — the app extracts ?code=). -->
     <div id="gd-connect-panel" class="hidden" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px">
@@ -3332,6 +3395,19 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
       inner += `<div class="k-summary">"${esc(summaryText)}"</div>`;
     }
     if (data._flag) inner += `<div class="k-flag">&#9888; ${esc(data._flag)}</div>`;
+    // Sent-ledger: surface a receipt already included in a previously sent report,
+    // with an "Include anyway" override (and an "included" badge once overridden).
+    if (data._already_sent && !data._force_included) {
+      const rpt = (data._already_sent.report || '');
+      const when = (data._already_sent.date || '');
+      inner += `<div class="k-already-sent" title="This receipt's vendor/date/amount matches one already included in a sent report — it's excluded from the next report unless you include it.">`
+            + `&#128229; Already reported${rpt ? ' in ' + esc(rpt) : ''}${when ? ' (' + esc(when) + ')' : ''}`
+            + `<button class="k-include-btn" onclick="event.stopPropagation();forceIncludeReceipt('${escJs(filename)}',true)">Include anyway</button>`
+            + `</div>`;
+    } else if (data._force_included && data._already_sent) {
+      inner += `<div class="k-meta" style="color:var(--accent)">&#10003; Included despite earlier report`
+            + `<button class="k-include-btn" onclick="event.stopPropagation();forceIncludeReceipt('${escJs(filename)}',false)" style="margin-left:6px">Undo</button></div>`;
+    }
     if (data.notes) inner += `<div class="k-note" title="${esc(data.notes)}" style="font-size:11px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">&#128203; ${esc(data.notes.length > 60 ? data.notes.slice(0, 57) + '…' : data.notes)}</div>`;
     if (status === 'done' && data._proc_seconds) {
       const oi = _ocrEngineInfo(data._ocr_engine);
@@ -3939,6 +4015,24 @@ window.dismissCard = async function(filename) {
     });
   } catch (_) {}
   loadStats();
+  _updateGenerateCard();
+};
+
+// Override the sent-ledger skip: include (or re-exclude) a receipt flagged as
+// already reported in a previous report.
+window.forceIncludeReceipt = async function(filename, include) {
+  try {
+    const resp = await fetch('/results/force-include', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, include }),
+    });
+    const j = await resp.json();
+    if (j.ok && j.data) {
+      const card = receiptCards[filename];
+      if (card) { card.data = Object.assign({}, card.data, j.data); refreshCard(filename); }
+    }
+  } catch (_) {}
   _updateGenerateCard();
 };
 
@@ -6147,6 +6241,8 @@ async function loadEmailSettings() {
     document.getElementById('email-from').value    = d.smtp_from || '';
     document.getElementById('email-to').value      = d.email_to || '';
     document.getElementById('email-subject').value = d.email_subject || '';
+    document.getElementById('email-subject-template').value = d.subject_template || '';
+    document.getElementById('email-body-template').value = d.body_template || '';
     // Show a placeholder dot-mask when a password is already stored
     document.getElementById('email-pass').placeholder = d.password_set ? '•••••••• (saved)' : '••••••••';
     const status = document.getElementById('email-config-status');
@@ -6169,6 +6265,8 @@ document.getElementById('email-save-btn').addEventListener('click', async () => 
         smtp_from:     document.getElementById('email-from').value.trim(),
         email_to:      document.getElementById('email-to').value.trim(),
         email_subject: document.getElementById('email-subject').value.trim(),
+        subject_template: document.getElementById('email-subject-template').value.trim(),
+        body_template:    document.getElementById('email-body-template').value,
       }),
     });
     const d = await res.json();
@@ -6334,6 +6432,10 @@ async function loadGDrive() {
     document.getElementById('gd-poll').value      = d.poll_interval || 300;
     document.getElementById('gd-client-secret').placeholder = d.client_secret_set ? '•••••••• (saved)' : '••••••••';
     document.getElementById('gd-disconnect-btn').classList.toggle('hidden', !d.connected);
+    // The "Set up Drive folders" button appears once connected; the note shows once
+    // the Intake/Output tree has been provisioned.
+    document.getElementById('gd-provision-btn').classList.toggle('hidden', !d.connected);
+    document.getElementById('gd-provisioned-note').classList.toggle('hidden', !d.provisioned);
     const status = document.getElementById('gd-config-status');
     if (d.connected) {
       status.textContent = d.enabled ? '✓ Connected & active' : '✓ Connected (off)';
@@ -6472,6 +6574,26 @@ document.getElementById('gd-poll-btn').addEventListener('click', async () => {
     status.textContent = `Failed: ${err.message}`;
     status.style.color = 'var(--danger)';
   } finally { btn.disabled = false; btn.textContent = '⬇ Check for receipts now'; }
+});
+
+document.getElementById('gd-provision-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('gd-provision-btn');
+  const status = document.getElementById('gd-status');
+  btn.disabled = true; btn.textContent = 'Setting up…'; status.textContent = '';
+  try {
+    const d = await (await fetch('/settings/gdrive/provision', { method: 'POST' })).json();
+    if (d.ok) {
+      status.textContent = 'Drive folders ready (Receipt App / Intake + Output).';
+      status.style.color = 'var(--success)';
+      loadGDrive();
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '📁 Set up Drive folders'; }
 });
 
 async function loadSchedule() {
@@ -7197,8 +7319,11 @@ function _muShowUserChip(me) {
     document.getElementById('mu-userbox-name').textContent =
       (me.display || me.user_id) + (me.is_admin ? ' · admin' : '');
     box.classList.remove('hidden');
+    loadUsers(me);   // populate the admin Users card (no-op for non-admins)
   } else {
     box.classList.add('hidden');
+    const uc = document.getElementById('users-card');
+    if (uc) uc.style.display = 'none';
   }
 }
 
@@ -7234,6 +7359,97 @@ async function muSubmit() {
 async function muLogout() {
   try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
   location.reload();
+}
+
+// ── Admin: user management (Settings → Users) ─────────────────────────────────
+let _muCurrentUser = '';
+
+function _usersMsg(text, ok) {
+  const el = document.getElementById('users-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+}
+
+// Show + populate the Users card only for an admin in multi-user mode.
+async function loadUsers(me) {
+  const card = document.getElementById('users-card');
+  if (!card) return;
+  if (!me || !me.multiuser || !me.is_admin) { card.style.display = 'none'; return; }
+  _muCurrentUser = me.user_id || '';
+  card.style.display = '';
+  let list;
+  try { list = await fetch('/users').then(r => r.json()); }
+  catch (e) { return; }
+  const rows = (list.users || []).map(u => {
+    const isSelf = u.user_id === _muCurrentUser;
+    const adminBadge = u.is_admin
+      ? `<span class="k-review-badge k-approved-badge" title="Administrator">admin</span>` : '';
+    const adminBtn = isSelf ? ''
+      : `<button class="btn-sm" onclick="toggleAdmin('${escJs(u.user_id)}',${u.is_admin ? 'false' : 'true'})">${u.is_admin ? 'Revoke admin' : 'Make admin'}</button>`;
+    const delBtn = isSelf ? ''
+      : `<button class="btn-sm btn-danger" onclick="deleteUser('${escJs(u.user_id)}')">Delete</button>`;
+    return `<div class="users-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border,#2a2a2a)">
+      <span style="font-weight:600">${esc(u.display || u.user_id)}</span>
+      <span style="font-size:11px;color:var(--muted)">${esc(u.user_id)}</span>
+      ${adminBadge}
+      <span style="flex:1"></span>
+      <button class="btn-sm" onclick="resetPassword('${escJs(u.user_id)}')">Reset password</button>
+      ${adminBtn}${delBtn}
+    </div>`;
+  }).join('');
+  document.getElementById('users-list').innerHTML = rows ||
+    '<div style="font-size:12px;color:var(--muted)">No users yet.</div>';
+}
+
+async function createUser() {
+  const username = (document.getElementById('nu-username').value || '').trim();
+  const password = document.getElementById('nu-password').value || '';
+  const is_admin = document.getElementById('nu-admin').checked;
+  if (!username || !password) { _usersMsg('Username and password are required.', false); return; }
+  const r = await fetch('/users', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, is_admin }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) {
+    document.getElementById('nu-username').value = '';
+    document.getElementById('nu-password').value = '';
+    document.getElementById('nu-admin').checked = false;
+    _usersMsg('User created.', true);
+    loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser });
+  } else {
+    _usersMsg(j.error || 'Could not create the user.', false);
+  }
+}
+
+async function deleteUser(uid) {
+  if (!confirm(`Delete user "${uid}"? Their data folders remain on disk.`)) return;
+  const r = await fetch('/users/' + encodeURIComponent(uid), { method: 'DELETE' });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) { _usersMsg('User deleted.', true); loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser }); }
+  else _usersMsg(j.error || 'Could not delete the user.', false);
+}
+
+async function resetPassword(uid) {
+  const pw = prompt(`New password for "${uid}" (min 6 chars):`);
+  if (pw == null) return;
+  const r = await fetch('/users/' + encodeURIComponent(uid) + '/password', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw }),
+  });
+  const j = await r.json().catch(() => ({}));
+  _usersMsg(r.ok && j.ok ? 'Password updated.' : (j.error || 'Could not update the password.'), r.ok && j.ok);
+}
+
+async function toggleAdmin(uid, makeAdmin) {
+  const r = await fetch('/users/' + encodeURIComponent(uid) + '/admin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_admin: makeAdmin }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) loadUsers({ multiuser: true, is_admin: true, user_id: _muCurrentUser });
+  else _usersMsg(j.error || 'Could not change admin status.', false);
 }
 
 async function initMultiuser() {

@@ -181,6 +181,12 @@ _current_run_lock = multiuser.lock_proxy("current_run_lock")
 _seen_intake  = multiuser.container_proxy("seen_intake")
 _seen_lock    = multiuser.lock_proxy("seen_lock")
 
+# Sent-ledger: identity of every receipt already included in a sent report, so a
+# re-add can be skipped (with an "Include anyway" override). Per-workspace.
+_sent_ledger      = multiuser.container_proxy("sent_ledger")
+_sent_ledger_lock = multiuser.lock_proxy("sent_ledger_lock")
+SENT_LEDGER_MAX = int(os.getenv("SENT_LEDGER_MAX", "5000"))
+
 # Why each quarantined file in REJECTED_FOLDER was moved there, keyed by its
 # on-disk name. The folder is the source of truth for *which* files exist; this
 # just remembers the human-readable reason to show alongside each one.
@@ -1099,7 +1105,8 @@ def _safe_receipt_data(data) -> dict:
               "_new_filename", "_file", "_compressed_file", "flags", "_confidence", "_error",
               "_amount_verified", "_proc_seconds", "_ocr_seconds",
               "_distill_seconds", "_ocr_engine", "_steps", "_field_boxes",
-              "_llm_field_boxes", "_review_required", "_approved", "notes"):
+              "_llm_field_boxes", "_review_required", "_approved", "notes",
+              "_already_sent", "_force_included"):
         if k in data:
             out[k] = data[k]
     return out
@@ -1109,6 +1116,68 @@ def _cache_item(item: dict) -> None:
     """Cache queue item data for stall recovery."""
     with _item_cache_lock:
         _item_cache[item["filename"]] = item
+
+
+# ── Sent-ledger (dedup across reports) ─────────────────────────────────────────
+# When a report is *sent*, every receipt in it is recorded here (per workspace).
+# A later add of the same receipt (same vendor/date/amount) is then surfaced as
+# "already reported" and excluded from the next report unless the user overrides.
+
+def _already_sent(identity: tuple) -> dict | None:
+    """Return the ledger entry matching this receipt identity, else None.
+
+    An amount of 0 means "no usable identity" — never treated as a match.
+    JSON round-trips the stored key as a list, so compare list-to-list.
+    """
+    if not identity or identity[2] == 0:
+        return None
+    target = list(identity)
+    with _sent_ledger_lock:
+        for entry in _sent_ledger:
+            if entry.get("key") == target:
+                return entry
+    return None
+
+
+def _record_sent(results, report_name: str = "") -> int:
+    """Record every receipt in a just-sent report into the per-workspace ledger.
+
+    Returns the number of newly-added entries. Skips receipts with no usable
+    amount (unreliable identity) and de-dupes against what's already recorded.
+    Also advances the ``last_report_date`` max-date watermark.
+    """
+    now = int(time.time())
+    added = 0
+    with _sent_ledger_lock:
+        existing = {tuple(e["key"]) for e in _sent_ledger if e.get("key")}
+        ws = multiuser.cur_ws()
+        max_date = ws.last_report_date or ""
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            key = _pr.receipt_identity(r)
+            if key[2] == 0:
+                continue
+            d = r.get("date") or ""
+            if d and d > max_date:
+                max_date = d
+            if tuple(key) in existing:
+                continue
+            existing.add(tuple(key))
+            _sent_ledger.append({
+                "key":      list(key),
+                "vendor":   r.get("vendor") or "",
+                "date":     d,
+                "amount":   key[2],
+                "filename": r.get("_new_filename") or r.get("_file") or "",
+                "report":   report_name,
+                "sent_at":  now,
+            })
+            added += 1
+        if len(_sent_ledger) > SENT_LEDGER_MAX:  # cap, dropping oldest
+            del _sent_ledger[:len(_sent_ledger) - SENT_LEDGER_MAX]
+        ws.last_report_date = max_date
+    return added
 
 
 # ── State persistence ──────────────────────────────────────────────────────────
@@ -1130,12 +1199,17 @@ def _persist_state() -> None:
             bench_copy = list(_benchmarks)
         with _runs_lock:
             runs_copy = copy.deepcopy(_runs)
+        with _sent_ledger_lock:
+            ledger_copy = copy.deepcopy(_sent_ledger)
+            last_report_date = multiuser.cur_ws().last_report_date
         payload = {
             "results":      results_copy,
             "kanban":       kanban_copy,
             "last_context": context_copy,
             "benchmarks":   bench_copy,
             "runs":         runs_copy,
+            "sent_ledger":  ledger_copy,
+            "last_report_date": last_report_date,
             # Live OpenRouter daily-request tally so the cap count survives a
             # restart within the same UTC day (a stale day is dropped on restore).
             "openrouter_usage": _pr.get_openrouter_usage(),
@@ -1199,6 +1273,16 @@ def _restore_state() -> None:
             _runs.clear()
             _runs.extend(r for r in runs if isinstance(r, dict))
             del _runs[RUNS_MAX_ENTRIES:]
+
+    ledger = payload.get("sent_ledger")
+    if isinstance(ledger, list):
+        with _sent_ledger_lock:
+            _sent_ledger.clear()
+            _sent_ledger.extend(e for e in ledger if isinstance(e, dict))
+            del _sent_ledger[SENT_LEDGER_MAX:]
+    lrd = payload.get("last_report_date")
+    if isinstance(lrd, str):
+        multiuser.cur_ws().last_report_date = lrd
 
     # OpenRouter usage is an instance-level (cross-user) daily tally — only the
     # default workspace's state file is its source of truth, so per-user restores
@@ -1696,6 +1780,21 @@ def _run_batch(batch: list, batch_uid: str) -> None:
             if not data.get("_review_required"):
                 data["_review_required"] = bool(data.get("_flag")) or (conf is not None and conf < 60)
             data.setdefault("_approved", False)
+
+            # Sent-ledger: if this receipt was already included in a previously
+            # sent report, mark it "already reported" so the board surfaces it and
+            # report generation excludes it — unless the user forced it back in.
+            if not data.get("_force_included"):
+                prior = _already_sent(_pr.receipt_identity(data))
+                if prior:
+                    data["_already_sent"] = {
+                        "report":  prior.get("report", ""),
+                        "date":    prior.get("date", ""),
+                        "sent_at": prior.get("sent_at"),
+                    }
+                    if not data.get("_flag"):
+                        data["_flag"] = "Already reported in a previously sent report"
+                    data["_review_required"] = True
 
             # Append classify and audit steps to the log
             _pr._append_step(steps, "classify", "Classify", f"category: {category}")
@@ -2232,11 +2331,19 @@ def _get_schedule_config() -> scheduler.ScheduleConfig:
         return scheduler.ScheduleConfig(enabled=False)
 
 
+_last_schedule_snapshot: list[dict] = []
+
+
 def _schedule_results_snapshot() -> tuple[list[dict], str]:
+    global _last_schedule_snapshot
     with _results_lock:
         results = copy.deepcopy(_results)
         employee = _last_context.get("employee", "Employee")
+    # Drop receipts already included in a previously sent report (sent-ledger dedup).
+    results = [r for r in results
+               if not r.get("_already_sent") or r.get("_force_included")]
     _detect_duplicates(results)
+    _last_schedule_snapshot = results
     return results, employee
 
 
@@ -2244,6 +2351,13 @@ def _on_schedule_result(report: dict) -> None:
     cfg = _load_config()
     cfg.setdefault("schedule", {})["last_run"] = report
     _save_config(cfg)
+    # Record what was just exported so it isn't re-sent in the next scheduled run.
+    if report.get("ok") and "email" in (report.get("delivered") or []):
+        try:
+            _record_sent(_last_schedule_snapshot, report.get("filename", ""))
+            _persist_state()
+        except Exception as exc:  # never let bookkeeping break the scheduler
+            print(f"[schedule] sent-ledger record failed: {exc}")
     if report.get("ok"):
         msg = (f"Scheduled export complete: {report.get('filename')} "
                f"({', '.join(report.get('delivered', []))})")
@@ -3155,6 +3269,11 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
         results_copy = [r for r in results_copy
                         if r.get("_file") not in excl and r.get("_new_filename") not in excl]
 
+    # Exclude receipts already included in a previously sent report (the sent-ledger
+    # dedup) unless the user forced one back in via "Include anyway".
+    results_copy = [r for r in results_copy
+                    if not r.get("_already_sent") or r.get("_force_included")]
+
     if not results_copy:
         return HTMLResponse("No processed results available", status_code=404)
 
@@ -3252,6 +3371,20 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
     _last_report_count = len(results_copy)
 
     filename = Path(output_path).name
+
+    # Record everything that went into this workbook in the sent-ledger so the same
+    # receipts aren't re-included in a future report. Idempotent (de-duped inside).
+    _record_sent(results_copy, filename)
+    _persist_state()
+
+    # Mirror the report into the user's Drive Output/<date>/ folder (workbook + the
+    # processed receipt images) when Drive output upload is enabled. Best-effort, off
+    # the request path so a slow/failed upload never blocks the download.
+    _img_paths = [r.get("_image_path") for r in results_copy if r.get("_image_path")]
+    _date_str = time.strftime("%Y-%m-%d")
+    threading.Thread(
+        target=lambda: _gdrive_upload_report(output_path, _img_paths, _date_str),
+        daemon=True).start()
 
     async def file_stream():
         with open(output_path, "rb") as f:
@@ -3589,6 +3722,45 @@ async def set_approval(body: ApprovalRequest):
         if target is None:
             return JSONResponse({"ok": False, "error": "Receipt not found"}, status_code=404)
         target["_approved"] = body.approved
+        updated = dict(target)
+
+    kanban_key = updated.get("_file") or body.filename
+    _update_kanban(kanban_key, "done", updated)
+    _persist_state()
+    _broadcast({
+        "type":     "kanban_update",
+        "filename": kanban_key,
+        "status":   "done",
+        "data":     _safe_receipt_data(updated),
+        "model":    "",
+    })
+    return JSONResponse({"ok": True, "data": _safe_receipt_data(updated)})
+
+
+class ForceIncludeRequest(BaseModel):
+    filename: str
+    include: bool = True
+
+
+@app.post("/results/force-include")
+async def force_include(body: ForceIncludeRequest):
+    """Override the sent-ledger skip for a receipt flagged "already reported".
+
+    With include=True the receipt is forced back into the next report; with
+    include=False it is re-excluded. Clears the "already reported" headline flag
+    so the card no longer reads as a warning once the user has decided.
+    """
+    with _results_lock:
+        target = None
+        for r in _results:
+            if r.get("_file") == body.filename or r.get("_new_filename") == body.filename:
+                target = r
+                break
+        if target is None:
+            return JSONResponse({"ok": False, "error": "Receipt not found"}, status_code=404)
+        target["_force_included"] = bool(body.include)
+        if body.include and (target.get("_flag") or "").lower().startswith("already reported"):
+            target["_flag"] = ""
         updated = dict(target)
 
     kanban_key = updated.get("_file") or body.filename
@@ -5011,6 +5183,8 @@ class EmailSettingsRequest(BaseModel):
     smtp_from: str = ""
     email_to:  str = ""
     email_subject: str = "Weekly Reimbursement Report"
+    subject_template: str = ""   # blank = use email_subject / built-in default
+    body_template: str = ""      # blank = built-in default body
 
 
 @app.get("/settings/email")
@@ -5027,6 +5201,8 @@ async def get_email_settings():
         "smtp_from":     em["from"],
         "email_to":      em["to"],
         "email_subject": em["subject"],
+        "subject_template": em.get("subject_template", ""),
+        "body_template":    em.get("body_template", ""),
         "password_set":  password_set,
         "configured":    bool(em["host"] and em["user"] and em["to"] and password_set),
     })
@@ -5043,6 +5219,8 @@ async def save_email_settings(body: EmailSettingsRequest):
         email["smtp_from"]     = body.smtp_from.strip()
         email["email_to"]      = body.email_to.strip()
         email["email_subject"] = body.email_subject.strip() or "Weekly Reimbursement Report"
+        email["subject_template"] = body.subject_template.strip()
+        email["body_template"]    = body.body_template.strip()
         email.pop("smtp_pass", None)   # migrate any legacy secret out of the synced config
         if body.smtp_pass:             # blank keeps the previously saved password
             app_secrets.save_secret("smtp_pass", body.smtp_pass)
@@ -5411,6 +5589,30 @@ def _gdrive_poll(cfg: gdrive_intake.GDriveConfig, seen: set[str]) -> dict:
     return summary
 
 
+def _gdrive_upload_report(workbook_path, receipt_paths, date_str: str) -> dict | None:
+    """Best-effort: upload a finished report (workbook + receipt images) to the
+    provisioned ``Receipt App/Output/<date_str>/`` Drive folder. No-op unless Drive
+    is connected, the tree was provisioned, and output upload is enabled."""
+    block = _load_config().get("gdrive") or {}
+    if not block.get("upload_output"):
+        return None
+    output_id = (block.get("tree") or {}).get("output", "")
+    if not output_id or not _gdrive_token():
+        return None
+    service = _build_gdrive_service()
+    if service is None:
+        return None
+    try:
+        summary = gdrive_intake.upload_report_bundle(
+            service, output_id, date_str, workbook_path, receipt_paths)
+        _emit_log(f"[gdrive] uploaded report to Output/{date_str} "
+                  f"({len(summary.get('receipts', []))} receipt(s))")
+        return summary
+    except Exception as exc:
+        _emit_log(f"[gdrive] report upload failed: {exc}", level="error")
+        return None
+
+
 def _run_gdrive_poller() -> None:
     """Background loop: poll the configured Drive folder for new receipts."""
     seen = _load_gdrive_seen()
@@ -5459,6 +5661,9 @@ async def get_gdrive(request: Request):
     out["connected"] = bool(_gdrive_token())
     out["configured"] = bool(cfg.folder_id and cfg.client_id and _gdrive_token())
     out["multiuser"] = multiuser.ENABLED
+    _block = _load_config().get("gdrive") or {}
+    out["provisioned"] = bool((_block.get("tree") or {}).get("output"))
+    out["upload_output"] = bool(_block.get("upload_output"))
     return JSONResponse(out)
 
 
@@ -5488,6 +5693,38 @@ async def set_gdrive(body: GDriveSettingsRequest, request: Request):
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/settings/gdrive/provision")
+async def gdrive_provision(request: Request):
+    """Create (or reuse) the ``Receipt App/{Intake,Output}`` tree in the user's Drive,
+    point the poller's intake at the provisioned Intake folder, and enable uploading
+    finished reports into dated Output subfolders. Requires a connected account with
+    the drive.file scope."""
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    if not _gdrive_token():
+        return JSONResponse({"ok": False, "error": "Connect Google Drive first."},
+                            status_code=400)
+    service = _build_gdrive_service()
+    if service is None:
+        return JSONResponse({"ok": False, "error": "Could not build the Drive client."},
+                            status_code=400)
+    try:
+        tree = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: gdrive_intake.provision_tree(service))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Provisioning failed: {exc}"},
+                            status_code=400)
+    cfg = _load_config()
+    block = cfg.get("gdrive") or {}
+    block["tree"] = tree
+    block["folder_id"] = tree["intake"]    # poller now reads the provisioned Intake
+    block["upload_output"] = True
+    cfg["gdrive"] = block
+    _save_config(cfg)
+    return JSONResponse({"ok": True, "tree": tree})
 
 
 @app.get("/settings/gdrive/auth-url")
@@ -6215,12 +6452,18 @@ async def watch_send_email():
     global _last_report_path, _last_report_count
     path = _last_report_path
     count = _last_report_count
+    # Receipts built on the fly here (cached reports were already recorded at
+    # generate time); recorded into the sent-ledger only after the send succeeds.
+    built_results: list | None = None
 
     # No workbook kept (e.g. the app restarted, or the user never clicked Generate)
     # — build one now from the live completed results so Send Report Now still works.
     if not path or not Path(path).exists():
         with _results_lock:
             results_copy = copy.deepcopy(_results)
+        # Drop receipts already sent in a prior report (unless forced back in).
+        results_copy = [r for r in results_copy
+                        if not r.get("_already_sent") or r.get("_force_included")]
         if not results_copy:
             return JSONResponse(
                 {"ok": False,
@@ -6252,11 +6495,32 @@ async def watch_send_email():
             )
         path = _last_report_path = str(built)
         count = _last_report_count = len(results_copy)
+        built_results = results_copy
 
+    # Per-report context for the templated subject/body (sender stays shared).
+    with _results_lock:
+        _ctx_total = 0.0
+        for r in _results:
+            try:
+                _ctx_total += float(r.get("amount") or 0)
+            except (TypeError, ValueError):
+                pass
+        email_ctx = {
+            "employee":   _last_context.get("employee", ""),
+            "job_name":   _last_context.get("job_name", ""),
+            "job_number": _last_context.get("job_number", ""),
+            "total":      round(_ctx_total, 2),
+            "count":      count or 0,
+        }
     try:
         result = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: send_workbook_email(Path(path), count or 0)
+            None, lambda: send_workbook_email(Path(path), count or 0, email_ctx)
         )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    # On a successful send of a freshly-built report, record its receipts so they
+    # aren't re-sent in a future report.
+    if result.get("ok") and built_results is not None:
+        _record_sent(built_results, Path(path).name)
+        _persist_state()
     return JSONResponse(result, status_code=200 if result.get("ok") else 503)

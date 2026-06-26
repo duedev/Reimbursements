@@ -163,7 +163,14 @@ def run_export(cfg: ScheduleConfig, results: list[dict], employee: str,
         except Exception as exc:
             report["dropbox_error"] = str(exc)
     if cfg.email:
-        mail = send_workbook_email(out_path, len(results))
+        _total = 0.0
+        for r in results:
+            try:
+                _total += float(r.get("amount") or 0)
+            except (TypeError, ValueError):
+                pass
+        mail = send_workbook_email(out_path, len(results),
+                                   {"employee": employee, "total": round(_total, 2)})
         if mail.get("ok"):
             report["delivered"].append("email")
         else:

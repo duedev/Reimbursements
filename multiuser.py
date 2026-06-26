@@ -41,9 +41,11 @@ from pathlib import Path
 
 # ── Feature flag & identity rules ───────────────────────────────────────────────
 
-# Read live off this attribute (not a frozen env snapshot) so tests can flip it
-# with ``monkeypatch.setattr(multiuser, "ENABLED", True)``.
-ENABLED: bool = os.getenv("MULTIUSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+# Multi-user is the DEFAULT now: an unset (or empty) ``MULTIUSER_ENABLED`` means ON.
+# Opt OUT explicitly with ``MULTIUSER_ENABLED=false`` (or 0/no/off) for a classic
+# single-user, no-login install. Read live off this attribute (not a frozen env
+# snapshot) so tests can flip it with ``monkeypatch.setattr(multiuser, "ENABLED", …)``.
+ENABLED: bool = os.getenv("MULTIUSER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 # The single-user / fallback identity. Real users may never claim this id, so the
 # default workspace's root (today's ``output/``) can never collide with a per-user
@@ -86,6 +88,9 @@ class Workspace:
         self.rejected_folder   = self.root / "unsupported"
         self.archive_folder    = self.root / "archive"
         self.state_file        = self.root / ".app_state.json"
+        # Per-user secrets (Google refresh token, etc.) live alongside the state file
+        # so one user's connected accounts never leak into another's workspace.
+        self.secrets_file      = self.root / ".app_secrets.json"
 
         # In-memory runtime state (the same shapes server.py has always used).
         self.results: list[dict] = []
@@ -108,6 +113,12 @@ class Workspace:
         self.item_cache_lock = threading.Lock()
         self.status_timestamps: dict[str, float] = {}
         self.status_ts_lock = threading.Lock()
+        # Sent-ledger: identity of every receipt already included in a sent report,
+        # so re-adds can be skipped (with an override). ``last_report_date`` is a
+        # cheap max-receipt-date watermark for an at-a-glance "already sent" hint.
+        self.sent_ledger: list[dict] = []
+        self.sent_ledger_lock = threading.Lock()
+        self.last_report_date: str = ""
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"<Workspace {self.user_id!r} root={self.root}>"

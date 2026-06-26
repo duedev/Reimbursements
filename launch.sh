@@ -23,13 +23,38 @@ if [ ! -f .env ] || [ "$1" = "--reconfigure" ]; then
     read -e -r -p "   Tip: choose a Dropbox/Drive/OneDrive folder for automatic cloud upload [$PWD/export]: " EXPORT_PATH
     EXPORT_PATH="${EXPORT_PATH:-$PWD/export}"
 
+    echo ""
+    echo "4) AI model — where should the model that reads receipts run?"
+    echo "   • Bundled: ship a local model INSIDE Docker (offline, ~2-3 GB image)."
+    echo "   • Lite:    use an LM Studio on this computer, or OpenRouter (set up later)."
+    read -e -r -p "   Bundle a local AI model? [y/N]: " BUNDLE_LLM
+    case "$BUNDLE_LLM" in
+        [Yy]*) VARIANT="bundled" ;;
+        *)     VARIANT="lite" ;;
+    esac
+
     mkdir -p "$INTAKE_PATH" "$OUTPUT_PATH" "$EXPORT_PATH"
     cat > .env <<EOF
 INTAKE_PATH=$INTAKE_PATH
 OUTPUT_PATH=$OUTPUT_PATH
 EXPORT_PATH=$EXPORT_PATH
 EOF
+    if [ "$VARIANT" = "bundled" ]; then
+        cat >> .env <<EOF
+# Bundled-LLM variant — see .env.bundled.example
+COMPOSE_FILE=docker-compose.yml:docker-compose.bundled.yml
+COMPOSE_PROFILES=bundled-llm
+LMSTUDIO_BASE_URL=http://model-server:1234/v1
+EOF
+    else
+        cat >> .env <<EOF
+# Lite variant (no bundled model) — see .env.lite.example
+COMPOSE_FILE=docker-compose.yml:docker-compose.lite.yml
+LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+EOF
+    fi
     echo ""
+    echo "Selected the ${VARIANT} variant (AI model)."
     echo "Saved to .env — re-run './launch.sh --reconfigure' to change these."
     echo "──────────────────────────────────────────────────────────────"
     echo ""

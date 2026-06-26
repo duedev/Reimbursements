@@ -420,6 +420,47 @@ to the model — nothing hidden or clipped.
 
 ## Recent changes (append newest at top)
 
+- **2026-06-25 (sent-ledger dedup, build variants, multi-user default, Drive tree, ESP):**
+  Suite **711 → 748** green. Five-part feature batch (branch
+  `claude/receipt-dedup-multiuser-jnbw7l`, PR #89).
+  * **Sent-ledger dedup (A).** New `process_receipts.receipt_identity(data)` — one shared
+    `(vendor,date,amount)` key for both `_detect_duplicates` and the cross-report ledger.
+    `multiuser.Workspace` gains `sent_ledger` + `last_report_date` (per-user, persisted in
+    `.app_state.json`; watch-mode parity in `state["sent_ledger"]`). `server._record_sent`
+    runs on every send path (`/generate-spreadsheet`, `/watch/send-email`, scheduler,
+    watch `send_report`); the worker marks a re-added receipt `_already_sent` and report
+    generation excludes it unless `_force_included`. New `POST /results/force-include`
+    override + an "Already reported / Include anyway" card banner. `tests/test_sent_ledger.py`.
+  * **Bundled vs lite build variants (B).** `docker-compose.bundled.yml` (always runs
+    `model-server`, app URL → `model-server:1234`, health-gated `depends_on`) and
+    `docker-compose.lite.yml` (never bundles). `.env.bundled.example` / `.env.lite.example`
+    presets set `COMPOSE_FILE` + `COMPOSE_PROFILES` so a plain `docker compose up` picks the
+    overlay; `launch.sh`/`launch.bat` wizard asks "Bundle a local AI model?". Base file keeps
+    the `bundled-llm` profile for backward compat. README "Choosing a build".
+    `tests/test_build_variants.py`.
+  * **Multi-user is now the DEFAULT (C).** `multiuser.ENABLED` defaults **ON** (unset/empty →
+    on; opt out `MULTIUSER_ENABLED=false`). `tests/conftest.py` pins the suite to single-user
+    so the existing path stays byte-for-byte; the `mu` fixture opts specific tests in. New
+    **Settings → Users** admin card (`loadUsers`/`createUser`/`deleteUser`/`resetPassword`/
+    `toggleAdmin`) wired to the existing `/users` routes — the previously-missing UI that made
+    multi-user "never come up". `.env.example` updated.
+  * **Email deliverability + templating (E).** `email_template.render_report_email(context,
+    subject_tmpl, body_tmpl)` (pure, safe `{placeholder}` substitution) renders a per-user/
+    per-report subject+body while sending stays through ONE shared SMTP/ESP identity (the
+    Outlook fix: custom domain + SPF/DKIM/DMARC over the existing `send_workbook_email`).
+    `/settings/email` carries `subject_template`/`body_template` (Settings editor). New
+    `EMAIL_DELIVERABILITY.md`. `tests/test_email_template.py`.
+  * **Google Drive tree + report mirroring (D, part 1).** `gdrive_intake.ensure_folder` /
+    `upload_file` / `provision_tree` (`Receipt App/Intake` + `Output`) / `upload_report_bundle`
+    (workbook + processed receipts into a dated `Output/<date>/receipts`). `POST
+    /settings/gdrive/provision` provisions the tree, points the poller intake at the
+    provisioned Intake, enables output upload; `_gdrive_upload_report` mirrors each generated
+    report best-effort. `GOOGLE_LOGIN_SCOPES` (openid/email/profile + drive.file +
+    gmail.readonly, **no** gmail.send) + per-user `Workspace.secrets_file` lay groundwork for
+    the optional "Sign in with Google" bridge. `tests/test_gdrive_tree.py`. **Deferred D
+    sub-phase:** the full Google-login-as-session + per-user Gmail intake (needs a Google Cloud
+    project / redirect URI to validate end-to-end).
+
 - **2026-06-23 (Dockerfile.model port fix + docker mode detection via env URL):**
   Suite **711** green (no count change). Two bugs fixed together.
   * **Port mismatch fixed** — `Dockerfile.model` had `EXPOSE 11434` and `--port 11434`

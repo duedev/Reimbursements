@@ -1,0 +1,17 @@
+# Lite variant overlay — NEVER launches a bundled local model.
+#
+#   cp .env.lite.example .env           # point LMSTUDIO_BASE_URL at your LLM
+#   docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build
+#
+# Use this when the model runs elsewhere: an LM Studio on the host
+# (http://host.docker.internal:1234/v1, the default) or OpenRouter (configured in
+# the app's Settings → AI Model). The `model-server` service in the base file
+# stays gated behind the `bundled-llm` profile, so it is NOT built or started here
+# as long as COMPOSE_PROFILES does not enable it (the lite .env leaves it unset).
+#
+# This overlay only re-affirms the on-host default URL for clarity; override it in
+# .env to point anywhere else.
+services:
+  receipt-processor:
+    environment:
+      - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}

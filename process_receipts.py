@@ -3132,14 +3132,29 @@ def audit_warning_flags(data: dict, category: str) -> list[str]:
 
 # ── Duplicate detection ────────────────────────────────────────────────────────
 
+def receipt_identity(data: dict) -> tuple:
+    """Canonical identity of a receipt for dedup / the sent-ledger.
+
+    A single source of truth shared by ``_detect_duplicates`` (within-batch) and
+    the cross-report sent-ledger, so the key can never drift between them:
+    ``(vendor_lower_stripped, date_iso, amount_rounded2)``. ``amount`` of 0 means
+    "no usable amount" — callers treat that as a non-identity (skip dedup).
+    """
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return (
+        (data.get("vendor") or "").lower().strip(),
+        data.get("date") or "",
+        amount,
+    )
+
+
 def _detect_duplicates(results: list[dict]) -> None:
     seen: dict[tuple, int] = {}
     for i, r in enumerate(results):
-        key = (
-            (r.get("vendor") or "").lower().strip(),
-            r.get("date") or "",
-            round(float(r.get("amount") or 0), 2),
-        )
+        key = receipt_identity(r)
         if key[2] == 0:
             continue
         if key in seen:

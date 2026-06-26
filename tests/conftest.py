@@ -38,6 +38,20 @@ def _isolate_app_paths(request, tmp_path, monkeypatch):
     # Clear the OpenRouter daily-request tally so counts don't bleed across tests.
     if pr_mod is not None and hasattr(pr_mod, "reset_openrouter_usage"):
         pr_mod.reset_openrouter_usage()
+    # Clear the per-workspace sent-ledger so receipts recorded by one test's
+    # generate/send can't mark a later test's identical receipt "already sent".
+    mu_mod = sys.modules.get("multiuser")
+    if mu_mod is not None:
+        # Multi-user now defaults ON in production; pin the suite to single-user so
+        # the ~700 existing tests keep exercising the byte-for-byte single-user path.
+        # Tests that need multi-user opt in via the `mu` fixture (which sets it True).
+        monkeypatch.setattr(mu_mod, "ENABLED", False, raising=False)
+        try:
+            ws = mu_mod.default_workspace()
+            ws.sent_ledger.clear()
+            ws.last_report_date = ""
+        except Exception:
+            pass
     if request.node.get_closest_marker("no_path_isolation"):
         yield
         return
