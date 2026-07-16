@@ -198,7 +198,11 @@ Once receipts reach the Completed column, a **Generate Spreadsheet** card appear
 
 The card also has a **Require review & approval** checkbox. While it's on, generation is blocked (button disabled, and the server rejects the request) until every completed receipt has been approved via the **✎ Review & Approve** button on its card — the status line shows how many receipts still need review and updates live as you approve them. The Review & Approve dialog opens with a **large, zoomed view of the receipt right beside the editable fields and Approve button**, so you can verify and approve in one step (click the image to go full-screen).
 
-**Per diem (optional):** tick **Add per diem** on the same card to add a daily allowance to the report — enter the dollar amount reimbursed per day and the number of days. The workbook's Summary sheet gains a **Per Diem** line (showing the `days × $rate/day` breakdown) between the category subtotals and the grand TOTAL, and the TOTAL includes it. The setting persists between sessions; it applies to reports generated from the web UI (Generate / Send Report Now) — the watch-mode/scheduler exports stay receipts-only.
+**Per diem (optional):** tick **Add per diem** on the same card to add a daily allowance to the report — enter the dollar amount reimbursed per day and the number of days. The workbook's Summary sheet gains a **Per Diem** line (showing the `days × $rate/day` breakdown) between the category subtotals and the grand TOTAL, and the TOTAL includes it.
+
+**Phone service (optional):** tick **Add phone service** to add the fixed **$63.00/month** phone reimbursement — a month picker appears (the last 12 months) and you select every month to include. The Summary sheet gains a **Phone Service** line (`N months × $63.00/month`, with the selected months listed) that the grand TOTAL includes. The $63 rate is fixed in the UI; if the price ever changes it can be overridden with a `rate` key under `phone_service` in `.app_config.json`.
+
+Both settings persist between sessions; they apply to reports generated from the web UI (Generate / Send Report Now) — the watch-mode/scheduler exports stay receipts-only.
 
 ---
 
@@ -509,6 +513,7 @@ Numbers**.
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
 | `GET/POST` | `/settings/per-diem` | Opt-in daily allowance (`enabled`, `rate`, `days`) added as a Per Diem line + included in the report TOTAL |
+| `GET/POST` | `/settings/phone-service` | Opt-in fixed $63/month phone reimbursement (`enabled`, `months` as `YYYY-MM` list) added as a Phone Service line + included in the report TOTAL |
 | `GET/POST` | `/settings/onedrive` | OneDrive intake config; plus `POST /settings/onedrive/device-code`, `/connect`, `/disconnect`, `/test`, `/poll-now` (see `ONEDRIVE_IMPORT.md`) |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |

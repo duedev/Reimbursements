@@ -353,21 +353,32 @@ to the model — nothing hidden or clipped.
   connect panel shows the code + auto-polls). Guides-tab card walks the Azure setup.
 - Tests: `tests/test_onedrive_intake.py` (+19).
 
-## Per diem (opt-in daily allowance on the report)
+## Report allowances (opt-in per diem + phone service)
 
-- Workspace → Export Report card: **"Add per diem"** checkbox reveals `$rate/day ×
-  days` inputs (`#pd-enabled`/`#pd-rate`/`#pd-days`/`#pd-total`; `loadPerDiem`, saves
-  on change). Persisted in `cfg["per_diem"]` via `GET/POST /settings/per-diem`
-  (clamped: finite rate ≥ 0, int days 0..3650 — inf/nan refused).
-- `generate_spreadsheet(..., per_diem=)` → `build_themed_workbook(..., per_diem=)`:
-  `spreadsheet_theme.normalize_per_diem` validates (None unless enabled + finite
-  rate>0 + days>0), `_write_per_diem` writes a "Per Diem" line (breakdown `N days ×
-  $R/day` in merged A:D, amount in F) between the misc subtotal and TOTAL, and
-  `_write_total` gains `per_diem_row` so the grand TOTAL formula includes it. The
-  Insights sheet deliberately stays receipt-analytics only.
+- Workspace → Export Report card, two opt-in allowance lines added to the report:
+  * **Per diem** — "Add per diem" checkbox reveals `$rate/day × days` inputs
+    (`#pd-enabled`/`#pd-rate`/`#pd-days`/`#pd-total`; `loadPerDiem`, saves on change).
+    Persisted `cfg["per_diem"]` via `GET/POST /settings/per-diem` (clamped: finite
+    rate ≥ 0, int days 0..3650 — inf/nan refused).
+  * **Phone service** — "Add phone service" checkbox reveals a **month picker**
+    (last 12 months + any saved older months, chip checkboxes; `#ph-enabled`/
+    `#ph-month-grid`/`#ph-total`; `loadPhoneService`, saves on change). The rate is
+    FIXED at `server.PHONE_MONTHLY_RATE` = **$63/month** (UI shows it, endpoint never
+    accepts one; a config-file `phone_service.rate` override exists, bad values fall
+    back to 63). Persisted `cfg["phone_service"]` via `GET/POST
+    /settings/phone-service`; months are `YYYY-MM`, canonicalized (zero-padded via
+    strptime→strftime), deduped, sorted, capped 120 (`_valid_months`).
+- `generate_spreadsheet(..., per_diem=, phone=)` → `build_themed_workbook(...)`:
+  `spreadsheet_theme.normalize_per_diem` / `normalize_phone` validate (None unless
+  enabled + finite rate>0 + days/months present), the shared `_write_allowance_row`
+  writes each line (breakdown in merged A:D, amount in F; phone lists its months via
+  `month_label` in the G/Summary column with a fitted row height) between the misc
+  subtotal and TOTAL, and `_write_total(extra_rows=[...])` adds every allowance row
+  to the grand-TOTAL formula. The Insights sheet deliberately stays
+  receipt-analytics only.
 - Applied at both web build sites (`/generate-spreadsheet` + the Send-Report-Now
   fallback build); watch-mode/scheduler exports deliberately stay receipts-only.
-- Tests: `tests/test_per_diem.py` (+12).
+- Tests: `tests/test_per_diem.py` (+12), `tests/test_phone_service.py` (+12).
 
 ## Config / state / paths
 
@@ -380,7 +391,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **779 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **791 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -462,6 +473,22 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (phone-service reimbursement line):** Suite **779 → 791** green.
+  Same branch/PR as the batch below. Export Report card gains **"Add phone service"**
+  — a FIXED **$63/month** allowance (`server.PHONE_MONTHLY_RATE`; config-file
+  `phone_service.rate` override only, the endpoint/UI never set it) with a
+  **multi-month picker** (chip checkboxes for the last 12 months + any saved older
+  ones; saves on change). Persisted `cfg["phone_service"]` via new `GET/POST
+  /settings/phone-service`; months canonicalized to zero-padded `YYYY-MM`, deduped,
+  sorted, capped 120. Workbook: `normalize_phone` + the new shared
+  `_write_allowance_row` (refactors `_write_per_diem` — per diem + phone share it)
+  write a "Phone Service" line (`N months × $63.00/month` breakdown in A:D, month
+  list via `month_label` in the Summary column with fitted row height), and
+  `_write_total`'s `per_diem_row` param became **`extra_rows`** (list) so every
+  allowance feeds the grand-TOTAL formula. Wired through
+  `generate_spreadsheet(phone=)` at both web build sites.
+  `tests/test_phone_service.py` (+12).
 
 - **2026-07-16 (Microsoft OneDrive intake + per-diem report line):** Suite
   **748 → 779** green. Two features (branch `claude/onedrive-integration-feasibility-b7r4ns`).

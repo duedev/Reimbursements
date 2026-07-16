@@ -1621,6 +1621,19 @@
         <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
       </div>
     </div>
+    <!-- Phone service: fixed monthly allowance × user-selected months, added as
+         its own line on the Summary sheet and included in the grand TOTAL. -->
+    <div class="gen-phone" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label class="check-label" style="font-size:12px">
+        <input type="checkbox" id="ph-enabled">
+        Add phone service
+        <span style="color:var(--muted)">— <span id="ph-rate-note">$63.00</span>/month; pick the months to reimburse</span>
+      </label>
+      <div id="ph-months" style="display:none;margin-top:8px">
+        <div id="ph-month-grid" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        <span id="ph-total" style="font-weight:600;color:var(--success);display:block;margin-top:6px"></span>
+      </div>
+    </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
         <button class="btn btn-outline-accent btn-md" id="review-all-btn" style="display:none" title="Open the review window for the first receipt still needing approval, then step through them all">
@@ -6931,6 +6944,82 @@ async function _pdSave() {
   el.addEventListener('input', _pdRefreshUI);
 });
 
+// ── Phone service (fixed $/month × selected months) ──────────────────────────
+let _phRate = 63;
+
+function _phYm(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function _phLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
+// The month picker offers the last 12 months, plus any already-saved months
+// that fall outside that window (so a saved selection always stays visible).
+function _phRenderGrid(selected) {
+  const months = [];
+  const d = new Date(); d.setDate(1);
+  for (let i = 0; i < 12; i++) { months.push(_phYm(d)); d.setMonth(d.getMonth() - 1); }
+  (selected || []).forEach(m => { if (!months.includes(m)) months.push(m); });
+  months.sort().reverse();                    // newest first
+  const grid = document.getElementById('ph-month-grid');
+  grid.innerHTML = '';
+  months.forEach(ym => {
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;' +
+      'padding:4px 9px;border:1px solid var(--border);border-radius:14px;cursor:pointer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = ym; cb.className = 'ph-month';
+    cb.checked = (selected || []).includes(ym);
+    cb.addEventListener('change', _phSave);
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(_phLabel(ym)));
+    grid.appendChild(lab);
+  });
+}
+
+function _phSelected() {
+  return Array.from(document.querySelectorAll('.ph-month:checked')).map(cb => cb.value);
+}
+
+function _phRefreshUI() {
+  const on = document.getElementById('ph-enabled').checked;
+  document.getElementById('ph-months').style.display = on ? 'block' : 'none';
+  const n = _phSelected().length;
+  document.getElementById('ph-total').textContent =
+    (on && n > 0)
+      ? `${n} month${n !== 1 ? 's' : ''} × $${_phRate.toFixed(2)} = $${(n * _phRate).toFixed(2)} added to the report total`
+      : (on ? 'Select the months to reimburse.' : '');
+}
+
+async function loadPhoneService() {
+  try {
+    const d = await (await fetch('/settings/phone-service')).json();
+    _phRate = d.rate || 63;
+    document.getElementById('ph-rate-note').textContent = `$${_phRate.toFixed(2)}`;
+    document.getElementById('ph-enabled').checked = !!d.enabled;
+    _phRenderGrid(d.months || []);
+    _phRefreshUI();
+  } catch (_) {}
+}
+
+async function _phSave() {
+  _phRefreshUI();
+  try {
+    await fetch('/settings/phone-service', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: document.getElementById('ph-enabled').checked,
+        months:  _phSelected(),
+      }),
+    });
+  } catch (_) {}
+}
+
+document.getElementById('ph-enabled').addEventListener('change', _phSave);
+
 async function loadSchedule() {
   try {
     const res = await fetch('/schedule');
@@ -7842,6 +7931,7 @@ function _bootApp() {
   loadSettings();
   loadSavedFields();
   loadPerDiem();
+  loadPhoneService();
   loadStats();
   loadReports();
   loadRuns();
