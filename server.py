@@ -3352,6 +3352,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
                 r["job_number"] = job_number
 
     per_diem = _per_diem_config()
+    phone = _phone_config()
 
     def _build():
         return generate_spreadsheet(
@@ -3359,6 +3360,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             output_dir=OUT_FOLDER,
             employee_name=employee,
             per_diem=per_diem,
+            phone=phone,
         )
 
     try:
@@ -5085,6 +5087,71 @@ async def set_per_diem(body: PerDiemRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+# ── Phone service (fixed monthly allowance × selected months) ─────────────────
+# Opt-in like per diem: a fixed $/month phone-service reimbursement; the user
+# picks which months to include and the report gains a "Phone Service" line
+# (rate × month-count) included in the grand TOTAL. The rate is FIXED in the UI
+# ($63/month by default); a config-file "rate" override exists for the day the
+# carrier price changes, but the endpoint never accepts one.
+
+PHONE_MONTHLY_RATE = 63.0
+
+
+class PhoneServiceRequest(BaseModel):
+    enabled: bool = False
+    months:  list[str] = []   # "YYYY-MM" strings; invalid entries are dropped
+
+
+def _valid_months(months) -> list[str]:
+    out: list[str] = []
+    for m in (months or []):
+        try:
+            # Canonicalize to zero-padded YYYY-MM (strptime accepts "2026-7" too,
+            # which would otherwise dodge the dedup and mis-sort).
+            m = datetime.strptime(str(m).strip(), "%Y-%m").strftime("%Y-%m")
+        except ValueError:
+            continue
+        if m not in out:
+            out.append(m)
+    return sorted(out)[:120]                  # a sane bound: ten years of months
+
+
+def _phone_config() -> dict:
+    """The sanitized phone-service block: {"enabled", "rate", "months"}."""
+    block = _load_config().get("phone_service") or {}
+    try:
+        rate = float(block.get("rate") or PHONE_MONTHLY_RATE)
+    except (TypeError, ValueError):
+        rate = PHONE_MONTHLY_RATE
+    if not math.isfinite(rate) or rate <= 0:
+        rate = PHONE_MONTHLY_RATE
+    return {"enabled": bool(block.get("enabled")), "rate": round(rate, 2),
+            "months": _valid_months(block.get("months"))}
+
+
+@app.get("/settings/phone-service")
+async def get_phone_service():
+    ph = _phone_config()
+    ph["total"] = round(ph["rate"] * len(ph["months"]), 2) if ph["enabled"] else 0.0
+    return JSONResponse(ph)
+
+
+@app.post("/settings/phone-service")
+async def set_phone_service(body: PhoneServiceRequest):
+    try:
+        cfg = _load_config()
+        block = cfg.get("phone_service") or {}
+        block.update({
+            "enabled": bool(body.enabled),
+            "months":  _valid_months(body.months),
+        })                                     # any config-file rate override is kept
+        cfg["phone_service"] = block
+        _save_config(cfg)
+        return JSONResponse({"ok": True, **_phone_config()})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/benchmarks")
 async def get_benchmarks():
     """Per-batch processing-time history, newest first — for comparing LLMs."""
@@ -6793,11 +6860,12 @@ async def watch_send_email():
         try:
             _detect_duplicates(results_copy)
             per_diem = _per_diem_config()
+            phone = _phone_config()
             built = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: generate_spreadsheet(
                     results=results_copy, output_dir=OUT_FOLDER,
-                    employee_name=employee, per_diem=per_diem,
+                    employee_name=employee, per_diem=per_diem, phone=phone,
                 ),
             )
         except Exception as exc:

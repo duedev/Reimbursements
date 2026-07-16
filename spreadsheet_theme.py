@@ -388,30 +388,76 @@ def normalize_per_diem(per_diem) -> Optional[dict]:
     return {"rate": round(rate, 2), "days": days, "total": round(rate * days, 2)}
 
 
-def _write_per_diem(ws, row: int, rate: float, days: int):
-    """The opt-in daily-allowance line between the category subtotals and the
-    grand TOTAL. Written as a literal amount (not a formula) so the TOTAL row can
-    simply add F{row}; the rate × days breakdown sits in the merged A:D area."""
-    pd_fill   = _fill(COLOR_SUBTOTAL_BG)
-    pd_font   = _font(bold=True, size=11, color=COLOR_SUBTOTAL_FG)
-    _flood(ws, row, pd_fill, pd_font, _border("D1D5DB"))
+def normalize_phone(phone) -> Optional[dict]:
+    """Validate a phone-service config dict into `{"rate", "months", "total"}` or
+    None. None unless enabled with a finite positive rate AND at least one valid
+    `YYYY-MM` month; months are deduped + sorted."""
+    if not isinstance(phone, dict) or not phone.get("enabled"):
+        return None
+    try:
+        rate = float(phone.get("rate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rate) or rate <= 0:
+        return None
+    months: list[str] = []
+    for m in (phone.get("months") or []):
+        try:
+            # Canonicalize to zero-padded YYYY-MM so "2026-7" dedupes and sorts
+            # correctly against "2026-07".
+            m = datetime.strptime(str(m).strip(), "%Y-%m").strftime("%Y-%m")
+        except ValueError:
+            continue
+        if m not in months:
+            months.append(m)
+    if not months:
+        return None
+    months.sort()
+    return {"rate": round(rate, 2), "months": months,
+            "total": round(rate * len(months), 2)}
+
+
+def month_label(ym: str) -> str:
+    """`"2026-07"` → `"Jul 2026"` (already-validated input)."""
+    return datetime.strptime(ym, "%Y-%m").strftime("%b %Y")
+
+
+def _write_allowance_row(ws, row: int, label: str, note: str, amount: float,
+                         detail: str = None):
+    """One opt-in reimbursement line (Per Diem / Phone Service) between the
+    category subtotals and the grand TOTAL. Written as a literal amount (not a
+    formula) so the TOTAL row can simply add F{row}; the breakdown sits in the
+    merged A:D area and an optional detail (e.g. the month list) wraps in the
+    Summary column."""
+    a_fill   = _fill(COLOR_SUBTOTAL_BG)
+    a_font   = _font(bold=True, size=11, color=COLOR_SUBTOTAL_FG)
+    _flood(ws, row, a_fill, a_font, _border("D1D5DB"))
 
     ws.merge_cells(f"A{row}:D{row}")
-    note = ws.cell(row=row, column=1,
-                   value=f"{days} day{'s' if days != 1 else ''} × ${rate:,.2f}/day")
-    note.alignment = _align(h="right", wrap=False)
+    note_cell = ws.cell(row=row, column=1, value=note)
+    note_cell.alignment = _align(h="right", wrap=False)
 
-    lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value="Per Diem")
+    lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value=label)
     lbl.alignment = _align(h="right")
 
-    cell_f = ws.cell(row=row, column=COL_AMOUNT, value=round(rate * days, 2))
+    cell_f = ws.cell(row=row, column=COL_AMOUNT, value=round(amount, 2))
     cell_f.number_format = ACCT_FORMAT
     cell_f.alignment     = _align(h="right")
-    ws.row_dimensions[row].height = 20
+
+    height = 20.0
+    if detail:
+        d = ws.cell(row=row, column=COL_SUMMARY, value=sanitize_cell_text(detail))
+        d.alignment = _align(h="left")
+        d.font = _font(size=10, color=COLOR_SUBTOTAL_FG)
+        # The row isn't in data_rows (no auto height fit), so grow it here to
+        # show the wrapped detail — Summary's design width fits ~38 chars/line.
+        lines = max(1, math.ceil(len(detail) / 38))
+        height = min(max(20.0, lines * 15.0 + 4), 90.0)
+    ws.row_dimensions[row].height = height
 
 
 def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int,
-                 per_diem_row: int = None):
+                 extra_rows: list = None):
     tot_fill = _fill(COLOR_TOTAL_BG)
     tot_font = _font(bold=True, color=COLOR_TOTAL_FG, size=12)
 
@@ -426,8 +472,8 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int,
     lbl.alignment = _align(h="right")
 
     formula = f"=F{fuel_sub}+F{mat_sub}+F{misc_sub}"
-    if per_diem_row:
-        formula += f"+F{per_diem_row}"
+    for r in (extra_rows or []):
+        formula += f"+F{r}"
     cell_f = ws.cell(row=row, column=COL_AMOUNT, value=formula)
     cell_f.number_format = ACCT_FORMAT
     cell_f.alignment     = _align(h="right")
@@ -1039,6 +1085,7 @@ def build_themed_workbook(
     employee_name: str = "Duane Hamilton",
     build_tag: str = "",
     per_diem: dict = None,
+    phone: dict = None,
 ) -> Workbook:
     """
     Build a fresh themed workbook from receipt data.
@@ -1104,18 +1151,32 @@ def build_themed_workbook(
         subtotal_rows[category] = current_row
         current_row += 1
 
-    # Opt-in per-diem allowance line — sits between the category subtotals and the
-    # grand TOTAL so the reader sees fuel + mats + misc + per diem = TOTAL. The
-    # Insights sheet stays receipt-analytics only (per diem is not a receipt).
+    # Opt-in allowance lines (per diem, phone service) — they sit between the
+    # category subtotals and the grand TOTAL so the reader sees fuel + mats +
+    # misc + allowances = TOTAL. The Insights sheet stays receipt-analytics only
+    # (allowances are not receipts).
+    extra_rows: list[int] = []
     pd = normalize_per_diem(per_diem)
-    per_diem_row = None
     if pd:
-        _write_per_diem(ws, current_row, pd["rate"], pd["days"])
-        per_diem_row = current_row
+        _write_allowance_row(
+            ws, current_row, "Per Diem",
+            f"{pd['days']} day{'s' if pd['days'] != 1 else ''} × ${pd['rate']:,.2f}/day",
+            pd["total"])
+        extra_rows.append(current_row)
+        current_row += 1
+    ph = normalize_phone(phone)
+    if ph:
+        n = len(ph["months"])
+        _write_allowance_row(
+            ws, current_row, "Phone Service",
+            f"{n} month{'s' if n != 1 else ''} × ${ph['rate']:,.2f}/month",
+            ph["total"],
+            detail=", ".join(month_label(m) for m in ph["months"]))
+        extra_rows.append(current_row)
         current_row += 1
 
     _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"],
-                 subtotal_rows["misc"], per_diem_row=per_diem_row)
+                 subtotal_rows["misc"], extra_rows=extra_rows or None)
     current_row += 1
 
     # Muted generated-by footer — placed in the Summary column so Column A stays narrow
