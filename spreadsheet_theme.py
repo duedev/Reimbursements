@@ -1086,6 +1086,7 @@ def build_themed_workbook(
     build_tag: str = "",
     per_diem: dict = None,
     phone: dict = None,
+    include_insights: bool = True,
 ) -> Workbook:
     """
     Build a fresh themed workbook from receipt data.
@@ -1227,9 +1228,12 @@ def build_themed_workbook(
     # NOTE: no AutoFilter on purpose — the sheet stacks three banner/subtotal
     # sections, so a single filter range would scramble them.
 
-    # ── Insights sheet (tab 2) — mirrors the web dashboard with native charts ──
-    insights = _compute_insights(sections)
-    _build_insights_sheet(wb, insights, employee_name, expense_period)
+    # ── Insights sheet (tab 2) — mirrors the web dashboard with native charts.
+    # Optional: the web UI's "Include Insights sheet" toggle (default off there)
+    # gates it; library default stays on so direct callers are unchanged. ──
+    if include_insights:
+        insights = _compute_insights(sections)
+        _build_insights_sheet(wb, insights, employee_name, expense_period)
 
     # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
     IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]

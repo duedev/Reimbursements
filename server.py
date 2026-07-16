@@ -307,6 +307,21 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
     cfg[list_key] = lst[:20]
 
 
+def _save_job_pair(cfg: dict, name: str, number: str) -> None:
+    """Remember a job name + number pairing (both non-blank) — the fields are
+    always used together, so the UI autofills one from the other via this list.
+    Newest first; an identical pair moves to the front (lookups take the most
+    recent pairing when a name was later re-paired with a new number)."""
+    name, number = (name or "").strip(), (number or "").strip()
+    if not (name and number):
+        return
+    pairs = [p for p in cfg.get("saved_job_pairs", [])
+             if isinstance(p, dict)
+             and not (p.get("name") == name and p.get("number") == number)]
+    pairs.insert(0, {"name": name, "number": number})
+    cfg["saved_job_pairs"] = pairs[:50]
+
+
 def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
@@ -3353,6 +3368,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
 
     per_diem = _per_diem_config()
     phone = _phone_config()
+    include_insights = _report_options()["insights"]
 
     def _build():
         return generate_spreadsheet(
@@ -3361,6 +3377,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             employee_name=employee,
             per_diem=per_diem,
             phone=phone,
+            include_insights=include_insights,
         )
 
     try:
@@ -5113,7 +5130,7 @@ def _valid_months(months) -> list[str]:
             continue
         if m not in out:
             out.append(m)
-    return sorted(out)[:120]                  # a sane bound: ten years of months
+    return sorted(out)                        # no count limit — pick as many as needed
 
 
 def _phone_config() -> dict:
@@ -5148,6 +5165,36 @@ async def set_phone_service(body: PhoneServiceRequest):
         cfg["phone_service"] = block
         _save_config(cfg)
         return JSONResponse({"ok": True, **_phone_config()})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Report options ─────────────────────────────────────────────────────────────
+# Presentation choices for the generated workbook. `insights` gates the Insights
+# sheet (charts/analytics tab) — OFF by default for web generates; watch-mode/
+# scheduler exports keep the library default (on) unchanged.
+
+class ReportOptionsRequest(BaseModel):
+    insights: bool = False
+
+
+def _report_options() -> dict:
+    block = _load_config().get("report_options") or {}
+    return {"insights": bool(block.get("insights"))}
+
+
+@app.get("/settings/report-options")
+async def get_report_options():
+    return JSONResponse(_report_options())
+
+
+@app.post("/settings/report-options")
+async def set_report_options(body: ReportOptionsRequest):
+    try:
+        cfg = _load_config()
+        cfg["report_options"] = {"insights": bool(body.insights)}
+        _save_config(cfg)
+        return JSONResponse({"ok": True, **_report_options()})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -6298,6 +6345,8 @@ async def get_saved_fields():
         "employees":   cfg.get("saved_employees",   []),
         "job_names":   cfg.get("saved_job_names",   []),
         "job_numbers": cfg.get("saved_job_numbers", []),
+        "job_pairs":   [p for p in cfg.get("saved_job_pairs", [])
+                        if isinstance(p, dict) and p.get("name") and p.get("number")],
     })
 
 
@@ -6307,28 +6356,38 @@ async def save_fields(body: SaveFieldsRequest):
     _save_field(cfg, "saved_employees",   body.employee)
     _save_field(cfg, "saved_job_names",   body.job_name)
     _save_field(cfg, "saved_job_numbers", body.job_number)
+    _save_job_pair(cfg, body.job_name, body.job_number)
     _save_config(cfg)
     return JSONResponse({"ok": True})
 
 
 class RemoveFieldRequest(BaseModel):
     list_key: str
-    value:    str
+    value:    str = ""
+    name:     str = ""   # saved_job_pairs only
+    number:   str = ""   # saved_job_pairs only
 
 
 @app.post("/saved-fields/remove")
 async def remove_saved_field(body: RemoveFieldRequest):
-    """Remove a single value from a saved-fields list."""
-    allowed = {"saved_employees", "saved_job_names", "saved_job_numbers"}
+    """Remove a single value from a saved-fields list (or a saved job pair)."""
+    allowed = {"saved_employees", "saved_job_names", "saved_job_numbers",
+               "saved_job_pairs"}
     if body.list_key not in allowed:
         return JSONResponse({"ok": False, "error": "invalid key"}, status_code=400)
     cfg = _load_config()
-    lst = cfg.get(body.list_key, [])
-    try:
-        lst.remove(body.value)
-    except ValueError:
-        pass
-    cfg[body.list_key] = lst
+    if body.list_key == "saved_job_pairs":
+        cfg["saved_job_pairs"] = [
+            p for p in cfg.get("saved_job_pairs", [])
+            if not (isinstance(p, dict)
+                    and p.get("name") == body.name and p.get("number") == body.number)]
+    else:
+        lst = cfg.get(body.list_key, [])
+        try:
+            lst.remove(body.value)
+        except ValueError:
+            pass
+        cfg[body.list_key] = lst
     _save_config(cfg)
     return JSONResponse({"ok": True})
 
@@ -6861,11 +6920,13 @@ async def watch_send_email():
             _detect_duplicates(results_copy)
             per_diem = _per_diem_config()
             phone = _phone_config()
+            include_insights = _report_options()["insights"]
             built = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: generate_spreadsheet(
                     results=results_copy, output_dir=OUT_FOLDER,
                     employee_name=employee, per_diem=per_diem, phone=phone,
+                    include_insights=include_insights,
                 ),
             )
         except Exception as exc:

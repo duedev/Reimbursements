@@ -360,14 +360,33 @@ to the model — nothing hidden or clipped.
     (`#pd-enabled`/`#pd-rate`/`#pd-days`/`#pd-total`; `loadPerDiem`, saves on change).
     Persisted `cfg["per_diem"]` via `GET/POST /settings/per-diem` (clamped: finite
     rate ≥ 0, int days 0..3650 — inf/nan refused).
-  * **Phone service** — "Add phone service" checkbox reveals a **month picker**
-    (last 12 months + any saved older months, chip checkboxes; `#ph-enabled`/
-    `#ph-month-grid`/`#ph-total`; `loadPhoneService`, saves on change). The rate is
-    FIXED at `server.PHONE_MONTHLY_RATE` = **$63/month** (UI shows it, endpoint never
+  * **Phone service** — "Add phone service" checkbox reveals a **year-pager month
+    picker** (‹ year › with 12 month buttons; a JS Set `_phSel` is the cross-year
+    source of truth, selections render as removable chips in `#ph-selected`;
+    `#ph-enabled`/`#ph-year`/`#ph-month-grid`/`#ph-total`; `loadPhoneService`, saves
+    on change). **No month-count limit.** The rate is FIXED at
+    `server.PHONE_MONTHLY_RATE` = **$63/month** (UI shows it, endpoint never
     accepts one; a config-file `phone_service.rate` override exists, bad values fall
     back to 63). Persisted `cfg["phone_service"]` via `GET/POST
     /settings/phone-service`; months are `YYYY-MM`, canonicalized (zero-padded via
-    strptime→strftime), deduped, sorted, capped 120 (`_valid_months`).
+    strptime→strftime), deduped, sorted (`_valid_months`).
+  * **Insights toggle** — "Include Insights sheet" checkbox (`#ins-enabled`,
+    `loadReportOptions`), **default OFF for web generates**: persisted
+    `cfg["report_options"]["insights"]` via `GET/POST /settings/report-options`,
+    passed as `generate_spreadsheet(include_insights=)` →
+    `build_themed_workbook(include_insights=)`. The LIBRARY default stays True so
+    direct callers (watch-mode/scheduler, tests) keep the Insights tab.
+- **Saved job pairs (name ⇄ number autofill).** Job names/numbers are always used
+  together: `server._save_job_pair` stores `cfg["saved_job_pairs"]`
+  (`[{name,number}]`, newest first, exact-dup moves to front, cap 50) on every
+  `POST /saved-fields` with both fields; `GET /saved-fields` returns `job_pairs`;
+  `POST /saved-fields/remove` accepts `list_key:"saved_job_pairs"` + `name`/`number`.
+  UI: `_jobAutofill` fills the counterpart field on an exact (case-insensitive)
+  match — wired on `#job-name`/`#job-number` AND the review modal's
+  `#mr-job-name`/`#mr-job-number`; the ✎ manage panels on the two job fields list
+  pairs ("name — number" rows with ×) + a "＋ Save current name + number" button
+  (`saveCurrentJobPair`/`removeSavedPair`); datalists merge pair values with the
+  legacy per-field lists.
 - `generate_spreadsheet(..., per_diem=, phone=)` → `build_themed_workbook(...)`:
   `spreadsheet_theme.normalize_per_diem` / `normalize_phone` validate (None unless
   enabled + finite rate>0 + days/months present), the shared `_write_allowance_row`
@@ -391,7 +410,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **791 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **803 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -473,6 +492,27 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (job pairs + Insights toggle + uncapped month picker):** Suite
+  **791 → 803** green. Same branch/PR. Four UX requests:
+  * **Job name ⇄ number pairing.** New `cfg["saved_job_pairs"]` (see the "Saved job
+    pairs" bullet above): auto-saved on `POST /saved-fields` when both present,
+    `job_pairs` in GET, pair-aware `/saved-fields/remove`. UI autofills the
+    counterpart field on exact match (batch form + review modal), and the job
+    fields' ✎ manage panels gained a pairs section with delete + "＋ Save current
+    name + number".
+  * **Insights sheet toggle, default off.** `build_themed_workbook`/
+    `generate_spreadsheet` gained `include_insights` (library default True —
+    `test_spreadsheet.py` + watch/scheduler unchanged); the web generate sites pass
+    `cfg["report_options"]["insights"]` (default False) via new `GET/POST
+    /settings/report-options` + an "Include Insights sheet" checkbox in the new
+    Report add-ons block.
+  * **Phone months uncapped + picker redesign.** `_valid_months` no longer slices
+    to 120; the UI's last-12-months chip row became a **year pager** (‹ 2026 › +
+    12 month buttons, cross-year `_phSel` Set, removable selected-month chips).
+  * **Export Report card flow.** Per diem / phone / insights now sit in one
+    "Report add-ons" group (`.gen-extras`) instead of three stacked bordered rows.
+    `tests/test_report_extras.py` (+12).
 
 - **2026-07-16 (phone-service reimbursement line):** Suite **779 → 791** green.
   Same branch/PR as the batch below. Export Report card gains **"Add phone service"**

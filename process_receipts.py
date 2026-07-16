@@ -3332,6 +3332,7 @@ def generate_spreadsheet(
     employee_name: str = "Duane Hamilton",
     per_diem: Optional[dict] = None,
     phone: Optional[dict] = None,
+    include_insights: bool = True,
 ) -> Optional[Path]:
     if not results:
         return None
@@ -3360,6 +3361,7 @@ def generate_spreadsheet(
         build_tag=APP_VERSION,
         per_diem=per_diem,
         phone=phone,
+        include_insights=include_insights,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_name   = re.sub(r'[^\w\s-]', '', employee_name or '').strip().replace(' ', '_') or 'Employee'

@@ -1603,35 +1603,55 @@
         Send Report Now
       </button>
     </div>
-    <!-- Per diem: opt-in daily allowance added as its own line on the report's
-         Summary sheet and included in the grand TOTAL. Saved on change; read
-         server-side at generate time. -->
-    <div class="gen-perdiem" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label class="check-label" style="font-size:12px">
-        <input type="checkbox" id="pd-enabled">
-        Add per diem
-        <span style="color:var(--muted)">— a daily allowance line added to the report total</span>
-      </label>
-      <div id="pd-fields" style="align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:13px;display:none">
-        <span>$</span>
-        <input type="number" id="pd-rate" min="0" step="0.01" placeholder="0.00" style="width:96px" autocomplete="off">
-        <span>per day &nbsp;×</span>
-        <input type="number" id="pd-days" min="0" step="1" placeholder="0" style="width:72px" autocomplete="off">
-        <span>day(s)</span>
-        <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
+    <!-- Report add-ons: opt-in extras applied at generate time. Per diem and
+         phone service become allowance lines on the Summary sheet (included in
+         the grand TOTAL); the Insights toggle gates the charts/analytics tab.
+         All save on change; read server-side at generate time. -->
+    <div class="gen-extras" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Report add-ons</div>
+
+      <div class="gen-perdiem">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="pd-enabled">
+          Add per diem
+          <span style="color:var(--muted)">— a daily allowance line added to the report total</span>
+        </label>
+        <div id="pd-fields" style="align-items:center;gap:8px;margin:8px 0 0 24px;flex-wrap:wrap;font-size:13px;display:none">
+          <span>$</span>
+          <input type="number" id="pd-rate" min="0" step="0.01" placeholder="0.00" style="width:96px" autocomplete="off">
+          <span>per day &nbsp;×</span>
+          <input type="number" id="pd-days" min="0" step="1" placeholder="0" style="width:72px" autocomplete="off">
+          <span>day(s)</span>
+          <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
+        </div>
       </div>
-    </div>
-    <!-- Phone service: fixed monthly allowance × user-selected months, added as
-         its own line on the Summary sheet and included in the grand TOTAL. -->
-    <div class="gen-phone" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label class="check-label" style="font-size:12px">
-        <input type="checkbox" id="ph-enabled">
-        Add phone service
-        <span style="color:var(--muted)">— <span id="ph-rate-note">$63.00</span>/month; pick the months to reimburse</span>
-      </label>
-      <div id="ph-months" style="display:none;margin-top:8px">
-        <div id="ph-month-grid" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-        <span id="ph-total" style="font-weight:600;color:var(--success);display:block;margin-top:6px"></span>
+
+      <div class="gen-phone" style="margin-top:10px">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="ph-enabled">
+          Add phone service
+          <span style="color:var(--muted)">— <span id="ph-rate-note">$63.00</span>/month; pick the months to reimburse</span>
+        </label>
+        <div id="ph-months" style="display:none;margin:8px 0 0 24px">
+          <!-- Year pager + that year's 12 months; any year, any number of months. -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <button class="btn btn-neutral btn-sm" id="ph-prev" type="button" title="Previous year" style="padding:2px 10px">‹</button>
+            <span id="ph-year" style="font-weight:700;font-size:14px;min-width:46px;text-align:center"></span>
+            <button class="btn btn-neutral btn-sm" id="ph-next" type="button" title="Next year" style="padding:2px 10px">›</button>
+          </div>
+          <div id="ph-month-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px;max-width:520px"></div>
+          <!-- Everything selected, across all years — chips with a per-month ×. -->
+          <div id="ph-selected" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
+          <span id="ph-total" style="font-weight:600;color:var(--success);display:block;margin-top:6px"></span>
+        </div>
+      </div>
+
+      <div class="gen-insights" style="margin-top:10px">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="ins-enabled">
+          Include Insights sheet
+          <span style="color:var(--muted)">— add the charts &amp; analytics tab to the workbook (off = Summary + receipt sheets only)</span>
+        </label>
       </div>
     </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -4810,16 +4830,43 @@ document.getElementById('error-toggle').addEventListener('click', () => {
 });
 
 // ── Saved fields (persistent employee / job name / job number) ────────────────
+// Job names and numbers are always used as a PAIR: saved pairs drive the ⇄
+// autofill (fill in one field, the other completes itself) in both the batch
+// form and the review modal.
+let _jobPairs = [];
+
 async function loadSavedFields() {
   try {
     const res = await fetch('/saved-fields');
     if (!res.ok) return;
     const d = await res.json();
-    _populateDL('employees-list',   d.employees   || []);
-    _populateDL('job-names-list',   d.job_names   || []);
-    _populateDL('job-numbers-list', d.job_numbers || []);
+    _jobPairs = d.job_pairs || [];
+    // Offer pair values in the dropdowns too (deduped against the legacy lists).
+    const names   = [...new Set([..._jobPairs.map(p => p.name),   ...(d.job_names   || [])])];
+    const numbers = [...new Set([..._jobPairs.map(p => p.number), ...(d.job_numbers || [])])];
+    _populateDL('employees-list',   d.employees || []);
+    _populateDL('job-names-list',   names);
+    _populateDL('job-numbers-list', numbers);
   } catch (_) {}
 }
+
+// Fill the counterpart field from the saved pairs on an exact match of the
+// edited field (case-insensitive; most recent pairing wins).
+function _jobAutofill(srcId, dstId, srcKey, dstKey) {
+  const v = document.getElementById(srcId).value.trim().toLowerCase();
+  if (!v) return;
+  const p = _jobPairs.find(p => String(p[srcKey] || '').toLowerCase() === v);
+  if (p && p[dstKey]) document.getElementById(dstId).value = p[dstKey];
+}
+
+[['job-name', 'job-number'], ['mr-job-name', 'mr-job-number']].forEach(([nameId, numId]) => {
+  const nameEl = document.getElementById(nameId), numEl = document.getElementById(numId);
+  if (!nameEl || !numEl) return;
+  ['input', 'change'].forEach(evt => {
+    nameEl.addEventListener(evt, () => _jobAutofill(nameId, numId, 'name', 'number'));
+    numEl.addEventListener(evt, () => _jobAutofill(numId, nameId, 'number', 'name'));
+  });
+});
 
 function _populateDL(id, values) {
   const dl = document.getElementById(id);
@@ -6945,49 +6992,65 @@ async function _pdSave() {
 });
 
 // ── Phone service (fixed $/month × selected months) ──────────────────────────
+// A year pager shows one year's 12 months at a time; _phSel (a Set of "YYYY-MM")
+// is the source of truth across years, so selections aren't limited to the
+// rendered year — pick as many months, from as many years, as needed.
 let _phRate = 63;
-
-function _phYm(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
+let _phSel = new Set();
+let _phYearShown = new Date().getFullYear();
 
 function _phLabel(ym) {
   const [y, m] = ym.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' });
 }
 
-// The month picker offers the last 12 months, plus any already-saved months
-// that fall outside that window (so a saved selection always stays visible).
-function _phRenderGrid(selected) {
-  const months = [];
-  const d = new Date(); d.setDate(1);
-  for (let i = 0; i < 12; i++) { months.push(_phYm(d)); d.setMonth(d.getMonth() - 1); }
-  (selected || []).forEach(m => { if (!months.includes(m)) months.push(m); });
-  months.sort().reverse();                    // newest first
+function _phRenderGrid() {
+  document.getElementById('ph-year').textContent = _phYearShown;
   const grid = document.getElementById('ph-month-grid');
   grid.innerHTML = '';
-  months.forEach(ym => {
-    const lab = document.createElement('label');
-    lab.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;' +
-      'padding:4px 9px;border:1px solid var(--border);border-radius:14px;cursor:pointer';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = ym; cb.className = 'ph-month';
-    cb.checked = (selected || []).includes(ym);
-    cb.addEventListener('change', _phSave);
-    lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(_phLabel(ym)));
-    grid.appendChild(lab);
-  });
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${_phYearShown}-${String(m).padStart(2, '0')}`;
+    const on = _phSel.has(ym);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = new Date(_phYearShown, m - 1, 1).toLocaleString('en-US', { month: 'short' });
+    b.style.cssText = 'font-size:12px;padding:5px 0;border-radius:8px;cursor:pointer;' +
+      `border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};` +
+      `background:${on ? 'rgba(59,130,246,0.18)' : 'transparent'};` +
+      `color:${on ? 'var(--accent)' : 'var(--text)'};font-weight:${on ? '700' : '400'}`;
+    b.addEventListener('click', () => {
+      _phSel.has(ym) ? _phSel.delete(ym) : _phSel.add(ym);
+      _phRenderGrid(); _phRenderSelected(); _phSave();
+    });
+    grid.appendChild(b);
+  }
 }
 
-function _phSelected() {
-  return Array.from(document.querySelectorAll('.ph-month:checked')).map(cb => cb.value);
+function _phRenderSelected() {
+  const box = document.getElementById('ph-selected');
+  box.innerHTML = '';
+  Array.from(_phSel).sort().forEach(ym => {
+    const chip = document.createElement('span');
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;' +
+      'padding:3px 8px;border:1px solid var(--border);border-radius:12px;color:var(--text)';
+    chip.appendChild(document.createTextNode(_phLabel(ym)));
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '×'; x.title = `Remove ${_phLabel(ym)}`;
+    x.style.cssText = 'border:none;background:none;cursor:pointer;color:var(--muted);' +
+      'font-size:14px;line-height:1;padding:0';
+    x.addEventListener('click', () => {
+      _phSel.delete(ym);
+      _phRenderGrid(); _phRenderSelected(); _phSave();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
 }
 
 function _phRefreshUI() {
   const on = document.getElementById('ph-enabled').checked;
   document.getElementById('ph-months').style.display = on ? 'block' : 'none';
-  const n = _phSelected().length;
+  const n = _phSel.size;
   document.getElementById('ph-total').textContent =
     (on && n > 0)
       ? `${n} month${n !== 1 ? 's' : ''} × $${_phRate.toFixed(2)} = $${(n * _phRate).toFixed(2)} added to the report total`
@@ -7000,8 +7063,8 @@ async function loadPhoneService() {
     _phRate = d.rate || 63;
     document.getElementById('ph-rate-note').textContent = `$${_phRate.toFixed(2)}`;
     document.getElementById('ph-enabled').checked = !!d.enabled;
-    _phRenderGrid(d.months || []);
-    _phRefreshUI();
+    _phSel = new Set(d.months || []);
+    _phRenderGrid(); _phRenderSelected(); _phRefreshUI();
   } catch (_) {}
 }
 
@@ -7012,13 +7075,32 @@ async function _phSave() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         enabled: document.getElementById('ph-enabled').checked,
-        months:  _phSelected(),
+        months:  Array.from(_phSel).sort(),
       }),
     });
   } catch (_) {}
 }
 
 document.getElementById('ph-enabled').addEventListener('change', _phSave);
+document.getElementById('ph-prev').addEventListener('click', () => { _phYearShown--; _phRenderGrid(); });
+document.getElementById('ph-next').addEventListener('click', () => { _phYearShown++; _phRenderGrid(); });
+
+// ── Report options (Insights sheet toggle — default off) ─────────────────────
+async function loadReportOptions() {
+  try {
+    const d = await (await fetch('/settings/report-options')).json();
+    document.getElementById('ins-enabled').checked = !!d.insights;
+  } catch (_) {}
+}
+
+document.getElementById('ins-enabled').addEventListener('change', async () => {
+  try {
+    await fetch('/settings/report-options', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ insights: document.getElementById('ins-enabled').checked }),
+    });
+  } catch (_) {}
+});
 
 async function loadSchedule() {
   try {
@@ -7340,20 +7422,67 @@ async function _renderManagePanel(panelId, listKey) {
     const res = await fetch('/saved-fields');
     const d = await res.json();
     const values = d[_listKeyMap[listKey]] || [];
-    if (values.length === 0) {
-      panel.innerHTML = '<div class="saved-item-empty">No saved items</div>';
-    } else {
-      panel.innerHTML = values.map(v =>
+    let html = '';
+    // The two job panels also manage the saved NAME ⇄ NUMBER pairs that drive
+    // the autofill, plus a one-click "save what's typed now" affordance.
+    const isJobPanel = (listKey === 'saved_job_names' || listKey === 'saved_job_numbers');
+    if (isJobPanel) {
+      const pairs = d.job_pairs || [];
+      html += '<div class="saved-item-empty" style="font-weight:600">Saved jobs (name ⇄ number)</div>';
+      html += pairs.map(p =>
         `<div class="saved-item-row">
-          <span title="${esc(v)}">${esc(v)}</span>
-          <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
+          <span title="${esc(p.name)} — ${esc(p.number)}">${esc(p.name)} <span style="color:var(--muted)">—</span> ${esc(p.number)}</span>
+          <button title="Remove pair" onclick="removeSavedPair('${escJs(p.name)}','${escJs(p.number)}','${panelId}','${listKey}')">&#215;</button>
         </div>`
-      ).join('');
+      ).join('') || '<div class="saved-item-empty">No saved jobs yet</div>';
+      html += `<div class="saved-item-row" style="justify-content:flex-start">
+        <button class="btn btn-neutral btn-sm" style="font-size:11px;padding:2px 8px"
+                onclick="saveCurrentJobPair('${panelId}','${listKey}')">＋ Save current name + number</button>
+      </div>`;
+      html += '<div class="saved-item-empty" style="font-weight:600;margin-top:4px">Individual entries</div>';
     }
+    html += values.map(v =>
+      `<div class="saved-item-row">
+        <span title="${esc(v)}">${esc(v)}</span>
+        <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
+      </div>`
+    ).join('') || (isJobPanel ? '' : '<div class="saved-item-empty">No saved items</div>');
+    panel.innerHTML = html || '<div class="saved-item-empty">No saved items</div>';
   } catch (_) {
     panel.innerHTML = '<div class="saved-item-empty">Error loading</div>';
   }
 }
+
+window.removeSavedPair = async function(name, number, panelId, listKey) {
+  try {
+    await fetch('/saved-fields/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_key: 'saved_job_pairs', name, number }),
+    });
+    await loadSavedFields();
+    await _renderManagePanel(panelId, listKey);
+  } catch (_) {}
+};
+
+window.saveCurrentJobPair = async function(panelId, listKey) {
+  const job_name   = document.getElementById('job-name').value.trim();
+  const job_number = document.getElementById('job-number').value.trim();
+  if (!job_name || !job_number) {
+    showToast('Fill in both Job Name and Job Number first', false);
+    return;
+  }
+  try {
+    await fetch('/saved-fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee: '', job_name, job_number }),
+    });
+    await loadSavedFields();
+    await _renderManagePanel(panelId, listKey);
+    showToast('Job pair saved', true);
+  } catch (_) {}
+};
 
 window.toggleManagePanel = function(panelId, listKey) {
   const panel = document.getElementById(panelId);
@@ -7932,6 +8061,7 @@ function _bootApp() {
   loadSavedFields();
   loadPerDiem();
   loadPhoneService();
+  loadReportOptions();
   loadStats();
   loadReports();
   loadRuns();

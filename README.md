@@ -200,9 +200,13 @@ The card also has a **Require review & approval** checkbox. While it's on, gener
 
 **Per diem (optional):** tick **Add per diem** on the same card to add a daily allowance to the report — enter the dollar amount reimbursed per day and the number of days. The workbook's Summary sheet gains a **Per Diem** line (showing the `days × $rate/day` breakdown) between the category subtotals and the grand TOTAL, and the TOTAL includes it.
 
-**Phone service (optional):** tick **Add phone service** to add the fixed **$63.00/month** phone reimbursement — a month picker appears (the last 12 months) and you select every month to include. The Summary sheet gains a **Phone Service** line (`N months × $63.00/month`, with the selected months listed) that the grand TOTAL includes. The $63 rate is fixed in the UI; if the price ever changes it can be overridden with a `rate` key under `phone_service` in `.app_config.json`.
+**Phone service (optional):** tick **Add phone service** to add the fixed **$63.00/month** phone reimbursement — a month picker appears (a year pager showing 12 month buttons per year; step to any year and select **any number of months**, shown as removable chips). The Summary sheet gains a **Phone Service** line (`N months × $63.00/month`, with the selected months listed) that the grand TOTAL includes. The $63 rate is fixed in the UI; if the price ever changes it can be overridden with a `rate` key under `phone_service` in `.app_config.json`.
 
-Both settings persist between sessions; they apply to reports generated from the web UI (Generate / Send Report Now) — the watch-mode/scheduler exports stay receipts-only.
+**Insights sheet (optional, off by default):** tick **Include Insights sheet** to add the charts/analytics tab to the workbook. When off (the default) the workbook contains just the Summary and per-category receipt sheets.
+
+All three settings persist between sessions; they apply to reports generated from the web UI (Generate / Send Report Now) — the watch-mode/scheduler exports stay receipts-only (and keep their Insights sheet).
+
+**Job name ⇄ number pairing:** job names and numbers are always used together, so the app remembers them as **pairs** — fill in one field and the other autofills from the saved pairing (works in the batch form and the review modal; the most recent pairing for a value wins). Pairs are saved automatically whenever a batch/generate uses both fields, or explicitly via the ✎ button next to either field (**＋ Save current name + number**), where saved pairs can also be removed.
 
 ---
 
@@ -513,7 +517,8 @@ Numbers**.
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
 | `GET/POST` | `/settings/per-diem` | Opt-in daily allowance (`enabled`, `rate`, `days`) added as a Per Diem line + included in the report TOTAL |
-| `GET/POST` | `/settings/phone-service` | Opt-in fixed $63/month phone reimbursement (`enabled`, `months` as `YYYY-MM` list) added as a Phone Service line + included in the report TOTAL |
+| `GET/POST` | `/settings/phone-service` | Opt-in fixed $63/month phone reimbursement (`enabled`, `months` as `YYYY-MM` list, no count limit) added as a Phone Service line + included in the report TOTAL |
+| `GET/POST` | `/settings/report-options` | Workbook presentation options: `insights` gates the Insights charts tab (web default off) |
 | `GET/POST` | `/settings/onedrive` | OneDrive intake config; plus `POST /settings/onedrive/device-code`, `/connect`, `/disconnect`, `/test`, `/poll-now` (see `ONEDRIVE_IMPORT.md`) |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |
