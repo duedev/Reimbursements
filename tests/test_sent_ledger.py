@@ -76,7 +76,6 @@ def worker_env(tmp_path, monkeypatch, ledger_env):
     images = tmp_path / "receipts"
     images.mkdir()
     monkeypatch.setattr(server, "IMAGES_FOLDER", images)
-    monkeypatch.setattr(pr, "AUTOCROP_ENABLED", False)
     server._worker_cancel.clear()
     server._work_queue.clear()
     server._results.clear()

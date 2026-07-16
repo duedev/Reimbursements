@@ -19,8 +19,6 @@ def worker_env(tmp_path, monkeypatch):
     images.mkdir()
     monkeypatch.setattr(server, "IMAGES_FOLDER", images)
     monkeypatch.setattr(pr, "COMPRESS_ENABLED", True)
-    monkeypatch.setattr(pr, "AUTOCROP_ENABLED", True)
-    monkeypatch.setattr(pr, "JPEG_QUALITY", 85)
     monkeypatch.setattr(pr, "STORE_MAX_PX", 2000)
     server._worker_cancel.clear()   # another test may have left this set
     server._work_queue.clear()

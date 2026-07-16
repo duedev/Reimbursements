@@ -320,12 +320,10 @@ below apply until changed in the UI.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTOCROP_ENABLED` | `1` | Trim uniform background borders around each receipt |
 | `GRAYSCALE_ENABLED` | `1` | Convert each receipt to high-contrast grayscale before OCR/AI (also applies to the stored image) |
-| `COMPRESS_ENABLED` | `1` | Re-encode stored receipts to optimized JPEG |
-| `JPEG_QUALITY` | `85` | Stored-image JPEG quality (40–95) |
+| `COMPRESS_ENABLED` | `1` | Re-encode stored receipts to optimized JPEG at export time. Quality is chosen automatically per image and every compressed file is integrity-checked before it replaces the original (a corrupt or bigger result is discarded and the original kept) |
 | `STORE_MAX_PX` | `2000` | Cap the longest side of stored receipt images |
-| `LOCAL_OCR_ENABLED` | `1` | Local CPU OCR fallback (RapidOCR) when LM Studio's OCR stage is down. The legacy `PADDLEOCR_ENABLED` name is still honored. |
+| `LOCAL_OCR_ENABLED` | `1` | Built-in CPU OCR (RapidOCR) — the primary OCR engine, always on in the UI; env-only escape hatch. The legacy `PADDLEOCR_ENABLED` name is still honored. |
 
 #### UI folder shortcuts
 
@@ -352,12 +350,11 @@ Receipt image / PDF
          │
          ▼
   ┌─────────────┐
-  │  Greyscale  │  Pipeline order: greyscale → autocrop → OCR/extraction → … → compress.
-  │  + Autocrop │  Flatten to high-contrast grayscale (optional) so OCR/AI read
-  │             │  crisper text, then trim uniform borders so the receipt fills the
-  │             │  frame. The image is kept at full resolution here; compression is
-  │             │  deferred (see the Spreadsheet step) so OCR always reads the
-  │             │  sharpest image.
+  │  Greyscale  │  Pipeline order: greyscale → OCR/extraction → … → compress.
+  │             │  Flatten to high-contrast grayscale (optional) so OCR/AI read
+  │             │  crisper text. The image is kept at full resolution here;
+  │             │  compression is deferred (see the Spreadsheet step) so OCR
+  │             │  always reads the sharpest image.
   └──────┬──────┘
          │
          ▼
@@ -513,7 +510,7 @@ Numbers**.
 | Method | Path | Notes |
 |---|---|---|
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
-| `GET/POST` | `/settings/processing` | `autorotate`, `autocrop`, `autocrop_aggressiveness`, `grayscale`, `compress`, `local_ocr`, `jpeg_quality`, `max_parallel` |
+| `GET/POST` | `/settings/processing` | `autorotate`, `grayscale`, `compress`, `max_parallel`, plus the advanced LLM tunables (timeout/retries/rate-limit/429-wait, size caps) |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
 | `GET/POST` | `/settings/per-diem` | Opt-in daily allowance (`enabled`, `rate`, `days`) added as a Per Diem line + included in the report TOTAL |

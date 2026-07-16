@@ -953,17 +953,15 @@ def initialize_models(warm: bool = True) -> str:
 
 # ── Image encoding ─────────────────────────────────────────────────────────────
 #
-# CANONICAL PIPELINE ORDER:  greyscale → autocrop → OCR/text extraction → … → compress
+# CANONICAL PIPELINE ORDER:  greyscale → OCR/text extraction → … → compress
 #
 #   0. greyscale — flatten the stored image to high-contrast grayscale BEFORE any
 #                  OCR/LLM (grayscale_image_file), in place, so both the OCR engine
 #                  and the vision model read the same cleaned-up file. No-op when
 #                  GRAYSCALE_ENABLED is off.
-#   1. autocrop  — trim uniform background borders (autocrop_image_file / the
-#                  in-memory autocrop_receipt inside encode_image).
-#   2. OCR/text  — run extraction (LM Studio vision/OCR or the RapidOCR fallback)
-#                  against the autocropped, full-resolution image.
-#   3. compress  — DEFERRED to spreadsheet-generation time (compress_result_images
+#   1. OCR/text  — run extraction (LM Studio vision/OCR or the RapidOCR fallback)
+#                  against the full-resolution image.
+#   2. compress  — DEFERRED to spreadsheet-generation time (compress_result_images
 #                  / generate_spreadsheet). Re-encoding/downscaling the stored
 #                  file once, at export, keeps OCR reading the sharpest image and
 #                  shrinks the output folder and the embedded workbook images in a
@@ -973,39 +971,22 @@ def initialize_models(warm: bool = True) -> str:
 #
 # Keeping compression OUT of the per-receipt path means nothing downstream can be
 # handed a stale pre-compress path (the old "[Errno 2] No such file or directory"
-# bug); the file the worker stores is exactly the file OCR read.
-
-AUTOCROP_ENABLED   = os.getenv("AUTOCROP_ENABLED", "1").lower() not in ("0", "false", "no")
-# Single user-facing dial, 0 (gentle) … 100 (very aggressive). It drives every
-# detection knob below so one slider moves the whole behaviour. The default leans
-# aggressive on purpose: phone photos carry a lot of background, and a timid crop
-# reads to the user as "it didn't do anything".
-AUTOCROP_AGGRESSIVENESS = int(os.getenv("AUTOCROP_AGGRESSIVENESS", "85"))
-
-
-def _autocrop_params(aggressiveness: float) -> dict:
-    """Map the 0..100 aggressiveness dial onto the four detection knobs.
-
-    Higher aggressiveness ⇒ trims closer (smaller re-added margin), accepts
-    tighter crops (lower min-kept floor), fires on smaller borders (higher
-    max-kept ceiling), and ignores fainter background gradients (higher content
-    threshold).  At 0 it reproduces the old conservative behaviour; at 100 it
-    will trim almost any detectable border.
-    """
-    a = max(0.0, min(1.0, aggressiveness / 100.0))
-    return {
-        "min_ratio": 0.50 - 0.47 * a,   # keep ≥50% … keep ≥3%
-        "max_ratio": 0.92 + 0.079 * a,  # trim borders down to <0.1% of the frame
-        "margin":    0.04 * (1.0 - a),  # 4% … 0% safety margin re-added
-        "threshold": 16 + 30 * a,       # 16 … 46 min grayscale delta from bg
-    }
+# bug); the file the worker stores is exactly the file OCR read — and every
+# OCR/LLM pass gets the most data the source photo can supply.
+#
+# (Auto-crop was removed entirely: real-world borders/gradients made it trim
+# receipt edges often enough that the risk outweighed the tidier photos.)
 
 # Stored-image compression — re-encode every saved receipt to an optimized JPEG
-# so phone photos don't bloat the output folder or the embedded workbook images.
-# All three are runtime-adjustable from the web UI (Settings → Image processing).
+# at export so phone photos don't bloat the output folder or the embedded
+# workbook images. Quality is chosen automatically (_auto_jpeg_quality) — there
+# is deliberately no user dial any more.
 COMPRESS_ENABLED = os.getenv("COMPRESS_ENABLED", "1").lower() not in ("0", "false", "no")
-JPEG_QUALITY     = int(os.getenv("JPEG_QUALITY", "85"))    # 40 (smaller) … 95 (sharper)
 STORE_MAX_PX     = int(os.getenv("STORE_MAX_PX", "2000"))  # cap the longest side of stored images
+# Pre-OCR in-place rewrites (EXIF rotate, grayscale) use a high fixed quality so
+# the OCR engine and the vision model read a nearly lossless file; the real
+# space-saving re-encode happens once, at export time, after all OCR/LLM work.
+PREP_JPEG_QUALITY = 95
 
 # Greyscale (black-&-white) pre-pass — convert receipts to high-contrast grayscale
 # BEFORE OCR/LLM. Phone photos of receipts carry colour tints, shadows and uneven
@@ -1029,160 +1010,6 @@ ORIENT_MIN_SCORE     = float(os.getenv("ORIENT_MIN_SCORE", "30"))      # upright
 ORIENT_IMPROVE_RATIO = float(os.getenv("ORIENT_IMPROVE_RATIO", "1.2")) # a rotation must beat upright by 20% to win
 
 
-def _content_bbox_by_edges(gray: Image.Image, frac: float):
-    """Detect the receipt content box via an edge-energy projection (numpy).
-
-    Far more robust than corner-background subtraction on real photos: it doesn't
-    assume the corners are background, so it survives gradients, shadows, busy
-    desktops and coloured surfaces. Edge magnitude is summed into per-row and
-    per-column profiles; the content extent is where each profile rises a
-    fraction ``frac`` of the way from its background (median) to its peak. Returns
-    a raw content bbox ``(left, top, right, bottom)`` or ``None``. Raises
-    ``ImportError`` when numpy is unavailable so the caller can fall back.
-    """
-    import numpy as np  # local import: only needed for crop, keeps startup light
-
-    arr = np.asarray(gray, dtype=np.float32)
-    h, w = arr.shape
-    gmag = np.zeros((h, w), dtype=np.float32)
-    gmag[:, 1:] += np.abs(arr[:, 1:] - arr[:, :-1])   # horizontal gradient (vertical edges)
-    gmag[1:, :] += np.abs(arr[1:, :] - arr[:-1, :])   # vertical gradient (horizontal edges)
-
-    def _smooth(p, k):
-        if k <= 1:
-            return p
-        return np.convolve(p, np.ones(k, dtype=np.float32) / k, mode="same")
-
-    col_prof = _smooth(gmag.sum(axis=0), max(1, w // 200))
-    row_prof = _smooth(gmag.sum(axis=1), max(1, h // 200))
-
-    def _bounds(prof):
-        peak = float(prof.max())
-        if peak <= 0:
-            return None
-        base = float(np.median(prof))
-        thr = base + frac * (peak - base)
-        idx = np.where(prof >= thr)[0]
-        if idx.size == 0:
-            return None
-        return int(idx[0]), int(idx[-1] + 1)
-
-    cb, rb = _bounds(col_prof), _bounds(row_prof)
-    if not cb or not rb:
-        return None
-    return (cb[0], rb[0], cb[1], rb[1])
-
-
-def _content_bbox_by_corner_bg(gray: Image.Image, threshold: float):
-    """Legacy corner-background content detection (fallback when numpy is absent).
-
-    Estimates the background from the four corner patches and returns the bbox of
-    everything that differs from it by more than ``threshold``. Returns a raw
-    content bbox or ``None``.
-    """
-    w, h = gray.size
-    samples = []
-    for box in ((0, 0, 8, 8), (w - 8, 0, w, 8),
-                (0, h - 8, 8, h), (w - 8, h - 8, w, h)):
-        samples.extend(gray.crop(box).tobytes())
-    samples.sort()
-    bg = samples[len(samples) // 2]
-    diff = ImageChops.difference(gray, Image.new("L", gray.size, bg))
-    mask = diff.point(lambda v: 255 if v > threshold else 0)
-    return mask.getbbox()
-
-
-def autocrop_analyze(img: Image.Image, aggressiveness: Optional[float] = None) -> dict:
-    """Inspect what auto-crop would do to ``img`` without mutating it.
-
-    Returns a diagnostics dict — ``{"bbox", "kept_ratio", "would_crop",
-    "reason"}`` — that is the single source of truth for both the pipeline
-    (``autocrop_receipt``) and the Settings → "Test image processing" preview.
-    ``bbox`` is the detected content box *with* the safety margin (or None),
-    ``kept_ratio`` is its area as a fraction of the original, and ``reason`` is a
-    short, human-readable explanation of the decision.  ``aggressiveness``
-    defaults to the module-level ``AUTOCROP_AGGRESSIVENESS`` dial.
-
-    Detection uses an edge-energy projection (robust to non-uniform backgrounds);
-    it falls back to legacy corner-background subtraction only if numpy is
-    unavailable. The aggressiveness dial, margin and accept/reject gating are
-    unchanged so the slider behaves predictably.
-    """
-    if aggressiveness is None:
-        aggressiveness = AUTOCROP_AGGRESSIVENESS
-    p = _autocrop_params(aggressiveness)
-    min_ratio, max_ratio = p["min_ratio"], p["max_ratio"]
-    try:
-        gray = img.convert("L")
-        w, h = gray.size
-        if w < 64 or h < 64:
-            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
-                    "reason": "image too small to crop (min 64×64 px)"}
-        try:
-            # `threshold` (16..46) reused as a 0.16..0.46 energy fraction: higher
-            # aggressiveness ⇒ larger fraction ⇒ fainter edges ignored ⇒ tighter box.
-            bbox = _content_bbox_by_edges(gray, p["threshold"] / 100.0)
-        except ImportError:
-            bbox = _content_bbox_by_corner_bg(gray, p["threshold"])
-        if not bbox:
-            return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
-                    "reason": "no content edges stand out from the background"}
-
-        mx = int(w * p["margin"])
-        my = int(h * p["margin"])
-        left   = max(0, bbox[0] - mx)
-        top    = max(0, bbox[1] - my)
-        right  = min(w, bbox[2] + mx)
-        bottom = min(h, bbox[3] + my)
-        kept = ((right - left) * (bottom - top)) / float(w * h)
-        margined = (left, top, right, bottom)
-
-        # Always crop if bbox is smaller than the original (any non-trivial border found).
-        if kept >= 1.0 or margined == (0, 0, w, h):
-            return {"bbox": margined, "kept_ratio": kept, "would_crop": False,
-                    "reason": "no meaningful border detected — image fills the frame"}
-        return {"bbox": margined, "kept_ratio": kept, "would_crop": True,
-                "reason": f"trims background border to {kept:.0%} of the original"}
-    except Exception as exc:
-        return {"bbox": None, "kept_ratio": 1.0, "would_crop": False,
-                "reason": f"detection error: {exc}"}
-
-
-def autocrop_receipt(img: Image.Image) -> Image.Image:
-    """Trim uniform background borders around a receipt photo.
-
-    Conservative by design: returns the original image unchanged whenever the
-    detected crop is suspiciously aggressive (<40% of the area kept), trims
-    almost nothing, or detection fails for any reason.  All of that logic lives
-    in ``autocrop_analyze``; this is the in-memory apply step.
-    """
-    if not AUTOCROP_ENABLED:
-        return img
-    info = autocrop_analyze(img)
-    if info["would_crop"] and info["bbox"]:
-        return img.crop(info["bbox"])
-    return img
-
-
-def autocrop_image_file(path: Path) -> bool:
-    """Auto-crop a stored receipt image in place. Returns True if cropped."""
-    try:
-        with Image.open(path) as raw:
-            if getattr(raw, "format", None) == "MPO":
-                raw.seek(0)
-            img = raw.convert("RGB")
-            cropped = autocrop_receipt(img)
-            if cropped.size == img.size:
-                return False
-            if path.suffix.lower() in (".jpg", ".jpeg"):
-                cropped.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
-            else:
-                cropped.save(path)
-        return True
-    except Exception:
-        return False
-
-
 def grayscale_image_file(path: Path) -> bool:
     """Convert a stored receipt image to high-contrast grayscale, in place.
 
@@ -1192,7 +1019,7 @@ def grayscale_image_file(path: Path) -> bool:
     a hard 1-bit threshold (which would also hurt the embedded receipt image).
 
     The file keeps its original path and suffix, so every later step — OCR,
-    distillation, autocrop, rename, deferred compression, the workbook image, and
+    distillation, rename, deferred compression, the workbook image, and
     the web preview — still finds it exactly where it was.  Returns True when the
     file was rewritten, False when disabled or on any error (best-effort: a failed
     conversion must never block extraction).
@@ -1206,7 +1033,7 @@ def grayscale_image_file(path: Path) -> bool:
             fmt  = (raw.format or "").upper()
             gray = ImageOps.autocontrast(raw.convert("L"), cutoff=1)
         if path.suffix.lower() in (".jpg", ".jpeg"):
-            gray.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            gray.save(path, format="JPEG", quality=PREP_JPEG_QUALITY, optimize=True)
         elif fmt:
             gray.save(path, format=fmt)
         else:
@@ -1217,10 +1044,10 @@ def grayscale_image_file(path: Path) -> bool:
 
 
 def _save_image_inplace(img: "Image.Image", path: Path, fmt: str = "") -> None:
-    """Save an image over ``path``, honoring JPEG_QUALITY and keeping the original
-    format where possible (mirrors the save behavior of grayscale/autocrop)."""
+    """Save an image over ``path`` at the high pre-OCR quality, keeping the
+    original format where possible (mirrors the grayscale save behavior)."""
     if path.suffix.lower() in (".jpg", ".jpeg"):
-        img.save(path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        img.save(path, format="JPEG", quality=PREP_JPEG_QUALITY, optimize=True)
     elif fmt:
         img.save(path, format=fmt)
     else:
@@ -1261,17 +1088,49 @@ def autorotate_image_file(path: Path) -> bool:
         return False
 
 
+def _auto_jpeg_quality(img: "Image.Image") -> int:
+    """Built-in export-quality judgment (there is deliberately no user dial).
+
+    Receipts are documents: mid-80s JPEG is visually lossless for text, and very
+    large frames can afford slightly lower quality because they're viewed scaled
+    down. The value only affects the EXPORTED copy — every OCR/LLM pass already
+    ran against the full-quality original."""
+    px = img.width * img.height
+    if px > 3_000_000:
+        return 78
+    if px > 1_500_000:
+        return 82
+    return 85
+
+
+def _image_intact(path: Path) -> bool:
+    """Fully decode ``path`` to prove it isn't corrupt/truncated. (PIL's
+    ``verify()`` alone only checks headers — ``load()`` walks all pixel data.)"""
+    try:
+        with Image.open(path) as im:
+            im.load()
+        return path.stat().st_size > 0
+    except Exception:
+        return False
+
+
 def compress_image_file(path: Path) -> Path:
     """Re-encode a stored receipt image as an optimized JPEG to shrink its size.
 
-    Honors the runtime JPEG_QUALITY / STORE_MAX_PX settings, downscales oversized
-    photos, and converts non-JPEG formats (PNG, HEIC-as-PNG, etc.) to JPEG. Returns
-    the path of the resulting file — which may carry a new ``.jpg`` suffix — or the
+    Corruption-safe by construction: the re-encode goes to a TEMP file first,
+    which is fully re-decoded (`_image_intact`) to prove the result is a valid
+    image before it replaces anything — on any failure, or when the "compressed"
+    JPEG would come out bigger than the original, the original file is kept
+    untouched. Quality is chosen automatically (`_auto_jpeg_quality`); oversized
+    photos are downscaled to STORE_MAX_PX and non-JPEG formats convert to JPEG.
+    Returns the resulting path — possibly with a new ``.jpg`` suffix — or the
     original path unchanged when compression is disabled or anything goes wrong.
     """
     if not COMPRESS_ENABLED:
         return path
+    tmp = path.with_name(f"{path.stem}.compress-tmp.jpg")
     try:
+        before = path.stat().st_size
         target = path.with_suffix(".jpg")
         with Image.open(path) as raw:
             if getattr(raw, "format", None) == "MPO":
@@ -1282,11 +1141,26 @@ def compress_image_file(path: Path) -> Path:
                 img = img.resize(
                     (round(img.width * ratio), round(img.height * ratio)), Image.LANCZOS,
                 )
-            img.save(target, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            img.save(tmp, format="JPEG", quality=_auto_jpeg_quality(img), optimize=True)
+        # The check-after: never swap in a file we can't fully decode.
+        if not _image_intact(tmp):
+            tmp.unlink(missing_ok=True)
+            return path
+        # A same-suffix "compression" that grew the file helps nobody — keep the
+        # original. (A format conversion, e.g. .png → .jpg, still goes through so
+        # the stored set stays JPEG-normalized.)
+        if target == path and tmp.stat().st_size >= before:
+            tmp.unlink(missing_ok=True)
+            return path
+        os.replace(tmp, target)
         if target != path and path.exists():
             path.unlink()
         return target
     except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
         return path
 
 
@@ -1774,7 +1648,7 @@ def _extract_local_ocr_lines(image_path: Path) -> tuple:
     pixel size: ``(rows, width, height)``.
 
     The boxes are in the coordinate space of ``image_path`` as the engine read it
-    (after the in-place grayscale/autocrop passes, before the deferred export
+    (after the in-place grayscale pass, before the deferred export
     compression), so normalizing them by ``(width, height)`` yields resolution-
     independent positions that still map onto the image shown in the UI. Returns
     ``([], 0, 0)`` when the engine is unavailable or errors out."""
@@ -2467,20 +2341,8 @@ def _extract_receipt_with_status(
         if grayscale_image_file(image_path):
             _append_step(step_log, "grayscale", "Grayscale",
                          "converted to high-contrast black & white", ok=True)
-        # Autocrop the uniform photo border next, still BEFORE OCR — this is the
-        # canonical greyscale → autocrop → OCR order (autocrop_receipt is conservative:
-        # it no-ops unless it can trim a clear border). OCR then reads the cropped
-        # image, which is also the one shown in the UI, so the field-markup boxes stay
-        # pixel-aligned with the preview. Gated by AUTOCROP_ENABLED.
-        _crop_before = _img_size(image_path)
-        if autocrop_image_file(image_path):
-            _crop_after = _img_size(image_path)
-            if _crop_before and _crop_after:
-                detail = (f"trimmed border {_crop_before[0]}×{_crop_before[1]} → "
-                          f"{_crop_after[0]}×{_crop_after[1]}")
-            else:
-                detail = "trimmed uniform border"
-            _append_step(step_log, "autocrop", "Auto-crop", detail, ok=True)
+        # (No crop step: auto-crop was removed — OCR reads the full frame, which
+        # is also the file shown in the UI, so markup boxes stay pixel-aligned.)
 
     def _cb(status: str, data: Optional[dict] = None, model: str = ""):
         if status_cb:
@@ -3527,9 +3389,8 @@ def process_receipts_batch(
         if flags_list and not data.get("_flag"):
             data["_flag"] = flags_list[0].get("flag", "")
 
-        # Autocrop now; compression is deferred to generate_spreadsheet so the
-        # stored image keeps full resolution until the report is built.
-        autocrop_image_file(img_path)
+        # Compression is deferred to generate_spreadsheet so the stored image
+        # keeps full resolution until the report is built.
         if use_folder_structure:
             dest_dir = completed_dir
             renamed    = rename_receipt_image(img_path, data, category)

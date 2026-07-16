@@ -46,7 +46,7 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 | File | What lives here |
 |---|---|
 | `server.py` (~6.8k lines) | FastAPI app: all HTTP/SSE endpoints (128 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
-| `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
+| `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autorotate/grayscale + verified export compression, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
 | `templates/index.html` (~7.9k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
 | `vendor_db.py` | Curated vendor → category lookup data/helpers. |
@@ -60,10 +60,12 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 Order matters (see `BLUEPRINT.md` §5). Current flow:
 
 1. **Auto-rotate** (`autorotate_image_file`, EXIF → upright pixels) then **grayscale**
-   then **autocrop** — all in-place and **BEFORE OCR** (canonical
-   autorotate→greyscale→autocrop→OCR order, applied in the web-worker path too, not
-   just the CLI batch path). A deeper **OCR-guided** rotation check runs inside the OCR
-   step (below). Compression is deferred to export time.
+   — both in-place and **BEFORE OCR** (canonical autorotate→greyscale→OCR order,
+   applied in the web-worker path too, not just the CLI batch path). In-place
+   pre-OCR rewrites save at `PREP_JPEG_QUALITY` (95) so OCR/LLM read a nearly
+   lossless file. A deeper **OCR-guided** rotation check runs inside the OCR step
+   (below). Compression is deferred to export time. **Auto-crop was REMOVED**
+   (2026-07-16): no `autocrop_*` functions/settings exist any more.
 2. **OCR (built-in, primary):** `_ocr_lines_best_orientation` → `_extract_local_ocr_lines`
    (RapidOCR), always runs — returns per-line **boxes + dims** (text via
    `_extract_local_ocr`, kept as a fallback for the engine-unavailable/test path).
@@ -204,10 +206,10 @@ to the model — nothing hidden or clipped.
   `_renderRunDetail()`) showing the run header, a collapsible instructions panel,
   the full streamed log, and a per-receipt step breakdown (reuses `renderSteps`),
   with Download/Refresh/Clear. Refreshes on `batch_done` and on page load.
-- **Image-processing steps are logged.** `_extract_receipt_with_status` now records
-  `exif_rotate` / `grayscale` / `autocrop` steps (when each actually changes the
-  file; autocrop shows before→after dims) so the card step-log, the run log, and the
-  live Processing & Errors stream all show what was done to the picture before OCR.
+- **Image-processing steps are logged.** `_extract_receipt_with_status` records
+  `exif_rotate` / `grayscale` steps (when each actually changes the file) so the
+  card step-log, the run log, and the live Processing & Errors stream all show
+  what was done to the picture before OCR.
 - **The same stream feeds both places** — `#log` (Processing & Errors) and the run
   record are the *same* `type:"log"` events, so "route the log into Processing &
   Errors" is satisfied by construction. The curated **Errors** panel still filters
@@ -416,7 +418,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **806 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **783 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -498,6 +500,33 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (auto-crop removed + verified compression + settings reshuffle):**
+  Suite **806 → 783** green (−31 auto-crop tests, +8 compression-safety/settings).
+  Same branch/PR. Driven by user reports of cropped/corrupted receipt images.
+  * **Auto-crop REMOVED outright** — `autocrop_analyze`/`autocrop_receipt`/
+    `autocrop_image_file`/`_autocrop_params`/both bbox detectors, the
+    `AUTOCROP_*` globals, the `/debug/autocrop-test` endpoint, the settings keys
+    (stale config keys are scrubbed on the next `/settings/processing` POST), the
+    UI toggle + aggressiveness slider, and `tests/test_autocrop*.py` (3 files).
+    Presets `scanned`/`photo` are now both just autorotate+grayscale.
+  * **Compression corruption-safe.** `compress_image_file` writes to a temp file,
+    **fully re-decodes it** (`_image_intact` — `load()`, not just `verify()`)
+    before `os.replace`-ing it in; a corrupt or same-suffix-but-bigger result is
+    discarded and the ORIGINAL kept byte-for-byte. `JPEG_QUALITY` (the user
+    slider) is gone — `_auto_jpeg_quality` picks 85/82/78 by frame size; pre-OCR
+    in-place saves (rotate/grayscale) now use `PREP_JPEG_QUALITY` (95) so OCR/LLM
+    read maximum detail. Compression stays at export time (already after all
+    OCR/LLM — confirmed, unchanged).
+  * **Settings reshuffle.** The RapidOCR toggle is gone (built-in OCR is always
+    the primary engine; `LOCAL_OCR_ENABLED` remains env-only); **Advanced tuning
+    moved from Image Processing into the AI Model card** (same `proc-*` ids/JS);
+    the failed-card Retry button is labelled **"Retry with AI OCR"** (it already
+    forced the LLM-OCR pass); new **"Clear log & errors"** button
+    (`#log-clear-btn`) empties the live Processing & Errors stream client-side.
+  * Tests: `tests/test_compress.py` rewritten (auto-quality, never-grow,
+    corrupt-output-keeps-original, truncation detection, autocrop-gone guard);
+    settings/preset/worker tests updated.
 
 - **2026-07-16 (Insights allowances band + board thumbnails + gallery):** Suite
   **803 → 806** green. Same branch/PR.

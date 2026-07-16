@@ -135,10 +135,9 @@ app automatically (all under **Settings**, all off until you set them up):
 **Importing from CamScanner (and other scan apps)**
 
 CamScanner, Adobe Scan and Genius Scan already crop, straighten and sharpen each
-page, so the app does **not** crop them again (re-cropping a tidy scan can shave
-off an edge). The **📱 Import from a scan app** button opens a short guide and, when
-you pick your files, automatically applies the best settings for scanned documents
-(auto-crop **off**, auto-rotate and black-&-white **on**).
+page — the app reads them as-is (it never crops). The **📱 Import from a scan app**
+button opens a short guide and, when you pick your files, automatically applies the
+best settings for scanned documents (auto-rotate and black-&-white **on**).
 
 For the cleanest results, in CamScanner:
 

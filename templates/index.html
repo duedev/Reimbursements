@@ -1838,6 +1838,10 @@
       </button>
     </div>
     <div id="progress-body" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button class="btn btn-cancel btn-sm" id="log-clear-btn"
+                title="Empty the live processing log and the Errors list below (the per-run Run Log history keeps its own Clear)">&#10005; Clear log &amp; errors</button>
+      </div>
       <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
       <div class="progress-meta">
         <span id="progress-label">0 / 0</span>
@@ -2139,6 +2143,79 @@
       <!-- Full send → receive round-trip log (task: surface issues, not silent fails) -->
       <div id="or-test-result" style="display:none;margin-top:10px"></div>
     </div>
+      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
+        <p class="section-desc" style="margin-top:0">Request pacing, timeouts, and size caps for the model pipeline. Changes save automatically.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
+            LLM request timeout (s)
+            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
+            LLM max retries
+            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
+            Stored image max side (px)
+            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
+            PDF max pages
+            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
+            Max upload size (MB, 0 = ∞)
+            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Throttle requests sent to the model. Free cloud tiers throttle hard — OpenRouter's free models allow ~20/min and answer a burst past that with 429 'rate limited' errors that show up as failed receipts. On by default; applies to every provider.">
+            Rate-limit requests
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-rate-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum model requests per minute when rate-limiting is on. OpenRouter's free-tier ceiling is 20/min.">
+            Max requests / min
+            <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="When the essential extraction call is rate-limited, wait for the free-tier bucket to refill (bounded) and retry instead of dropping to the offline parser.">
+            Wait out a rate-limit (429), then retry
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-429-wait-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Upper bound on how long to wait for the free-tier bucket to refill before giving up (and falling back to the offline parser).">
+            Max wait for refill (s)
+            <input type="number" id="proc-429-max-wait" min="0" max="120" step="5" style="width:100%">
+          </label>
+        </div>
+        <!-- Rate-limit sweet spots + one-click presets -->
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:11px;line-height:1.6;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+            <strong>Sweet spots.</strong> OpenRouter's free models allow about <strong>20 requests/min</strong>
+            and <strong>50 requests/day</strong>; bursting past either returns a 429 the pipeline can only show
+            as failed receipts. Keep the per-minute cap a little under 20 and let “wait out a 429” ride out the
+            short bucket refill. On a local / Docker server there's no quota — turn both off so nothing throttles.
+            <br><br>
+            Adding $10 of credit to OpenRouter raises the free-model daily cap from 50 to 1000 requests/day —
+            those 1000 are still free (credit only pays for non-free models). The per-minute cap stays ~20.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-free"
+                    title="OpenRouter free tier (no credits): ~12/min, wait out 429s up to 30s, daily cap 50/day. Keep LLM-OCR off.">
+              OpenRouter free (no credits)
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-credit"
+                    title="OpenRouter with $10 credit: ~20/min, wait out 429s up to 30s. Still free per request; daily cap rises 50 → 1000/day.">
+              OpenRouter +$10 credits
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-local"
+                    title="Local / Docker server: no per-minute or daily quota — turn rate-limiting and 429-wait off.">
+              Local / Docker (no limit)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Benchmark — per-batch processing time, for comparing LLM speed -->
@@ -2231,118 +2308,32 @@
     <div style="display:flex;flex-direction:column;gap:11px">
       <label class="check-label">
         <input type="checkbox" id="proc-autorotate">
-        1. Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up <em>before</em> cropping &amp; OCR, so a cropped receipt also faces the right direction (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
+        1. Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up <em>before</em> OCR (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
       </label>
       <label class="check-label">
         <input type="checkbox" id="proc-grayscale">
         2. Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
       </label>
-      <label class="check-label">
-        <input type="checkbox" id="proc-autocrop">
-        3. Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt (runs after auto-rotate, before OCR)</span>
-      </label>
-      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
-        <span style="min-width:96px">Aggressiveness</span>
-        <input type="range" id="proc-autocrop-aggr" min="0" max="100" step="5" value="70" style="flex:1;max-width:240px" title="Higher trims closer and crops more photos; lower only trims obvious borders">
-        <span id="proc-autocrop-aggr-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:88px">70 — strong</span>
-      </label>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <label class="check-label">
-          <input type="checkbox" id="proc-localocr">
-          4. RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
-        </label>
-        <button class="copy-btn adv-only" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
+        <span style="font-size:13px">
+          3. Text reading (OCR) <span style="color:var(--muted)">— the built-in engine (RapidOCR) reads every receipt; always on. The AI model can cross-check it — see the AI Model section.</span>
+        </span>
+        <button class="copy-btn adv-only" id="ocr-test-btn" title="Upload a receipt image to test the built-in OCR extraction" style="flex-shrink:0">
           Test OCR
         </button>
-        <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the local OCR">
+        <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the built-in OCR">
         <span id="ocr-test-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
       <label class="check-label">
         <input type="checkbox" id="proc-compress">
-        5. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs (at export time)</span>
-      </label>
-      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
-        <span style="min-width:96px">JPEG quality</span>
-        <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
-        <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
+        4. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs at export time, <em>after</em> all OCR/AI reads. Quality is chosen automatically, and every compressed file is integrity-checked — if the result can't be fully decoded (or would be bigger), the original is kept untouched.</span>
       </label>
       <div class="adv-only" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;border-top:1px solid var(--border);padding-top:12px">
-        <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → auto-crop → compress in series and preview each step" style="flex-shrink:0">
+        <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → compress in series and preview each step" style="flex-shrink:0">
           Test image processing →
         </button>
         <input type="file" id="proc-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the full image-processing chain">
         <span id="proc-test-status" style="font-size:11px;color:var(--muted)"></span>
-      </div>
-      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
-            LLM request timeout (s)
-            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
-            LLM max retries
-            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
-            Stored image max side (px)
-            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
-            PDF max pages
-            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
-            Max upload size (MB, 0 = ∞)
-            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Throttle requests sent to the model. Free cloud tiers throttle hard — OpenRouter's free models allow ~20/min and answer a burst past that with 429 'rate limited' errors that show up as failed receipts. On by default; applies to every provider.">
-            Rate-limit requests
-            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-              <input type="checkbox" id="proc-rate-enabled" style="width:auto"> on
-            </span>
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum model requests per minute when rate-limiting is on. OpenRouter's free-tier ceiling is 20/min.">
-            Max requests / min
-            <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="When the essential extraction call is rate-limited, wait for the free-tier bucket to refill (bounded) and retry instead of dropping to the offline parser.">
-            Wait out a rate-limit (429), then retry
-            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-              <input type="checkbox" id="proc-429-wait-enabled" style="width:auto"> on
-            </span>
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Upper bound on how long to wait for the free-tier bucket to refill before giving up (and falling back to the offline parser).">
-            Max wait for refill (s)
-            <input type="number" id="proc-429-max-wait" min="0" max="120" step="5" style="width:100%">
-          </label>
-        </div>
-        <!-- Rate-limit sweet spots + one-click presets -->
-        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-          <div style="font-size:11px;line-height:1.6;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:10px">
-            <strong>Sweet spots.</strong> OpenRouter's free models allow about <strong>20 requests/min</strong>
-            and <strong>50 requests/day</strong>; bursting past either returns a 429 the pipeline can only show
-            as failed receipts. Keep the per-minute cap a little under 20 and let “wait out a 429” ride out the
-            short bucket refill. On a local / Docker server there's no quota — turn both off so nothing throttles.
-            <br><br>
-            Adding $10 of credit to OpenRouter raises the free-model daily cap from 50 to 1000 requests/day —
-            those 1000 are still free (credit only pays for non-free models). The per-minute cap stays ~20.
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-free"
-                    title="OpenRouter free tier (no credits): ~12/min, wait out 429s up to 30s, daily cap 50/day. Keep LLM-OCR off.">
-              OpenRouter free (no credits)
-            </button>
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-credit"
-                    title="OpenRouter with $10 credit: ~20/min, wait out 429s up to 30s. Still free per request; daily cap rises 50 → 1000/day.">
-              OpenRouter +$10 credits
-            </button>
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-local"
-                    title="Local / Docker server: no per-minute or daily quota — turn rate-limiting and 429-wait off.">
-              Local / Docker (no limit)
-            </button>
-          </div>
-        </div>
       </div>
     </div>
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
@@ -2769,7 +2760,7 @@
     <div class="card-title">Importing from a scan app</div>
     <p style="font-size:14px;line-height:1.65;color:var(--text)">
       Scan apps like <strong>CamScanner</strong>, <strong>Adobe Scan</strong> and <strong>Genius Scan</strong>
-      already crop, de-skew and enhance each page, so this app skips its own auto-crop and just reads them.
+      already crop, de-skew and enhance each page, so this app just reads them as-is.
       Each PDF page (or photo) becomes one receipt — you can drag exported files straight onto the
       <em>Add Receipts</em> card, or use the guided import below to apply the best scanned-document settings automatically.
     </p>
@@ -2876,9 +2867,6 @@
       <li><strong>Grayscale</strong>
         <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
         <span class="pl-why">Converts to high-contrast black &amp; white for cleaner, more reliable reading.</span></li>
-      <li><strong>Auto-crop</strong>
-        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
-        <span class="pl-why">Trims the uniform photo border around the receipt (skipped for scan-app imports, which are already cropped).</span></li>
       <li><strong>OCR-guided rotation check</strong>
         <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
         <span class="pl-why">Tries the three 90° rotations and keeps whichever the OCR engine reads best — no model involved.</span></li>
@@ -3046,7 +3034,7 @@
   <div class="modal-box" style="width:560px">
     <h3 id="cs-modal-title">&#128241; Import from CamScanner &amp; other scan apps</h3>
     <p class="modal-sub">CamScanner, Adobe Scan, Genius Scan and similar apps already crop, de-skew
-      and enhance each page — so this app skips its own auto-crop and just reads them.
+      and enhance each page — this app just reads them as-is.
       Each PDF page (or photo) becomes one receipt.</p>
     <div style="background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.6;color:var(--text)">
       <strong>Best export settings in CamScanner:</strong>
@@ -3060,7 +3048,7 @@
     <label class="check-label" style="font-size:13px;gap:8px;margin-bottom:6px">
       <input type="checkbox" id="cs-apply-preset" checked>
       Apply best settings for scanned documents
-      <span style="color:var(--muted);font-weight:400">(skip auto-crop, keep auto-rotate &amp; B&amp;W)</span>
+      <span style="color:var(--muted);font-weight:400">(auto-rotate &amp; B&amp;W on)</span>
     </label>
     <p style="font-size:11px;color:var(--muted);margin:0 0 14px">Job name/number &amp; employee come from the workspace fields, same as a normal upload.
       You can also export straight into your intake folder and use <em>Queue intake files</em>.</p>
@@ -3380,8 +3368,8 @@ function addFiles(newFiles) {
 }
 
 // ── Scan-app (CamScanner) guided import ───────────────────────────────────────
-// Pre-scanned documents are already cropped/de-skewed/enhanced, so apply the
-// "camscanner" preset (auto-crop OFF) before queueing them through the normal path.
+// Pre-scanned documents are already cropped/de-skewed/enhanced; apply the
+// "camscanner" preset (auto-rotate + B&W) before queueing them through the normal path.
 const camscannerInput = document.getElementById('camscanner-input');
 document.getElementById('camscanner-btn').addEventListener('click', () => {
   document.getElementById('camscanner-modal').classList.remove('hidden');
@@ -3401,7 +3389,7 @@ camscannerInput.addEventListener('change', async () => {
         body: JSON.stringify({preset: 'camscanner'}),
       });
       if (r.ok) {
-        showToast('Applied scan-app settings (auto-crop off, B&W + auto-rotate on)', true);
+        showToast('Applied scan-app settings (B&W + auto-rotate on)', true);
         if (typeof loadProcessingSettings === 'function') loadProcessingSettings();
       }
     } catch (_) {}
@@ -3594,7 +3582,7 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
     const errText = errorMsg || (data && data._error) || '';
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')" title="Re-run this receipt with the AI model also reading the image directly (AI OCR) — rescues receipts the built-in OCR misread">&#8635; Retry with AI OCR</button>`;
     inner += `<button class="k-review-btn" onclick="openManualReview('${escJs(filename)}')">&#9998; Review</button>`;
     inner += `</div>`;
   }
@@ -4882,6 +4870,16 @@ function _explainError(line) {
   }
   return null;
 }
+
+// "Clear log & errors" — empty the live stream and the curated Errors list.
+// Client-side only: the persisted per-run Run Log below has its own Clear.
+document.getElementById('log-clear-btn').addEventListener('click', () => {
+  logEl.textContent = '';
+  errorLines = [];
+  errorLogEl.innerHTML = '';
+  errorCountBadge.textContent = '0';
+  errorSection.classList.add('hidden');
+});
 
 function renderErrorPanel() {
   if (!errorLines.length) return;
@@ -6177,14 +6175,7 @@ async function loadProcessingSettings() {
     const d = await (await fetch('/settings/processing')).json();
     document.getElementById('proc-autorotate').checked = d.autorotate !== false;
     document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
-    document.getElementById('proc-autocrop').checked   = d.autocrop  !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
-    document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
-    const aggr = (d.autocrop_aggressiveness ?? 70);
-    document.getElementById('proc-autocrop-aggr').value = aggr;
-    document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(aggr);
-    document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
-    document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
     const _setNum = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
     _setNum('proc-llm-timeout', d.llm_timeout != null ? Math.round(d.llm_timeout) : null);
     _setNum('proc-llm-retries', d.llm_max_retries);
@@ -6200,24 +6191,12 @@ async function loadProcessingSettings() {
   } catch (_) {}
 }
 
-// Human-readable label for the auto-crop aggressiveness dial.
-function _aggrLabel(v) {
-  v = parseInt(v, 10);
-  const word = v >= 85 ? 'maximum' : v >= 65 ? 'strong' : v >= 40 ? 'moderate'
-             : v >= 15 ? 'gentle' : 'off-ish';
-  return `${v} — ${word}`;
-}
-
 let _procSaveTimer = null;
 async function saveProcessingSettings() {
   const body = {
     autorotate:   document.getElementById('proc-autorotate').checked,
     grayscale:    document.getElementById('proc-grayscale').checked,
-    autocrop:     document.getElementById('proc-autocrop').checked,
-    autocrop_aggressiveness: parseInt(document.getElementById('proc-autocrop-aggr').value, 10),
     compress:     document.getElementById('proc-compress').checked,
-    local_ocr:    document.getElementById('proc-localocr').checked,
-    jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
     llm_timeout:     parseFloat(document.getElementById('proc-llm-timeout').value),
     llm_max_retries: parseInt(document.getElementById('proc-llm-retries').value, 10),
     store_max_px:    parseInt(document.getElementById('proc-store-px').value, 10),
@@ -6244,7 +6223,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr', 'proc-rate-enabled', 'proc-429-wait-enabled'].forEach(id => {
+['proc-autorotate', 'proc-grayscale', 'proc-compress', 'proc-rate-enabled', 'proc-429-wait-enabled'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', saveProcessingSettings);
 });
@@ -6277,15 +6256,6 @@ function _applyRatePreset({ rate, rpm, wait, maxWait }) {
   if (_orCredit) _orCredit.addEventListener('click', () => { _applyRatePreset({ rate: true,  rpm: 20, wait: true,  maxWait: 30 }); showToast('Preset: OpenRouter +$10 credits', true); });
   if (_local)    _local.addEventListener('click',    () => { _applyRatePreset({ rate: false, wait: false }); showToast('Preset: Local / Docker (no limit)', true); });
 }
-
-// Auto-crop aggressiveness slider — live label on drag, debounced save on release.
-document.getElementById('proc-autocrop-aggr').addEventListener('input', (e) => {
-  document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(e.target.value);
-});
-document.getElementById('proc-autocrop-aggr').addEventListener('change', () => {
-  clearTimeout(_procSaveTimer);
-  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
-});
 
 // ── Batch concurrency slider (top of "Add Receipts") ──────────────────────────
 function _setConcLabel(v) {
@@ -6382,20 +6352,11 @@ document.getElementById('ocr-test-input').addEventListener('change', async (e) =
     e.target.value = '';
   }
 });
-document.getElementById('proc-quality').addEventListener('input', (e) => {
-  document.getElementById('proc-quality-val').textContent = `${e.target.value} %`;
-});
-document.getElementById('proc-quality').addEventListener('change', () => {
-  clearTimeout(_procSaveTimer);
-  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
-});
-
 // ── Test image processing (whole chain, in series) ─────────────────────────────
 // Upload one receipt photo and run every enabled step in the pipeline's order —
-// auto-rotate → black&white → auto-crop → compress — then show the original next
-// to the final result plus a per-step before/after. Confirms the steps compose
-// (a sideways photo comes out upright AND cropped) and lets the user dial in
-// auto-crop aggressiveness against a real receipt.
+// auto-rotate → black&white → compress — then show the original next to the
+// final result plus a per-step before/after. Confirms the steps compose (a
+// sideways photo comes out upright AND optimized).
 document.getElementById('proc-test-btn').addEventListener('click', () => {
   document.getElementById('proc-test-input').click();
 });
@@ -6444,7 +6405,7 @@ document.getElementById('proc-test-input').addEventListener('change', async (e) 
         <button class="proc-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
       </div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:14px">
-        ${ow}×${oh} (${kb(d.original_bytes)}) → <strong>${rw}×${rh}</strong> (${kb(d.result_bytes)}). Auto-crop aggressiveness: <strong>${d.aggressiveness}</strong>.
+        ${ow}×${oh} (${kb(d.original_bytes)}) → <strong>${rw}×${rh}</strong> (${kb(d.result_bytes)}).
       </p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:1 1 220px;min-width:180px;text-align:center">
@@ -6452,7 +6413,7 @@ document.getElementById('proc-test-input').addEventListener('change', async (e) 
           <img src="${imgURL}" alt="Original receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
         </div>
         <div style="flex:1 1 220px;min-width:180px;text-align:center">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After processing (upright + cropped)</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After processing (upright + optimized)</div>
           <img src="${d.preview}" alt="Processed receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
         </div>
         <div style="flex:1 1 240px;min-width:220px">

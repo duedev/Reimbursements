@@ -22,9 +22,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_run_stall_checker", lambda: None)
     monkeypatch.setattr(server, "_ensure_worker_alive", lambda: False)
     # Save runtime globals so endpoint mutations don't leak into other tests
-    saved = (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
-             pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
-             pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS,
+    saved = (pr.AUTOROTATE_ENABLED, pr.GRAYSCALE_ENABLED, pr.COMPRESS_ENABLED,
+             pr._thinking_enabled,
+             pr.MAX_PARALLEL_REQUESTS,
              pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED)
     saved_429 = (pr.LLM_429_WAIT_ENABLED, pr.LLM_429_MAX_WAIT)
     server._work_queue.clear()
@@ -35,9 +35,9 @@ def client(tmp_path, monkeypatch):
     server._work_queue.clear()
     server._kanban.clear()
     server._item_cache.clear()
-    (pr.AUTOROTATE_ENABLED, pr.AUTOCROP_ENABLED, pr.COMPRESS_ENABLED,
-     pr.LOCAL_OCR_ENABLED, pr.JPEG_QUALITY, pr._thinking_enabled,
-     pr.MAX_PARALLEL_REQUESTS, pr.AUTOCROP_AGGRESSIVENESS,
+    (pr.AUTOROTATE_ENABLED, pr.GRAYSCALE_ENABLED, pr.COMPRESS_ENABLED,
+     pr._thinking_enabled,
+     pr.MAX_PARALLEL_REQUESTS,
      pr.LLM_RATE_LIMIT_PER_MIN, pr.LLM_RATE_LIMIT_ENABLED) = saved
     pr.set_rate_limit(per_min=pr.LLM_RATE_LIMIT_PER_MIN,
                       enabled=pr.LLM_RATE_LIMIT_ENABLED)
@@ -46,20 +46,28 @@ def client(tmp_path, monkeypatch):
 
 def test_processing_round_trip(client):
     r = client.post("/settings/processing",
-                    json={"autorotate": False, "autocrop": False,
-                          "local_ocr": False, "jpeg_quality": 55})
+                    json={"autorotate": False, "grayscale": False})
     assert r.status_code == 200 and r.json()["ok"]
     assert pr.AUTOROTATE_ENABLED is False
-    assert pr.AUTOCROP_ENABLED is False
-    assert pr.LOCAL_OCR_ENABLED is False
-    assert pr.JPEG_QUALITY == 55
+    assert pr.GRAYSCALE_ENABLED is False
     g = client.get("/settings/processing").json()
-    assert g["jpeg_quality"] == 55 and g["autorotate"] is False
+    assert g["autorotate"] is False and g["grayscale"] is False
+    # Removed knobs are gone from the payload entirely (auto-crop feature removed;
+    # export JPEG quality is chosen automatically; built-in OCR has no toggle).
+    for gone in ("autocrop", "autocrop_aggressiveness", "jpeg_quality", "local_ocr"):
+        assert gone not in g
 
 
-def test_processing_clamps_quality(client):
-    assert client.post("/settings/processing", json={"jpeg_quality": 5}).json()["jpeg_quality"] == 40
-    assert client.post("/settings/processing", json={"jpeg_quality": 200}).json()["jpeg_quality"] == 95
+def test_processing_stale_config_keys_are_dropped(client):
+    # A config saved by an older build may carry the removed keys — one POST
+    # scrubs them and they never resurrect the removed behaviours.
+    cfg = server._load_config()
+    cfg["processing"] = {"autocrop": True, "jpeg_quality": 55, "local_ocr": False}
+    server._save_config(cfg)
+    r = client.post("/settings/processing", json={"autorotate": True})
+    assert r.status_code == 200 and r.json()["ok"]
+    proc = server._load_config()["processing"]
+    assert "autocrop" not in proc and "jpeg_quality" not in proc and "local_ocr" not in proc
 
 
 def test_max_parallel_round_trip_and_clamp(client):
