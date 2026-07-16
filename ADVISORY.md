@@ -124,26 +124,30 @@ This mode reorganizes an existing output folder into the category-prefixed filen
 
 The app's default posture is local-first; the only previously disclosed cloud
 surface was the **optional** OpenRouter LLM mode (and the `LLM_ALLOW_IMAGE` gate that
-governs whether the receipt *image* is sent there). Two further **opt-in, off-by-default**
-*capture* sources now exist — **email/IMAP intake** and **Google Drive intake** — and
-deserve the same eyes-open treatment:
+governs whether the receipt *image* is sent there). Three further **opt-in, off-by-default**
+*capture* sources now exist — **email/IMAP intake**, **Google Drive intake**, and
+**Microsoft OneDrive intake** — and deserve the same eyes-open treatment:
 
 - **What's genuinely new is the stored credential, not the receipts.** Receipts in
-  your Gmail/Drive are already on Google's servers; pulling them down to process
-  locally does not newly expose them. The new surface is the credential the app holds
-  — an IMAP App Password (`imap_password`) and a Drive OAuth **refresh token**
-  (`gdrive_token`) plus the client secret (`gdrive_client_secret`). All live in
-  `.app_secrets.json` (0600, kept out of the often-cloud-synced config), never in
-  `.app_config.json`.
-- **Least privilege.** The Drive scope defaults to `drive.readonly` (list + download
-  only); `drive.file` is offered only if a future "move processed file" option is
-  wanted. There is a one-click **Disconnect & revoke** that best-effort revokes the
-  token at Google's endpoint and always clears it locally. The Gmail→Drive bridge
-  (`gmail_to_drive.gs`) holds **no app credential at all** — it runs in the user's own
-  Google account.
+  your Gmail/Drive/OneDrive are already on Google's/Microsoft's servers; pulling them
+  down to process locally does not newly expose them. The new surface is the credential
+  the app holds — an IMAP App Password (`imap_password`), a Drive OAuth **refresh
+  token** (`gdrive_token`) plus its client secret (`gdrive_client_secret`), and a
+  OneDrive OAuth **refresh token** (`onedrive_token`; Microsoft *rotates* it, so the
+  stored value is replaced on every poll). All live in `.app_secrets.json` (0600, kept
+  out of the often-cloud-synced config), never in `.app_config.json`.
+- **Least privilege.** The Drive scope defaults to `drive.readonly` and the OneDrive
+  scope to `Files.Read` (list + download only); the write-capable variants are offered
+  only if a future "move processed file" option is wanted. Drive has a one-click
+  **Disconnect & revoke** (best-effort revoke at Google's endpoint, always clears
+  locally); OneDrive's **Disconnect** clears the token locally and points at
+  Microsoft's consent-manage page (no programmatic revoke exists for consumer tokens).
+  The Gmail→Drive bridge (`gmail_to_drive.gs`) holds **no app credential at all** — it
+  runs in the user's own Google account.
 - **Local extraction is unaffected.** OCR + the offline parser stay local; the
-  `LLM_ALLOW_IMAGE` gate still governs whether an image reaches a cloud LLM. Drive/email
-  intake changes *transport/storage*, not the extraction privacy gate.
-- **Off by default; admin-gated in multi-user mode.** Both sources are instance-level
-  (one mailbox / one Drive folder per box) and their settings endpoints are admin-only
-  when `MULTIUSER_ENABLED`. See `GOOGLE_DRIVE_IMPORT.md` §6 and `GMAIL_TO_DRIVE_SETUP.md`.
+  `LLM_ALLOW_IMAGE` gate still governs whether an image reaches a cloud LLM.
+  Drive/OneDrive/email intake changes *transport/storage*, not the extraction privacy gate.
+- **Off by default; admin-gated in multi-user mode.** All three sources are
+  instance-level (one mailbox / one Drive folder / one OneDrive folder per box) and
+  their settings endpoints are admin-only when `MULTIUSER_ENABLED`. See
+  `GOOGLE_DRIVE_IMPORT.md` §6, `GMAIL_TO_DRIVE_SETUP.md`, and `ONEDRIVE_IMPORT.md` §6.

@@ -1603,6 +1603,24 @@
         Send Report Now
       </button>
     </div>
+    <!-- Per diem: opt-in daily allowance added as its own line on the report's
+         Summary sheet and included in the grand TOTAL. Saved on change; read
+         server-side at generate time. -->
+    <div class="gen-perdiem" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label class="check-label" style="font-size:12px">
+        <input type="checkbox" id="pd-enabled">
+        Add per diem
+        <span style="color:var(--muted)">— a daily allowance line added to the report total</span>
+      </label>
+      <div id="pd-fields" style="align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:13px;display:none">
+        <span>$</span>
+        <input type="number" id="pd-rate" min="0" step="0.01" placeholder="0.00" style="width:96px" autocomplete="off">
+        <span>per day &nbsp;×</span>
+        <input type="number" id="pd-days" min="0" step="1" placeholder="0" style="width:72px" autocomplete="off">
+        <span>day(s)</span>
+        <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
+      </div>
+    </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
         <button class="btn btn-outline-accent btn-md" id="review-all-btn" style="display:none" title="Open the review window for the first receipt still needing approval, then step through them all">
@@ -2511,6 +2529,83 @@
     </div>
   </div>
 
+  <!-- Microsoft OneDrive receipt intake (opt-in cloud capture source) -->
+  <div class="card" id="onedrive-card">
+    <div class="card-title">OneDrive Intake (receipts from a OneDrive folder)</div>
+    <p class="section-desc">
+      Make one Microsoft OneDrive folder your "receipts inbox" — fill it from your
+      phone (the OneDrive app's built-in <strong>Scan</strong> / share-sheet) or any
+      synced PC folder — and the app pulls new image/PDF files into the pipeline
+      automatically. <strong>Opt-in cloud source, off by default.</strong> The receipt
+      image still only reaches a cloud LLM if you've enabled that — OneDrive only
+      changes how receipts <em>arrive</em>. Setup needs a one-time (free) Azure app
+      registration (see <code>ONEDRIVE_IMPORT.md</code> or the Guides tab).
+      <span id="od-config-status" style="font-weight:600"></span>
+    </p>
+    <label class="toggle-row" style="margin:4px 0 10px">
+      <input type="checkbox" id="od-enabled">
+      <span>Enable OneDrive intake (poll the folder for new receipts)</span>
+    </label>
+    <div class="fields fields-1col">
+      <label>OneDrive inbox folder path <span style="color:var(--muted);font-weight:400">(under your OneDrive root, e.g. <code>Receipts</code>)</span>
+        <input type="text" id="od-folder" placeholder="Receipts" autocomplete="off">
+      </label>
+    </div>
+    <div class="fields fields-2col" style="margin-top:10px">
+      <label>Azure application (client) ID
+        <input type="text" id="od-client-id" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off">
+      </label>
+      <label>Account type
+        <select id="od-tenant">
+          <option value="consumers">Personal Microsoft account (default)</option>
+          <option value="organizations">Work / school account</option>
+          <option value="common">Either</option>
+        </select>
+      </label>
+    </div>
+    <div class="fields fields-21" style="margin-top:10px">
+      <label>Access
+        <select id="od-scope">
+          <option value="files.read">Read only (recommended)</option>
+          <option value="files.readwrite">Read &amp; write</option>
+        </select>
+      </label>
+      <label>Poll every (seconds)
+        <input type="number" id="od-poll" value="300" min="30" autocomplete="off">
+      </label>
+    </div>
+    <div class="action-row">
+      <button class="btn btn-primary btn-sm" id="od-save-btn">Save OneDrive settings</button>
+      <button class="btn btn-neutral btn-sm" id="od-connect-btn">🔗 Connect Microsoft</button>
+      <button class="btn btn-neutral btn-sm" id="od-test-btn">🔌 Test connection</button>
+      <button class="btn btn-neutral btn-sm" id="od-poll-btn">⬇ Check for receipts now</button>
+      <button class="btn btn-cancel btn-sm hidden" id="od-disconnect-btn">Disconnect</button>
+      <span id="od-status" class="status-note"></span>
+    </div>
+    <!-- Device-code sign-in: show the code + link, then auto-poll until the user
+         finishes signing in on microsoft.com/devicelogin (no redirect URI needed —
+         works even when the app runs headless in Docker). -->
+    <div id="od-connect-panel" class="hidden" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px">
+      <p class="status-note" style="margin:0 0 8px">
+        1. Open <a id="od-verify-link" href="https://microsoft.com/devicelogin" target="_blank" rel="noopener">microsoft.com/devicelogin</a>,
+        2. enter this code and approve access — the app connects by itself once you finish:
+      </p>
+      <div id="od-user-code" style="font-size:22px;font-weight:700;letter-spacing:3px;margin:6px 0 8px;user-select:all"></div>
+      <div id="od-connect-wait" class="status-note">Waiting for you to finish signing in…</div>
+      <details style="margin-top:8px">
+        <summary class="status-note" style="cursor:pointer">Advanced: paste a refresh token instead</summary>
+        <div class="fields fields-1col" style="margin-top:8px">
+          <label>Refresh token
+            <input type="password" id="od-refresh-token" placeholder="0.AXo…" autocomplete="off">
+          </label>
+        </div>
+        <div class="action-row">
+          <button class="btn btn-primary btn-sm" id="od-token-btn">Connect with token</button>
+        </div>
+      </details>
+    </div>
+  </div>
+
   <!-- Maintenance — kept apart from everyday settings -->
   <div class="card adv-only" id="admin-card">
     <div class="card-title">Maintenance</div>
@@ -2567,6 +2662,18 @@
       <li><strong>Optional — Gmail→Drive bridge:</strong> use the Gmail filter (see the Gmail Receipt Filter guide) to copy receipt emails' attachments into the same folder automatically.</li>
     </ol>
     <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">Google Drive is an <strong>opt-in</strong> cloud capture source. The receipt files move from Drive into the local pipeline — no data is sent anywhere else. Disconnect any time from Settings → Google Drive Intake → Disconnect.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Microsoft OneDrive Receipt Import</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Register a (free) app in Azure: go to <a href="https://portal.azure.com" target="_blank" rel="noopener">portal.azure.com</a> → <strong>Microsoft Entra ID → App registrations → New registration</strong>. Name it anything (e.g. "Receipt App") and under <em>Supported account types</em> pick <strong>Personal Microsoft accounts only</strong> (or "…and personal" for a work account). No redirect URI is needed.</li>
+      <li>On the new app's <strong>Authentication</strong> page, scroll to <strong>Advanced settings</strong> and switch <strong>Allow public client flows</strong> to <strong>Yes</strong>, then Save. Copy the <strong>Application (client) ID</strong> from the Overview page.</li>
+      <li>In <strong>Settings → OneDrive Intake</strong>: paste the client ID, set the folder path (e.g. <code class="inline-code">Receipts</code> — create that folder in your OneDrive), pick your account type, and click <strong>Save OneDrive settings</strong>.</li>
+      <li>Click <strong>Connect Microsoft</strong> — a code appears. Open <strong>microsoft.com/devicelogin</strong> (on any device), enter the code, and sign in. The app connects by itself once you approve.</li>
+      <li>Enable the intake toggle and drop receipt photos into that OneDrive folder — from the OneDrive app's <strong>Scan</strong> button, the share-sheet, or a synced PC folder. They appear automatically on the Workspace board.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">OneDrive is an <strong>opt-in</strong> cloud capture source. Files move from OneDrive into the local pipeline — no data is sent anywhere else. Disconnect any time from Settings → OneDrive Intake; you can also revoke the app at <a href="https://account.live.com/consent/Manage" target="_blank" rel="noopener">account.live.com/consent/Manage</a>. Full walkthrough: <code>ONEDRIVE_IMPORT.md</code>.</p>
   </div>
 
   <div class="card">
@@ -5460,6 +5567,7 @@ async function loadSettings() {
   loadEmailSettings();
   loadEmailIntake();
   loadGDrive();
+  loadOneDrive();
   loadBenchmarks();
 }
 
@@ -6596,6 +6704,233 @@ document.getElementById('gd-provision-btn').addEventListener('click', async () =
   } finally { btn.disabled = false; btn.textContent = '📁 Set up Drive folders'; }
 });
 
+// ── Microsoft OneDrive intake ────────────────────────────────────────────────
+async function loadOneDrive() {
+  try {
+    const res = await fetch('/settings/onedrive');
+    if (res.status === 403) {              // admin-only in multi-user mode
+      const card = document.getElementById('onedrive-card');
+      if (card) card.classList.add('hidden');
+      return;
+    }
+    const d = await res.json();
+    document.getElementById('od-enabled').checked  = !!d.enabled;
+    document.getElementById('od-folder').value     = d.folder_path || '';
+    document.getElementById('od-client-id').value  = d.client_id || '';
+    document.getElementById('od-tenant').value     = d.tenant || 'consumers';
+    document.getElementById('od-scope').value      = d.scope || 'files.read';
+    document.getElementById('od-poll').value       = d.poll_interval || 300;
+    document.getElementById('od-disconnect-btn').classList.toggle('hidden', !d.connected);
+    const status = document.getElementById('od-config-status');
+    if (d.connected) {
+      status.textContent = d.enabled ? '✓ Connected & active' : '✓ Connected (off)';
+      status.style.color = 'var(--success)';
+    } else {
+      status.textContent = (d.client_id || d.folder_path) ? '⚠ Not connected' : '';
+      status.style.color = 'var(--warning)';
+    }
+  } catch (_) {}
+}
+
+function _odPayload() {
+  return {
+    enabled:       document.getElementById('od-enabled').checked,
+    folder_path:   document.getElementById('od-folder').value.trim(),
+    client_id:     document.getElementById('od-client-id').value.trim(),
+    tenant:        document.getElementById('od-tenant').value,
+    scope:         document.getElementById('od-scope').value,
+    poll_interval: parseInt(document.getElementById('od-poll').value, 10) || 300,
+  };
+}
+
+async function _odSave() {
+  return await (await fetch('/settings/onedrive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(_odPayload()),
+  })).json();
+}
+
+document.getElementById('od-save-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('od-save-btn');
+  btn.disabled = true;
+  try {
+    const d = await _odSave();
+    if (d.ok) { showToast('OneDrive settings saved', true); loadOneDrive(); }
+    else showToast(`OneDrive error: ${d.error}`, false);
+  } catch (err) { showToast(`OneDrive error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+// Device-code sign-in: start the flow, show the code, then poll /connect until
+// the user finishes on microsoft.com/devicelogin (or the code expires).
+let _odPollTimer = null;
+function _odStopPolling() {
+  if (_odPollTimer) { clearInterval(_odPollTimer); _odPollTimer = null; }
+}
+
+document.getElementById('od-connect-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('od-connect-btn');
+  const status = document.getElementById('od-status');
+  const wait = document.getElementById('od-connect-wait');
+  btn.disabled = true; status.textContent = ''; _odStopPolling();
+  try {
+    await _odSave();                       // persist client id / tenant first
+    const d = await (await fetch('/settings/onedrive/device-code', { method: 'POST' })).json();
+    if (!d.ok) {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    document.getElementById('od-user-code').textContent = d.user_code;
+    const link = document.getElementById('od-verify-link');
+    link.href = d.verification_uri; link.textContent = d.verification_uri.replace(/^https?:\/\//, '');
+    document.getElementById('od-connect-panel').classList.remove('hidden');
+    wait.textContent = 'Waiting for you to finish signing in…';
+    wait.style.color = 'var(--muted)';
+    const deadline = Date.now() + (d.expires_in || 900) * 1000;
+    _odPollTimer = setInterval(async () => {
+      if (Date.now() > deadline) {
+        _odStopPolling();
+        wait.textContent = 'The code expired — click Connect Microsoft to get a new one.';
+        wait.style.color = 'var(--danger)';
+        return;
+      }
+      try {
+        const r = await (await fetch('/settings/onedrive/connect', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_code: d.device_code }),
+        })).json();
+        if (r.ok) {
+          _odStopPolling();
+          document.getElementById('od-connect-panel').classList.add('hidden');
+          showToast('Connected to Microsoft OneDrive', true);
+          loadOneDrive();
+        } else if (!r.pending) {
+          _odStopPolling();
+          wait.textContent = `Sign-in failed: ${r.error}`;
+          wait.style.color = 'var(--danger)';
+        }
+      } catch (_) {}                        // transient — keep polling
+    }, Math.max(5, d.interval || 5) * 1000);
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; }
+});
+
+document.getElementById('od-token-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('od-token-btn');
+  const status = document.getElementById('od-status');
+  const token = document.getElementById('od-refresh-token').value.trim();
+  if (!token) { status.textContent = 'Paste a refresh token first.'; status.style.color = 'var(--danger)'; return; }
+  btn.disabled = true; _odStopPolling();
+  try {
+    const d = await (await fetch('/settings/onedrive/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: token }),
+    })).json();
+    if (d.ok) {
+      document.getElementById('od-refresh-token').value = '';
+      document.getElementById('od-connect-panel').classList.add('hidden');
+      showToast('Connected to Microsoft OneDrive', true);
+      loadOneDrive();
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; }
+});
+
+document.getElementById('od-disconnect-btn').addEventListener('click', async () => {
+  if (!confirm('Disconnect Microsoft OneDrive? (You can also revoke the app at account.live.com/consent/Manage.)')) return;
+  const btn = document.getElementById('od-disconnect-btn');
+  btn.disabled = true; _odStopPolling();
+  try {
+    await fetch('/settings/onedrive/disconnect', { method: 'POST' });
+    showToast('Disconnected from OneDrive', true);
+    loadOneDrive();
+  } catch (err) { showToast(`Error: ${err.message}`, false); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('od-test-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('od-test-btn');
+  const status = document.getElementById('od-status');
+  btn.disabled = true; btn.textContent = 'Testing…'; status.textContent = '';
+  try {
+    await _odSave();
+    const d = await (await fetch('/settings/onedrive/test', { method: 'POST' })).json();
+    status.textContent = d.ok ? (d.message || 'Connected ✓') : `Failed: ${d.error}`;
+    status.style.color = d.ok ? 'var(--success)' : 'var(--danger)';
+    loadOneDrive();
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '🔌 Test connection'; }
+});
+
+document.getElementById('od-poll-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('od-poll-btn');
+  const status = document.getElementById('od-status');
+  btn.disabled = true; btn.textContent = 'Checking…'; status.textContent = '';
+  try {
+    const d = await (await fetch('/settings/onedrive/poll-now', { method: 'POST' })).json();
+    if (d.ok) {
+      status.textContent = `Found ${d.files || 0} file(s), downloaded ${d.downloaded || 0} new receipt(s).`;
+      status.style.color = 'var(--success)';
+    } else {
+      status.textContent = `Failed: ${d.error}`;
+      status.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally { btn.disabled = false; btn.textContent = '⬇ Check for receipts now'; }
+});
+
+// ── Per diem (daily allowance on the report) ─────────────────────────────────
+async function loadPerDiem() {
+  try {
+    const d = await (await fetch('/settings/per-diem')).json();
+    document.getElementById('pd-enabled').checked = !!d.enabled;
+    document.getElementById('pd-rate').value = d.rate || '';
+    document.getElementById('pd-days').value = d.days || '';
+    _pdRefreshUI();
+  } catch (_) {}
+}
+
+function _pdRefreshUI() {
+  const on = document.getElementById('pd-enabled').checked;
+  document.getElementById('pd-fields').style.display = on ? 'flex' : 'none';
+  const rate = parseFloat(document.getElementById('pd-rate').value) || 0;
+  const days = parseInt(document.getElementById('pd-days').value, 10) || 0;
+  document.getElementById('pd-total').textContent =
+    (on && rate > 0 && days > 0) ? `= $${(rate * days).toFixed(2)} added to the report total` : '';
+}
+
+async function _pdSave() {
+  _pdRefreshUI();
+  try {
+    await fetch('/settings/per-diem', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: document.getElementById('pd-enabled').checked,
+        rate:    parseFloat(document.getElementById('pd-rate').value) || 0,
+        days:    parseInt(document.getElementById('pd-days').value, 10) || 0,
+      }),
+    });
+  } catch (_) {}
+}
+
+['pd-enabled', 'pd-rate', 'pd-days'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', _pdSave);
+  el.addEventListener('input', _pdRefreshUI);
+});
+
 async function loadSchedule() {
   try {
     const res = await fetch('/schedule');
@@ -7506,6 +7841,7 @@ function _bootApp() {
   refreshLLMOverview();
   loadSettings();
   loadSavedFields();
+  loadPerDiem();
   loadStats();
   loadReports();
   loadRuns();

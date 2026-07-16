@@ -45,10 +45,10 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 
 | File | What lives here |
 |---|---|
-| `server.py` (~5.2k lines) | FastAPI app: all HTTP/SSE endpoints (95 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
+| `server.py` (~6.8k lines) | FastAPI app: all HTTP/SSE endpoints (128 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
 | `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
-| `templates/index.html` (~5.4k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
+| `templates/index.html` (~7.9k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
 | `vendor_db.py` | Curated vendor → category lookup data/helpers. |
 | `watch_mode.py` | Standalone watch-mode daemon (monitor inbox, process, email on schedule). `main()` entry. |
 | `scheduler.py` | Weekly scheduled export/delivery. |
@@ -326,6 +326,49 @@ to the model — nothing hidden or clipped.
   `requirements-test.txt`).
 - Tests: `tests/test_gdrive_intake.py` (+12).
 
+## Microsoft OneDrive intake (opt-in cloud capture source)
+
+- **`onedrive_intake.py`** — the OneDrive-as-hub capture path (see `ONEDRIVE_IMPORT.md`),
+  mirroring `gdrive_intake.py`'s shape: a pure, testable core (`poll_once` lists the
+  inbox folder via `_list_folder` over a thin `GraphClient` seam — tests fake it —
+  downloads new image/PDF files basename-only into the intake dir) + OAuth helpers.
+  **Zero new deps**: Microsoft Graph is called with stdlib `urllib` (no MSAL/SDK).
+  **Dedup is by Graph item ID.** `OneDriveConfig` (`enabled`/`folder_path` — path-based
+  addressing under the drive root, e.g. `Receipts` — /`poll_interval`/`scope`/`client_id`/
+  `tenant`; `to_public_dict` hides secrets). Scope defaults `files.read` (`Files.Read`).
+- **Auth = device-code flow** (`device_code_start`/`device_code_poll`): no redirect URI,
+  works headless in Docker; the Azure registration is a PUBLIC client ("Allow public
+  client flows" on, no secret). A refresh token can also be pasted directly. **GOTCHA:
+  Microsoft ROTATES refresh tokens** — `build_graph` returns `(client, rotated_token)`
+  and `server._build_onedrive_graph` persists the replacement on every build.
+- **server.py** — `_run_onedrive_poller` thread (lifespan) downloads into the default
+  workspace's `intake_folder` (existing watcher + pipeline unchanged). Seen-id guard
+  `.onedrive_seen.json`. Secrets `onedrive_client_secret` (usually unused) +
+  `onedrive_token` in `app_secrets`. Endpoints `GET/POST /settings/onedrive`,
+  `/device-code`, `/connect` (device-code poll — returns `pending:true` while the user
+  hasn't finished, the UI re-polls — OR a pasted refresh token), `/disconnect` (local
+  clear only; MS has no programmatic consumer revoke — points at
+  account.live.com/consent/Manage), `/test`, `/poll-now` — admin-only in MU mode (reuses
+  `_gdrive_admin_or_403`). Settings → **OneDrive Intake** card (`loadOneDrive`; the
+  connect panel shows the code + auto-polls). Guides-tab card walks the Azure setup.
+- Tests: `tests/test_onedrive_intake.py` (+19).
+
+## Per diem (opt-in daily allowance on the report)
+
+- Workspace → Export Report card: **"Add per diem"** checkbox reveals `$rate/day ×
+  days` inputs (`#pd-enabled`/`#pd-rate`/`#pd-days`/`#pd-total`; `loadPerDiem`, saves
+  on change). Persisted in `cfg["per_diem"]` via `GET/POST /settings/per-diem`
+  (clamped: finite rate ≥ 0, int days 0..3650 — inf/nan refused).
+- `generate_spreadsheet(..., per_diem=)` → `build_themed_workbook(..., per_diem=)`:
+  `spreadsheet_theme.normalize_per_diem` validates (None unless enabled + finite
+  rate>0 + days>0), `_write_per_diem` writes a "Per Diem" line (breakdown `N days ×
+  $R/day` in merged A:D, amount in F) between the misc subtotal and TOTAL, and
+  `_write_total` gains `per_diem_row` so the grand TOTAL formula includes it. The
+  Insights sheet deliberately stays receipt-analytics only.
+- Applied at both web build sites (`/generate-spreadsheet` + the Send-Report-Now
+  fallback build); watch-mode/scheduler exports deliberately stay receipts-only.
+- Tests: `tests/test_per_diem.py` (+12).
+
 ## Config / state / paths
 
 - `OUTPUT_FOLDER` (default `output/`), `RECEIPTS_FOLDER` (default `receipts/`).
@@ -337,7 +380,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **711 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **779 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -419,6 +462,36 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (Microsoft OneDrive intake + per-diem report line):** Suite
+  **748 → 779** green. Two features (branch `claude/onedrive-integration-feasibility-b7r4ns`).
+  * **OneDrive intake.** New `onedrive_intake.py` mirroring `gdrive_intake.py` — but
+    with **zero new dependencies** (Microsoft Graph over stdlib `urllib`, no MSAL) and
+    **device-code sign-in** (no redirect URI; works headless in Docker; Azure PUBLIC
+    client, no secret needed). Pure/testable core (`GraphClient` seam faked in tests,
+    `_list_folder` pages `@odata.nextLink`, subfolders skipped, download prefers the
+    pre-authenticated `@microsoft.graph.downloadUrl`); **dedup by Graph item ID**;
+    basename-only writes. **Refresh-token ROTATION handled**: `build_graph` returns the
+    replacement token and `server._build_onedrive_graph` persists it every build.
+    server.py: `_run_onedrive_poller` lifespan thread → default workspace intake
+    (watcher/pipeline unchanged), `.onedrive_seen.json` guard, secrets
+    `onedrive_token`/`onedrive_client_secret`, endpoints `GET/POST /settings/onedrive`
+    + `/device-code` + `/connect` (pending-aware device-code poll OR pasted token) +
+    `/disconnect` + `/test` + `/poll-now` (admin-only in MU). UI: Settings → **OneDrive
+    Intake** card (`loadOneDrive`; connect panel shows the code + auto-polls until
+    connected) + a Guides-tab Azure walkthrough. Docs: new **`ONEDRIVE_IMPORT.md`**
+    (full setup guide incl. Azure registration + troubleshooting), README/TUTORIAL/
+    ADVISORY §7/.env.example updated. `tests/test_onedrive_intake.py` (+19).
+  * **Per diem.** Export Report card gains an **"Add per diem"** toggle revealing
+    `$rate/day × days` inputs (saved on change; persisted `cfg["per_diem"]` via new
+    `GET/POST /settings/per-diem`, clamped finite/non-negative). The workbook's Summary
+    sheet gets a **Per Diem** line (styled like a subtotal; breakdown "N days ×
+    $R.00/day" in merged A:D) between the misc subtotal and TOTAL, and the grand-TOTAL
+    formula adds it (`_write_per_diem` + `_write_total(per_diem_row=)`;
+    `normalize_per_diem` rejects inf/nan/zero). Wired through
+    `generate_spreadsheet(per_diem=)` at both web build sites (Generate + the
+    Send-Report-Now fallback); watch/scheduler exports stay receipts-only. Insights
+    sheet untouched (receipt analytics only). `tests/test_per_diem.py` (+12).
 
 - **2026-06-25 (sent-ledger dedup, build variants, multi-user default, Drive tree, ESP):**
   Suite **711 → 748** green. Five-part feature batch (branch
