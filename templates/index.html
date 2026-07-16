@@ -1181,6 +1181,13 @@
     }
 
     /* Board search */
+    /* Card thumbnails (off by default; toggled via the board's "Show images"
+       switch → body.show-thumbs). Hidden + loading=lazy means the browser
+       doesn't fetch them until the toggle is on. */
+    .k-thumb { display: none; width: 100%; max-height: 110px; object-fit: cover;
+               object-position: top; border-radius: 6px; margin: 4px 0 6px;
+               cursor: zoom-in; border: 1px solid var(--border); }
+    body.show-thumbs .k-thumb { display: block; }
     .board-search {
       display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
     }
@@ -1603,35 +1610,55 @@
         Send Report Now
       </button>
     </div>
-    <!-- Per diem: opt-in daily allowance added as its own line on the report's
-         Summary sheet and included in the grand TOTAL. Saved on change; read
-         server-side at generate time. -->
-    <div class="gen-perdiem" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label class="check-label" style="font-size:12px">
-        <input type="checkbox" id="pd-enabled">
-        Add per diem
-        <span style="color:var(--muted)">— a daily allowance line added to the report total</span>
-      </label>
-      <div id="pd-fields" style="align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:13px;display:none">
-        <span>$</span>
-        <input type="number" id="pd-rate" min="0" step="0.01" placeholder="0.00" style="width:96px" autocomplete="off">
-        <span>per day &nbsp;×</span>
-        <input type="number" id="pd-days" min="0" step="1" placeholder="0" style="width:72px" autocomplete="off">
-        <span>day(s)</span>
-        <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
+    <!-- Report add-ons: opt-in extras applied at generate time. Per diem and
+         phone service become allowance lines on the Summary sheet (included in
+         the grand TOTAL); the Insights toggle gates the charts/analytics tab.
+         All save on change; read server-side at generate time. -->
+    <div class="gen-extras" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Report add-ons</div>
+
+      <div class="gen-perdiem">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="pd-enabled">
+          Add per diem
+          <span style="color:var(--muted)">— a daily allowance line added to the report total</span>
+        </label>
+        <div id="pd-fields" style="align-items:center;gap:8px;margin:8px 0 0 24px;flex-wrap:wrap;font-size:13px;display:none">
+          <span>$</span>
+          <input type="number" id="pd-rate" min="0" step="0.01" placeholder="0.00" style="width:96px" autocomplete="off">
+          <span>per day &nbsp;×</span>
+          <input type="number" id="pd-days" min="0" step="1" placeholder="0" style="width:72px" autocomplete="off">
+          <span>day(s)</span>
+          <span id="pd-total" style="font-weight:600;color:var(--success)"></span>
+        </div>
       </div>
-    </div>
-    <!-- Phone service: fixed monthly allowance × user-selected months, added as
-         its own line on the Summary sheet and included in the grand TOTAL. -->
-    <div class="gen-phone" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label class="check-label" style="font-size:12px">
-        <input type="checkbox" id="ph-enabled">
-        Add phone service
-        <span style="color:var(--muted)">— <span id="ph-rate-note">$63.00</span>/month; pick the months to reimburse</span>
-      </label>
-      <div id="ph-months" style="display:none;margin-top:8px">
-        <div id="ph-month-grid" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-        <span id="ph-total" style="font-weight:600;color:var(--success);display:block;margin-top:6px"></span>
+
+      <div class="gen-phone" style="margin-top:10px">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="ph-enabled">
+          Add phone service
+          <span style="color:var(--muted)">— <span id="ph-rate-note">$63.00</span>/month; pick the months to reimburse</span>
+        </label>
+        <div id="ph-months" style="display:none;margin:8px 0 0 24px">
+          <!-- Year pager + that year's 12 months; any year, any number of months. -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <button class="btn btn-neutral btn-sm" id="ph-prev" type="button" title="Previous year" style="padding:2px 10px">‹</button>
+            <span id="ph-year" style="font-weight:700;font-size:14px;min-width:46px;text-align:center"></span>
+            <button class="btn btn-neutral btn-sm" id="ph-next" type="button" title="Next year" style="padding:2px 10px">›</button>
+          </div>
+          <div id="ph-month-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px;max-width:520px"></div>
+          <!-- Everything selected, across all years — chips with a per-month ×. -->
+          <div id="ph-selected" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
+          <span id="ph-total" style="font-weight:600;color:var(--success);display:block;margin-top:6px"></span>
+        </div>
+      </div>
+
+      <div class="gen-insights" style="margin-top:10px">
+        <label class="check-label" style="font-size:12px">
+          <input type="checkbox" id="ins-enabled">
+          Include Insights sheet
+          <span style="color:var(--muted)">— add the charts &amp; analytics tab to the workbook (off = Summary + receipt sheets only)</span>
+        </label>
       </div>
     </div>
     <div class="gen-approval" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -1665,6 +1692,10 @@
       </div>
       <!-- Queue controls live with the board they act on -->
       <div class="board-toolbar">
+        <label class="check-label" style="font-size:12px;margin:0" title="Show a thumbnail of each receipt on its card">
+          <input type="checkbox" id="board-thumbs"> Show images
+        </label>
+        <button class="btn btn-neutral btn-md" id="gallery-btn" title="View every receipt on the board as an image grid">&#128444; Gallery</button>
         <span id="queue-badge" class="status-note" style="display:none">
           <span id="queue-pending-count">0</span> pending
         </span>
@@ -1807,6 +1838,10 @@
       </button>
     </div>
     <div id="progress-body" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button class="btn btn-cancel btn-sm" id="log-clear-btn"
+                title="Empty the live processing log and the Errors list below (the per-run Run Log history keeps its own Clear)">&#10005; Clear log &amp; errors</button>
+      </div>
       <div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
       <div class="progress-meta">
         <span id="progress-label">0 / 0</span>
@@ -2108,6 +2143,79 @@
       <!-- Full send → receive round-trip log (task: surface issues, not silent fails) -->
       <div id="or-test-result" style="display:none;margin-top:10px"></div>
     </div>
+      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
+        <p class="section-desc" style="margin-top:0">Request pacing, timeouts, and size caps for the model pipeline. Changes save automatically.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
+            LLM request timeout (s)
+            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
+            LLM max retries
+            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
+            Stored image max side (px)
+            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
+            PDF max pages
+            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
+            Max upload size (MB, 0 = ∞)
+            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Throttle requests sent to the model. Free cloud tiers throttle hard — OpenRouter's free models allow ~20/min and answer a burst past that with 429 'rate limited' errors that show up as failed receipts. On by default; applies to every provider.">
+            Rate-limit requests
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-rate-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum model requests per minute when rate-limiting is on. OpenRouter's free-tier ceiling is 20/min.">
+            Max requests / min
+            <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="When the essential extraction call is rate-limited, wait for the free-tier bucket to refill (bounded) and retry instead of dropping to the offline parser.">
+            Wait out a rate-limit (429), then retry
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+              <input type="checkbox" id="proc-429-wait-enabled" style="width:auto"> on
+            </span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Upper bound on how long to wait for the free-tier bucket to refill before giving up (and falling back to the offline parser).">
+            Max wait for refill (s)
+            <input type="number" id="proc-429-max-wait" min="0" max="120" step="5" style="width:100%">
+          </label>
+        </div>
+        <!-- Rate-limit sweet spots + one-click presets -->
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:11px;line-height:1.6;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+            <strong>Sweet spots.</strong> OpenRouter's free models allow about <strong>20 requests/min</strong>
+            and <strong>50 requests/day</strong>; bursting past either returns a 429 the pipeline can only show
+            as failed receipts. Keep the per-minute cap a little under 20 and let “wait out a 429” ride out the
+            short bucket refill. On a local / Docker server there's no quota — turn both off so nothing throttles.
+            <br><br>
+            Adding $10 of credit to OpenRouter raises the free-model daily cap from 50 to 1000 requests/day —
+            those 1000 are still free (credit only pays for non-free models). The per-minute cap stays ~20.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-free"
+                    title="OpenRouter free tier (no credits): ~12/min, wait out 429s up to 30s, daily cap 50/day. Keep LLM-OCR off.">
+              OpenRouter free (no credits)
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-credit"
+                    title="OpenRouter with $10 credit: ~20/min, wait out 429s up to 30s. Still free per request; daily cap rises 50 → 1000/day.">
+              OpenRouter +$10 credits
+            </button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-local"
+                    title="Local / Docker server: no per-minute or daily quota — turn rate-limiting and 429-wait off.">
+              Local / Docker (no limit)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Benchmark — per-batch processing time, for comparing LLM speed -->
@@ -2200,118 +2308,32 @@
     <div style="display:flex;flex-direction:column;gap:11px">
       <label class="check-label">
         <input type="checkbox" id="proc-autorotate">
-        1. Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up <em>before</em> cropping &amp; OCR, so a cropped receipt also faces the right direction (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
+        1. Auto-rotate to upright <span style="color:var(--muted)">— turn sideways/upside-down receipts the right way up <em>before</em> OCR (uses the photo's orientation tag, then the OCR reading itself — no AI)</span>
       </label>
       <label class="check-label">
         <input type="checkbox" id="proc-grayscale">
         2. Black &amp; white for OCR <span style="color:var(--muted)">— convert receipts to high-contrast grayscale before OCR/AI (sharper text; also applies to the stored image)</span>
       </label>
-      <label class="check-label">
-        <input type="checkbox" id="proc-autocrop">
-        3. Auto-crop borders <span style="color:var(--muted)">— trim the empty background around the receipt (runs after auto-rotate, before OCR)</span>
-      </label>
-      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
-        <span style="min-width:96px">Aggressiveness</span>
-        <input type="range" id="proc-autocrop-aggr" min="0" max="100" step="5" value="70" style="flex:1;max-width:240px" title="Higher trims closer and crops more photos; lower only trims obvious borders">
-        <span id="proc-autocrop-aggr-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:88px">70 — strong</span>
-      </label>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <label class="check-label">
-          <input type="checkbox" id="proc-localocr">
-          4. RapidOCR fallback <span style="color:var(--muted)">— local OCR when LM Studio's OCR stage is unavailable</span>
-        </label>
-        <button class="copy-btn adv-only" id="ocr-test-btn" title="Upload a receipt image to test the local OCR extraction" style="flex-shrink:0">
+        <span style="font-size:13px">
+          3. Text reading (OCR) <span style="color:var(--muted)">— the built-in engine (RapidOCR) reads every receipt; always on. The AI model can cross-check it — see the AI Model section.</span>
+        </span>
+        <button class="copy-btn adv-only" id="ocr-test-btn" title="Upload a receipt image to test the built-in OCR extraction" style="flex-shrink:0">
           Test OCR
         </button>
-        <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the local OCR">
+        <input type="file" id="ocr-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the built-in OCR">
         <span id="ocr-test-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
       <label class="check-label">
         <input type="checkbox" id="proc-compress">
-        5. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs (at export time)</span>
-      </label>
-      <label class="adv-only" style="display:flex;align-items:center;gap:12px;flex-direction:row;font-weight:400;padding-left:26px">
-        <span style="min-width:96px">JPEG quality</span>
-        <input type="range" id="proc-quality" min="40" max="95" step="5" value="85" style="flex:1;max-width:240px">
-        <span id="proc-quality-val" style="font-variant-numeric:tabular-nums;color:var(--muted);min-width:52px">85</span>
+        4. Compress stored images <span style="color:var(--muted)">— re-encode photos to smaller JPEGs at export time, <em>after</em> all OCR/AI reads. Quality is chosen automatically, and every compressed file is integrity-checked — if the result can't be fully decoded (or would be bigger), the original is kept untouched.</span>
       </label>
       <div class="adv-only" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;border-top:1px solid var(--border);padding-top:12px">
-        <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → auto-crop → compress in series and preview each step" style="flex-shrink:0">
+        <button class="copy-btn" id="proc-test-btn" title="Upload a receipt to run auto-rotate → black&white → compress in series and preview each step" style="flex-shrink:0">
           Test image processing →
         </button>
         <input type="file" id="proc-test-input" accept="image/*" style="display:none" aria-label="Choose an image to test the full image-processing chain">
         <span id="proc-test-status" style="font-size:11px;color:var(--muted)"></span>
-      </div>
-      <div class="adv-only" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Advanced tuning</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How long to wait for one model request before giving up (and falling back to the offline parser).">
-            LLM request timeout (s)
-            <input type="number" id="proc-llm-timeout" min="10" max="600" step="5" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="How many times to retry a failed model request before falling back.">
-            LLM max retries
-            <input type="number" id="proc-llm-retries" min="0" max="5" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Longest side (pixels) the stored receipt image is capped to. Higher keeps more detail but larger files.">
-            Stored image max side (px)
-            <input type="number" id="proc-store-px" min="512" max="4000" step="100" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum pages rendered from a single multi-page PDF.">
-            PDF max pages
-            <input type="number" id="proc-pdf-pages" min="1" max="200" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Reject uploads larger than this. 0 = no limit.">
-            Max upload size (MB, 0 = ∞)
-            <input type="number" id="proc-max-upload" min="0" max="2000" step="10" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Throttle requests sent to the model. Free cloud tiers throttle hard — OpenRouter's free models allow ~20/min and answer a burst past that with 429 'rate limited' errors that show up as failed receipts. On by default; applies to every provider.">
-            Rate-limit requests
-            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-              <input type="checkbox" id="proc-rate-enabled" style="width:auto"> on
-            </span>
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Maximum model requests per minute when rate-limiting is on. OpenRouter's free-tier ceiling is 20/min.">
-            Max requests / min
-            <input type="number" id="proc-rate-rpm" min="1" max="1000" step="1" style="width:100%">
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="When the essential extraction call is rate-limited, wait for the free-tier bucket to refill (bounded) and retry instead of dropping to the offline parser.">
-            Wait out a rate-limit (429), then retry
-            <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-              <input type="checkbox" id="proc-429-wait-enabled" style="width:auto"> on
-            </span>
-          </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)" title="Upper bound on how long to wait for the free-tier bucket to refill before giving up (and falling back to the offline parser).">
-            Max wait for refill (s)
-            <input type="number" id="proc-429-max-wait" min="0" max="120" step="5" style="width:100%">
-          </label>
-        </div>
-        <!-- Rate-limit sweet spots + one-click presets -->
-        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-          <div style="font-size:11px;line-height:1.6;color:var(--muted);background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:10px">
-            <strong>Sweet spots.</strong> OpenRouter's free models allow about <strong>20 requests/min</strong>
-            and <strong>50 requests/day</strong>; bursting past either returns a 429 the pipeline can only show
-            as failed receipts. Keep the per-minute cap a little under 20 and let “wait out a 429” ride out the
-            short bucket refill. On a local / Docker server there's no quota — turn both off so nothing throttles.
-            <br><br>
-            Adding $10 of credit to OpenRouter raises the free-model daily cap from 50 to 1000 requests/day —
-            those 1000 are still free (credit only pays for non-free models). The per-minute cap stays ~20.
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-free"
-                    title="OpenRouter free tier (no credits): ~12/min, wait out 429s up to 30s, daily cap 50/day. Keep LLM-OCR off.">
-              OpenRouter free (no credits)
-            </button>
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-or-credit"
-                    title="OpenRouter with $10 credit: ~20/min, wait out 429s up to 30s. Still free per request; daily cap rises 50 → 1000/day.">
-              OpenRouter +$10 credits
-            </button>
-            <button type="button" class="btn btn-outline-accent btn-sm" id="proc-preset-local"
-                    title="Local / Docker server: no per-minute or daily quota — turn rate-limiting and 429-wait off.">
-              Local / Docker (no limit)
-            </button>
-          </div>
-        </div>
       </div>
     </div>
     <div style="margin-top:8px"><span id="proc-saved-msg" style="font-size:12px;color:var(--success);opacity:0;transition:opacity .3s">Saved ✓</span></div>
@@ -2738,7 +2760,7 @@
     <div class="card-title">Importing from a scan app</div>
     <p style="font-size:14px;line-height:1.65;color:var(--text)">
       Scan apps like <strong>CamScanner</strong>, <strong>Adobe Scan</strong> and <strong>Genius Scan</strong>
-      already crop, de-skew and enhance each page, so this app skips its own auto-crop and just reads them.
+      already crop, de-skew and enhance each page, so this app just reads them as-is.
       Each PDF page (or photo) becomes one receipt — you can drag exported files straight onto the
       <em>Add Receipts</em> card, or use the guided import below to apply the best scanned-document settings automatically.
     </p>
@@ -2845,9 +2867,6 @@
       <li><strong>Grayscale</strong>
         <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
         <span class="pl-why">Converts to high-contrast black &amp; white for cleaner, more reliable reading.</span></li>
-      <li><strong>Auto-crop</strong>
-        <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
-        <span class="pl-why">Trims the uniform photo border around the receipt (skipped for scan-app imports, which are already cropped).</span></li>
       <li><strong>OCR-guided rotation check</strong>
         <span class="pl-tags"><span class="pl-tag pl-rules">rules-based</span><span class="pl-tag pl-priv-local">image stays local</span></span>
         <span class="pl-why">Tries the three 90° rotations and keeps whichever the OCR engine reads best — no model involved.</span></li>
@@ -2980,6 +2999,18 @@
 </div>
 
 <!-- ── Finish-batch (tidy temp files) dialog — shown after a report downloads ── -->
+<!-- Receipt gallery — a grid of every receipt image currently on the board -->
+<div class="modal-overlay hidden" id="gallery-modal" role="dialog" aria-modal="true" aria-labelledby="gallery-title">
+  <div class="modal-box" style="width:min(920px,94vw)">
+    <h3 id="gallery-title">&#128444; Receipt Gallery</h3>
+    <p class="modal-sub" id="gallery-sub"></p>
+    <div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;max-height:62vh;overflow-y:auto;padding:2px"></div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn btn-cancel" id="gallery-close-btn">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-modal-title">
   <div class="modal-box" style="width:520px">
     <h3 id="finish-modal-title">&#129529; Clear temporary receipt files?</h3>
@@ -3003,7 +3034,7 @@
   <div class="modal-box" style="width:560px">
     <h3 id="cs-modal-title">&#128241; Import from CamScanner &amp; other scan apps</h3>
     <p class="modal-sub">CamScanner, Adobe Scan, Genius Scan and similar apps already crop, de-skew
-      and enhance each page — so this app skips its own auto-crop and just reads them.
+      and enhance each page — this app just reads them as-is.
       Each PDF page (or photo) becomes one receipt.</p>
     <div style="background:rgba(59,130,246,0.06);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.6;color:var(--text)">
       <strong>Best export settings in CamScanner:</strong>
@@ -3017,7 +3048,7 @@
     <label class="check-label" style="font-size:13px;gap:8px;margin-bottom:6px">
       <input type="checkbox" id="cs-apply-preset" checked>
       Apply best settings for scanned documents
-      <span style="color:var(--muted);font-weight:400">(skip auto-crop, keep auto-rotate &amp; B&amp;W)</span>
+      <span style="color:var(--muted);font-weight:400">(auto-rotate &amp; B&amp;W on)</span>
     </label>
     <p style="font-size:11px;color:var(--muted);margin:0 0 14px">Job name/number &amp; employee come from the workspace fields, same as a normal upload.
       You can also export straight into your intake folder and use <em>Queue intake files</em>.</p>
@@ -3337,8 +3368,8 @@ function addFiles(newFiles) {
 }
 
 // ── Scan-app (CamScanner) guided import ───────────────────────────────────────
-// Pre-scanned documents are already cropped/de-skewed/enhanced, so apply the
-// "camscanner" preset (auto-crop OFF) before queueing them through the normal path.
+// Pre-scanned documents are already cropped/de-skewed/enhanced; apply the
+// "camscanner" preset (auto-rotate + B&W) before queueing them through the normal path.
 const camscannerInput = document.getElementById('camscanner-input');
 document.getElementById('camscanner-btn').addEventListener('click', () => {
   document.getElementById('camscanner-modal').classList.remove('hidden');
@@ -3358,7 +3389,7 @@ camscannerInput.addEventListener('change', async () => {
         body: JSON.stringify({preset: 'camscanner'}),
       });
       if (r.ok) {
-        showToast('Applied scan-app settings (auto-crop off, B&W + auto-rotate on)', true);
+        showToast('Applied scan-app settings (B&W + auto-rotate on)', true);
         if (typeof loadProcessingSettings === 'function') loadProcessingSettings();
       }
     } catch (_) {}
@@ -3541,13 +3572,17 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   // Image view button — prefer renamed output file, fall back to compressed or original
   const imgFile = (data && (data._new_filename || data._compressed_file || data._file)) || filename;
   const imgUrl  = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
+  div.dataset.imgurl = imgUrl;               // gallery reads these off the cards
+  div.dataset.disp   = (data && data._new_filename) || filename;
+  // Inline thumbnail — CSS-hidden unless the board's "Show images" toggle is on.
+  inner += `<img class="k-thumb" src="${imgUrl}" loading="lazy" alt="" onerror="this.remove()" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')">`;
   inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')" title="View receipt image with extracted stats">&#128247; View</button>`;
 
   if (status === 'failed') {
     const errText = errorMsg || (data && data._error) || '';
     if (errText) inner += `<div class="k-error">&#9888; ${esc(errText)}</div>`;
     inner += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">`;
-    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')">&#8635; Retry</button>`;
+    inner += `<button class="k-retry-btn" onclick="retryReceipt('${escJs(filename)}')" title="Re-run this receipt with the AI model also reading the image directly (AI OCR) — rescues receipts the built-in OCR misread">&#8635; Retry with AI OCR</button>`;
     inner += `<button class="k-review-btn" onclick="openManualReview('${escJs(filename)}')">&#9998; Review</button>`;
     inner += `</div>`;
   }
@@ -3569,6 +3604,54 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   });
   return div;
 }
+
+// ── Board thumbnails toggle + receipt gallery ─────────────────────────────────
+// "Show images" reveals the per-card thumbnails (CSS-gated so nothing is fetched
+// while off); Gallery shows every receipt on the board as a zoomable grid.
+(function initBoardImages() {
+  const cb = document.getElementById('board-thumbs');
+  cb.checked = localStorage.getItem('boardThumbs') === '1';
+  document.body.classList.toggle('show-thumbs', cb.checked);
+  cb.addEventListener('change', () => {
+    localStorage.setItem('boardThumbs', cb.checked ? '1' : '0');
+    document.body.classList.toggle('show-thumbs', cb.checked);
+  });
+})();
+
+function openGallery() {
+  const grid = document.getElementById('gallery-grid');
+  grid.innerHTML = '';
+  const cards = Array.from(document.querySelectorAll('[data-kf]'))
+    .filter(el => el.dataset.imgurl);
+  document.getElementById('gallery-sub').textContent = cards.length
+    ? `${cards.length} receipt${cards.length !== 1 ? 's' : ''} on the board — click an image to zoom.`
+    : 'No receipts on the board yet — add some to see them here.';
+  cards.forEach(el => {
+    const fig = document.createElement('figure');
+    fig.style.cssText = 'margin:0;display:flex;flex-direction:column;gap:4px';
+    const img = document.createElement('img');
+    img.src = el.dataset.imgurl; img.loading = 'lazy'; img.alt = el.dataset.disp || '';
+    img.style.cssText = 'width:100%;height:150px;object-fit:cover;object-position:top;' +
+      'border-radius:8px;border:1px solid var(--border);cursor:zoom-in';
+    img.addEventListener('click', () => openLightbox(el.dataset.imgurl, el.dataset.kf));
+    img.addEventListener('error', () => fig.remove());
+    const cap = document.createElement('figcaption');
+    cap.textContent = el.dataset.disp || el.dataset.kf;
+    cap.title = cap.textContent;
+    cap.style.cssText = 'font-size:11px;color:var(--muted);overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap';
+    fig.appendChild(img); fig.appendChild(cap);
+    grid.appendChild(fig);
+  });
+  document.getElementById('gallery-modal').classList.remove('hidden');
+}
+
+document.getElementById('gallery-btn').addEventListener('click', openGallery);
+document.getElementById('gallery-close-btn').addEventListener('click', () =>
+  document.getElementById('gallery-modal').classList.add('hidden'));
+document.getElementById('gallery-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'gallery-modal') e.target.classList.add('hidden');
+});
 
 function insertCardSorted(col, card) {
   const isApproved = card.dataset.approved === '1';
@@ -4788,6 +4871,16 @@ function _explainError(line) {
   return null;
 }
 
+// "Clear log & errors" — empty the live stream and the curated Errors list.
+// Client-side only: the persisted per-run Run Log below has its own Clear.
+document.getElementById('log-clear-btn').addEventListener('click', () => {
+  logEl.textContent = '';
+  errorLines = [];
+  errorLogEl.innerHTML = '';
+  errorCountBadge.textContent = '0';
+  errorSection.classList.add('hidden');
+});
+
 function renderErrorPanel() {
   if (!errorLines.length) return;
   progressCard.classList.remove('hidden');
@@ -4810,16 +4903,43 @@ document.getElementById('error-toggle').addEventListener('click', () => {
 });
 
 // ── Saved fields (persistent employee / job name / job number) ────────────────
+// Job names and numbers are always used as a PAIR: saved pairs drive the ⇄
+// autofill (fill in one field, the other completes itself) in both the batch
+// form and the review modal.
+let _jobPairs = [];
+
 async function loadSavedFields() {
   try {
     const res = await fetch('/saved-fields');
     if (!res.ok) return;
     const d = await res.json();
-    _populateDL('employees-list',   d.employees   || []);
-    _populateDL('job-names-list',   d.job_names   || []);
-    _populateDL('job-numbers-list', d.job_numbers || []);
+    _jobPairs = d.job_pairs || [];
+    // Offer pair values in the dropdowns too (deduped against the legacy lists).
+    const names   = [...new Set([..._jobPairs.map(p => p.name),   ...(d.job_names   || [])])];
+    const numbers = [...new Set([..._jobPairs.map(p => p.number), ...(d.job_numbers || [])])];
+    _populateDL('employees-list',   d.employees || []);
+    _populateDL('job-names-list',   names);
+    _populateDL('job-numbers-list', numbers);
   } catch (_) {}
 }
+
+// Fill the counterpart field from the saved pairs on an exact match of the
+// edited field (case-insensitive; most recent pairing wins).
+function _jobAutofill(srcId, dstId, srcKey, dstKey) {
+  const v = document.getElementById(srcId).value.trim().toLowerCase();
+  if (!v) return;
+  const p = _jobPairs.find(p => String(p[srcKey] || '').toLowerCase() === v);
+  if (p && p[dstKey]) document.getElementById(dstId).value = p[dstKey];
+}
+
+[['job-name', 'job-number'], ['mr-job-name', 'mr-job-number']].forEach(([nameId, numId]) => {
+  const nameEl = document.getElementById(nameId), numEl = document.getElementById(numId);
+  if (!nameEl || !numEl) return;
+  ['input', 'change'].forEach(evt => {
+    nameEl.addEventListener(evt, () => _jobAutofill(nameId, numId, 'name', 'number'));
+    numEl.addEventListener(evt, () => _jobAutofill(numId, nameId, 'number', 'name'));
+  });
+});
 
 function _populateDL(id, values) {
   const dl = document.getElementById(id);
@@ -6055,14 +6175,7 @@ async function loadProcessingSettings() {
     const d = await (await fetch('/settings/processing')).json();
     document.getElementById('proc-autorotate').checked = d.autorotate !== false;
     document.getElementById('proc-grayscale').checked  = d.grayscale !== false;
-    document.getElementById('proc-autocrop').checked   = d.autocrop  !== false;
     document.getElementById('proc-compress').checked   = d.compress  !== false;
-    document.getElementById('proc-localocr').checked   = (d.local_ocr ?? d.paddleocr) !== false;
-    const aggr = (d.autocrop_aggressiveness ?? 70);
-    document.getElementById('proc-autocrop-aggr').value = aggr;
-    document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(aggr);
-    document.getElementById('proc-quality').value      = d.jpeg_quality || 85;
-    document.getElementById('proc-quality-val').textContent = `${d.jpeg_quality || 85} %`;
     const _setNum = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
     _setNum('proc-llm-timeout', d.llm_timeout != null ? Math.round(d.llm_timeout) : null);
     _setNum('proc-llm-retries', d.llm_max_retries);
@@ -6078,24 +6191,12 @@ async function loadProcessingSettings() {
   } catch (_) {}
 }
 
-// Human-readable label for the auto-crop aggressiveness dial.
-function _aggrLabel(v) {
-  v = parseInt(v, 10);
-  const word = v >= 85 ? 'maximum' : v >= 65 ? 'strong' : v >= 40 ? 'moderate'
-             : v >= 15 ? 'gentle' : 'off-ish';
-  return `${v} — ${word}`;
-}
-
 let _procSaveTimer = null;
 async function saveProcessingSettings() {
   const body = {
     autorotate:   document.getElementById('proc-autorotate').checked,
     grayscale:    document.getElementById('proc-grayscale').checked,
-    autocrop:     document.getElementById('proc-autocrop').checked,
-    autocrop_aggressiveness: parseInt(document.getElementById('proc-autocrop-aggr').value, 10),
     compress:     document.getElementById('proc-compress').checked,
-    local_ocr:    document.getElementById('proc-localocr').checked,
-    jpeg_quality: parseInt(document.getElementById('proc-quality').value, 10),
     llm_timeout:     parseFloat(document.getElementById('proc-llm-timeout').value),
     llm_max_retries: parseInt(document.getElementById('proc-llm-retries').value, 10),
     store_max_px:    parseInt(document.getElementById('proc-store-px').value, 10),
@@ -6122,7 +6223,7 @@ async function saveProcessingSettings() {
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
 
-['proc-autorotate', 'proc-grayscale', 'proc-autocrop', 'proc-compress', 'proc-localocr', 'proc-rate-enabled', 'proc-429-wait-enabled'].forEach(id => {
+['proc-autorotate', 'proc-grayscale', 'proc-compress', 'proc-rate-enabled', 'proc-429-wait-enabled'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', saveProcessingSettings);
 });
@@ -6155,15 +6256,6 @@ function _applyRatePreset({ rate, rpm, wait, maxWait }) {
   if (_orCredit) _orCredit.addEventListener('click', () => { _applyRatePreset({ rate: true,  rpm: 20, wait: true,  maxWait: 30 }); showToast('Preset: OpenRouter +$10 credits', true); });
   if (_local)    _local.addEventListener('click',    () => { _applyRatePreset({ rate: false, wait: false }); showToast('Preset: Local / Docker (no limit)', true); });
 }
-
-// Auto-crop aggressiveness slider — live label on drag, debounced save on release.
-document.getElementById('proc-autocrop-aggr').addEventListener('input', (e) => {
-  document.getElementById('proc-autocrop-aggr-val').textContent = _aggrLabel(e.target.value);
-});
-document.getElementById('proc-autocrop-aggr').addEventListener('change', () => {
-  clearTimeout(_procSaveTimer);
-  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
-});
 
 // ── Batch concurrency slider (top of "Add Receipts") ──────────────────────────
 function _setConcLabel(v) {
@@ -6260,20 +6352,11 @@ document.getElementById('ocr-test-input').addEventListener('change', async (e) =
     e.target.value = '';
   }
 });
-document.getElementById('proc-quality').addEventListener('input', (e) => {
-  document.getElementById('proc-quality-val').textContent = `${e.target.value} %`;
-});
-document.getElementById('proc-quality').addEventListener('change', () => {
-  clearTimeout(_procSaveTimer);
-  _procSaveTimer = setTimeout(saveProcessingSettings, 150);
-});
-
 // ── Test image processing (whole chain, in series) ─────────────────────────────
 // Upload one receipt photo and run every enabled step in the pipeline's order —
-// auto-rotate → black&white → auto-crop → compress — then show the original next
-// to the final result plus a per-step before/after. Confirms the steps compose
-// (a sideways photo comes out upright AND cropped) and lets the user dial in
-// auto-crop aggressiveness against a real receipt.
+// auto-rotate → black&white → compress — then show the original next to the
+// final result plus a per-step before/after. Confirms the steps compose (a
+// sideways photo comes out upright AND optimized).
 document.getElementById('proc-test-btn').addEventListener('click', () => {
   document.getElementById('proc-test-input').click();
 });
@@ -6322,7 +6405,7 @@ document.getElementById('proc-test-input').addEventListener('change', async (e) 
         <button class="proc-test-close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
       </div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:14px">
-        ${ow}×${oh} (${kb(d.original_bytes)}) → <strong>${rw}×${rh}</strong> (${kb(d.result_bytes)}). Auto-crop aggressiveness: <strong>${d.aggressiveness}</strong>.
+        ${ow}×${oh} (${kb(d.original_bytes)}) → <strong>${rw}×${rh}</strong> (${kb(d.result_bytes)}).
       </p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:1 1 220px;min-width:180px;text-align:center">
@@ -6330,7 +6413,7 @@ document.getElementById('proc-test-input').addEventListener('change', async (e) 
           <img src="${imgURL}" alt="Original receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
         </div>
         <div style="flex:1 1 220px;min-width:180px;text-align:center">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After processing (upright + cropped)</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">After processing (upright + optimized)</div>
           <img src="${d.preview}" alt="Processed receipt" style="max-width:100%;max-height:52vh;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
         </div>
         <div style="flex:1 1 240px;min-width:220px">
@@ -6945,49 +7028,65 @@ async function _pdSave() {
 });
 
 // ── Phone service (fixed $/month × selected months) ──────────────────────────
+// A year pager shows one year's 12 months at a time; _phSel (a Set of "YYYY-MM")
+// is the source of truth across years, so selections aren't limited to the
+// rendered year — pick as many months, from as many years, as needed.
 let _phRate = 63;
-
-function _phYm(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
+let _phSel = new Set();
+let _phYearShown = new Date().getFullYear();
 
 function _phLabel(ym) {
   const [y, m] = ym.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' });
 }
 
-// The month picker offers the last 12 months, plus any already-saved months
-// that fall outside that window (so a saved selection always stays visible).
-function _phRenderGrid(selected) {
-  const months = [];
-  const d = new Date(); d.setDate(1);
-  for (let i = 0; i < 12; i++) { months.push(_phYm(d)); d.setMonth(d.getMonth() - 1); }
-  (selected || []).forEach(m => { if (!months.includes(m)) months.push(m); });
-  months.sort().reverse();                    // newest first
+function _phRenderGrid() {
+  document.getElementById('ph-year').textContent = _phYearShown;
   const grid = document.getElementById('ph-month-grid');
   grid.innerHTML = '';
-  months.forEach(ym => {
-    const lab = document.createElement('label');
-    lab.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;' +
-      'padding:4px 9px;border:1px solid var(--border);border-radius:14px;cursor:pointer';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = ym; cb.className = 'ph-month';
-    cb.checked = (selected || []).includes(ym);
-    cb.addEventListener('change', _phSave);
-    lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(_phLabel(ym)));
-    grid.appendChild(lab);
-  });
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${_phYearShown}-${String(m).padStart(2, '0')}`;
+    const on = _phSel.has(ym);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = new Date(_phYearShown, m - 1, 1).toLocaleString('en-US', { month: 'short' });
+    b.style.cssText = 'font-size:12px;padding:5px 0;border-radius:8px;cursor:pointer;' +
+      `border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};` +
+      `background:${on ? 'rgba(59,130,246,0.18)' : 'transparent'};` +
+      `color:${on ? 'var(--accent)' : 'var(--text)'};font-weight:${on ? '700' : '400'}`;
+    b.addEventListener('click', () => {
+      _phSel.has(ym) ? _phSel.delete(ym) : _phSel.add(ym);
+      _phRenderGrid(); _phRenderSelected(); _phSave();
+    });
+    grid.appendChild(b);
+  }
 }
 
-function _phSelected() {
-  return Array.from(document.querySelectorAll('.ph-month:checked')).map(cb => cb.value);
+function _phRenderSelected() {
+  const box = document.getElementById('ph-selected');
+  box.innerHTML = '';
+  Array.from(_phSel).sort().forEach(ym => {
+    const chip = document.createElement('span');
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;' +
+      'padding:3px 8px;border:1px solid var(--border);border-radius:12px;color:var(--text)';
+    chip.appendChild(document.createTextNode(_phLabel(ym)));
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '×'; x.title = `Remove ${_phLabel(ym)}`;
+    x.style.cssText = 'border:none;background:none;cursor:pointer;color:var(--muted);' +
+      'font-size:14px;line-height:1;padding:0';
+    x.addEventListener('click', () => {
+      _phSel.delete(ym);
+      _phRenderGrid(); _phRenderSelected(); _phSave();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
 }
 
 function _phRefreshUI() {
   const on = document.getElementById('ph-enabled').checked;
   document.getElementById('ph-months').style.display = on ? 'block' : 'none';
-  const n = _phSelected().length;
+  const n = _phSel.size;
   document.getElementById('ph-total').textContent =
     (on && n > 0)
       ? `${n} month${n !== 1 ? 's' : ''} × $${_phRate.toFixed(2)} = $${(n * _phRate).toFixed(2)} added to the report total`
@@ -7000,8 +7099,8 @@ async function loadPhoneService() {
     _phRate = d.rate || 63;
     document.getElementById('ph-rate-note').textContent = `$${_phRate.toFixed(2)}`;
     document.getElementById('ph-enabled').checked = !!d.enabled;
-    _phRenderGrid(d.months || []);
-    _phRefreshUI();
+    _phSel = new Set(d.months || []);
+    _phRenderGrid(); _phRenderSelected(); _phRefreshUI();
   } catch (_) {}
 }
 
@@ -7012,13 +7111,32 @@ async function _phSave() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         enabled: document.getElementById('ph-enabled').checked,
-        months:  _phSelected(),
+        months:  Array.from(_phSel).sort(),
       }),
     });
   } catch (_) {}
 }
 
 document.getElementById('ph-enabled').addEventListener('change', _phSave);
+document.getElementById('ph-prev').addEventListener('click', () => { _phYearShown--; _phRenderGrid(); });
+document.getElementById('ph-next').addEventListener('click', () => { _phYearShown++; _phRenderGrid(); });
+
+// ── Report options (Insights sheet toggle — default off) ─────────────────────
+async function loadReportOptions() {
+  try {
+    const d = await (await fetch('/settings/report-options')).json();
+    document.getElementById('ins-enabled').checked = !!d.insights;
+  } catch (_) {}
+}
+
+document.getElementById('ins-enabled').addEventListener('change', async () => {
+  try {
+    await fetch('/settings/report-options', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ insights: document.getElementById('ins-enabled').checked }),
+    });
+  } catch (_) {}
+});
 
 async function loadSchedule() {
   try {
@@ -7340,20 +7458,67 @@ async function _renderManagePanel(panelId, listKey) {
     const res = await fetch('/saved-fields');
     const d = await res.json();
     const values = d[_listKeyMap[listKey]] || [];
-    if (values.length === 0) {
-      panel.innerHTML = '<div class="saved-item-empty">No saved items</div>';
-    } else {
-      panel.innerHTML = values.map(v =>
+    let html = '';
+    // The two job panels also manage the saved NAME ⇄ NUMBER pairs that drive
+    // the autofill, plus a one-click "save what's typed now" affordance.
+    const isJobPanel = (listKey === 'saved_job_names' || listKey === 'saved_job_numbers');
+    if (isJobPanel) {
+      const pairs = d.job_pairs || [];
+      html += '<div class="saved-item-empty" style="font-weight:600">Saved jobs (name ⇄ number)</div>';
+      html += pairs.map(p =>
         `<div class="saved-item-row">
-          <span title="${esc(v)}">${esc(v)}</span>
-          <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
+          <span title="${esc(p.name)} — ${esc(p.number)}">${esc(p.name)} <span style="color:var(--muted)">—</span> ${esc(p.number)}</span>
+          <button title="Remove pair" onclick="removeSavedPair('${escJs(p.name)}','${escJs(p.number)}','${panelId}','${listKey}')">&#215;</button>
         </div>`
-      ).join('');
+      ).join('') || '<div class="saved-item-empty">No saved jobs yet</div>';
+      html += `<div class="saved-item-row" style="justify-content:flex-start">
+        <button class="btn btn-neutral btn-sm" style="font-size:11px;padding:2px 8px"
+                onclick="saveCurrentJobPair('${panelId}','${listKey}')">＋ Save current name + number</button>
+      </div>`;
+      html += '<div class="saved-item-empty" style="font-weight:600;margin-top:4px">Individual entries</div>';
     }
+    html += values.map(v =>
+      `<div class="saved-item-row">
+        <span title="${esc(v)}">${esc(v)}</span>
+        <button title="Remove" onclick="removeSavedItem('${listKey}','${escJs(v)}','${panelId}')">&#215;</button>
+      </div>`
+    ).join('') || (isJobPanel ? '' : '<div class="saved-item-empty">No saved items</div>');
+    panel.innerHTML = html || '<div class="saved-item-empty">No saved items</div>';
   } catch (_) {
     panel.innerHTML = '<div class="saved-item-empty">Error loading</div>';
   }
 }
+
+window.removeSavedPair = async function(name, number, panelId, listKey) {
+  try {
+    await fetch('/saved-fields/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_key: 'saved_job_pairs', name, number }),
+    });
+    await loadSavedFields();
+    await _renderManagePanel(panelId, listKey);
+  } catch (_) {}
+};
+
+window.saveCurrentJobPair = async function(panelId, listKey) {
+  const job_name   = document.getElementById('job-name').value.trim();
+  const job_number = document.getElementById('job-number').value.trim();
+  if (!job_name || !job_number) {
+    showToast('Fill in both Job Name and Job Number first', false);
+    return;
+  }
+  try {
+    await fetch('/saved-fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee: '', job_name, job_number }),
+    });
+    await loadSavedFields();
+    await _renderManagePanel(panelId, listKey);
+    showToast('Job pair saved', true);
+  } catch (_) {}
+};
 
 window.toggleManagePanel = function(panelId, listKey) {
   const panel = document.getElementById(panelId);
@@ -7932,6 +8097,7 @@ function _bootApp() {
   loadSavedFields();
   loadPerDiem();
   loadPhoneService();
+  loadReportOptions();
   loadStats();
   loadReports();
   loadRuns();

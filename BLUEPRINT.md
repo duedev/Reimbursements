@@ -85,16 +85,16 @@ The user can keep adding receipts at any time; processing is continuous.
 
 Order matters. The canonical order is:
 
-1. **Auto-rotate, then greyscale, then autocrop** — first turn the receipt the right
-   way up (bake the photo's stored orientation into the pixels; a deeper check during
-   OCR retries the 90° rotations and keeps whichever the engine reads best — see §5.2),
-   then flatten to high-contrast greyscale, then trim uniform background borders so the
-   receipt fills the frame. All run in place and **before OCR** (the canonical
-   autorotate→greyscale→autocrop→OCR order), so the OCR engine, the vision model, the
-   on-image markup boxes, and the stored preview all see the same upright, cleaned-up
-   image. Autorotate and autocrop are conservative no-ops when nothing needs doing
-   (already upright; crop would discard too much or almost nothing). Keep the image at
-   **full resolution** here. All rules-based — no model involved.
+1. **Auto-rotate, then greyscale** — first turn the receipt the right way up (bake
+   the photo's stored orientation into the pixels; a deeper check during OCR retries
+   the 90° rotations and keeps whichever the engine reads best — see §5.2), then
+   flatten to high-contrast greyscale. Both run in place and **before OCR** (the
+   canonical autorotate→greyscale→OCR order), so the OCR engine, the vision model,
+   the on-image markup boxes, and the stored preview all see the same upright,
+   cleaned-up image. Autorotate is a conservative no-op when the photo is already
+   upright. Keep the image at **full resolution** here. All rules-based — no model
+   involved. (There is deliberately no auto-crop: trimming real-world photos proved
+   risky enough to receipt edges that the feature was removed.)
 2. **Extraction** — read the receipt with a built-in OCR engine plus the local
    model. The canonical flow:
    - **OCR (built-in, primary):** a local on-device OCR engine transcribes the
@@ -393,9 +393,9 @@ sensible defaults, and persisted:
   built-in engine and cross-references both; distillation model). The selectable
   model list auto-refreshes from the running model runtime.
 - Reasoning mode for the distillation pass (OCR always runs without reasoning).
-- Image processing: auto-rotate-to-upright on/off, greyscale on/off, autocrop
-  on/off, compression on/off, JPEG quality, max stored image dimension.
-- Local-OCR fallback on/off.
+- Image processing: auto-rotate-to-upright on/off, greyscale on/off, compression
+  on/off (export quality chosen automatically, integrity-checked), max stored
+  image dimension. The built-in OCR engine is always on (no toggle).
 - Review/approval requirement on/off.
 - Schedule (enabled, time, days, delivery targets) and email/SMTP settings.
 - Remembered autocomplete lists (employees, job names, job numbers).

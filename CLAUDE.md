@@ -46,7 +46,7 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 | File | What lives here |
 |---|---|
 | `server.py` (~6.8k lines) | FastAPI app: all HTTP/SSE endpoints (128 routes), the background **worker** that drains the queue, kanban/board state, results store, persistence, folder watching, model-management endpoints, settings endpoints, and the **run-log** capture (`_begin_run`/`_record_run_receipt`/`_finalize_run`, `_emit_log`). Imports the pipeline from `process_receipts`. |
-| `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autocrop/grayscale/compress, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
+| `process_receipts.py` (~2.7k lines) | The extraction **pipeline** and all model/OCR logic: OCR (RapidOCR + optional LLM OCR), distillation, vision rescue, offline regex parser, amount audit/reconcile, category classification, confidence scoring, dedup, image autorotate/grayscale + verified export compression, file renaming, and `generate_spreadsheet`. Pure-ish module reused by server, watch_mode, scheduler. |
 | `spreadsheet_theme.py` (~1k lines) | All openpyxl workbook building: Summary form, Insights charts, per-category image sheets, conditional formatting, autosize/fit, internal hyperlinks. |
 | `templates/index.html` (~7.9k lines) | The entire web UI (workspace + settings tabs, kanban board, review modal, dialogs, charts, SSE client). |
 | `vendor_db.py` | Curated vendor → category lookup data/helpers. |
@@ -60,10 +60,12 @@ workbook. **No receipt data ever leaves the machine** except to the local model.
 Order matters (see `BLUEPRINT.md` §5). Current flow:
 
 1. **Auto-rotate** (`autorotate_image_file`, EXIF → upright pixels) then **grayscale**
-   then **autocrop** — all in-place and **BEFORE OCR** (canonical
-   autorotate→greyscale→autocrop→OCR order, applied in the web-worker path too, not
-   just the CLI batch path). A deeper **OCR-guided** rotation check runs inside the OCR
-   step (below). Compression is deferred to export time.
+   — both in-place and **BEFORE OCR** (canonical autorotate→greyscale→OCR order,
+   applied in the web-worker path too, not just the CLI batch path). In-place
+   pre-OCR rewrites save at `PREP_JPEG_QUALITY` (95) so OCR/LLM read a nearly
+   lossless file. A deeper **OCR-guided** rotation check runs inside the OCR step
+   (below). Compression is deferred to export time. **Auto-crop was REMOVED**
+   (2026-07-16): no `autocrop_*` functions/settings exist any more.
 2. **OCR (built-in, primary):** `_ocr_lines_best_orientation` → `_extract_local_ocr_lines`
    (RapidOCR), always runs — returns per-line **boxes + dims** (text via
    `_extract_local_ocr`, kept as a fallback for the engine-unavailable/test path).
@@ -204,10 +206,10 @@ to the model — nothing hidden or clipped.
   `_renderRunDetail()`) showing the run header, a collapsible instructions panel,
   the full streamed log, and a per-receipt step breakdown (reuses `renderSteps`),
   with Download/Refresh/Clear. Refreshes on `batch_done` and on page load.
-- **Image-processing steps are logged.** `_extract_receipt_with_status` now records
-  `exif_rotate` / `grayscale` / `autocrop` steps (when each actually changes the
-  file; autocrop shows before→after dims) so the card step-log, the run log, and the
-  live Processing & Errors stream all show what was done to the picture before OCR.
+- **Image-processing steps are logged.** `_extract_receipt_with_status` records
+  `exif_rotate` / `grayscale` steps (when each actually changes the file) so the
+  card step-log, the run log, and the live Processing & Errors stream all show
+  what was done to the picture before OCR.
 - **The same stream feeds both places** — `#log` (Processing & Errors) and the run
   record are the *same* `type:"log"` events, so "route the log into Processing &
   Errors" is satisfied by construction. The curated **Errors** panel still filters
@@ -360,14 +362,33 @@ to the model — nothing hidden or clipped.
     (`#pd-enabled`/`#pd-rate`/`#pd-days`/`#pd-total`; `loadPerDiem`, saves on change).
     Persisted `cfg["per_diem"]` via `GET/POST /settings/per-diem` (clamped: finite
     rate ≥ 0, int days 0..3650 — inf/nan refused).
-  * **Phone service** — "Add phone service" checkbox reveals a **month picker**
-    (last 12 months + any saved older months, chip checkboxes; `#ph-enabled`/
-    `#ph-month-grid`/`#ph-total`; `loadPhoneService`, saves on change). The rate is
-    FIXED at `server.PHONE_MONTHLY_RATE` = **$63/month** (UI shows it, endpoint never
+  * **Phone service** — "Add phone service" checkbox reveals a **year-pager month
+    picker** (‹ year › with 12 month buttons; a JS Set `_phSel` is the cross-year
+    source of truth, selections render as removable chips in `#ph-selected`;
+    `#ph-enabled`/`#ph-year`/`#ph-month-grid`/`#ph-total`; `loadPhoneService`, saves
+    on change). **No month-count limit.** The rate is FIXED at
+    `server.PHONE_MONTHLY_RATE` = **$63/month** (UI shows it, endpoint never
     accepts one; a config-file `phone_service.rate` override exists, bad values fall
     back to 63). Persisted `cfg["phone_service"]` via `GET/POST
     /settings/phone-service`; months are `YYYY-MM`, canonicalized (zero-padded via
-    strptime→strftime), deduped, sorted, capped 120 (`_valid_months`).
+    strptime→strftime), deduped, sorted (`_valid_months`).
+  * **Insights toggle** — "Include Insights sheet" checkbox (`#ins-enabled`,
+    `loadReportOptions`), **default OFF for web generates**: persisted
+    `cfg["report_options"]["insights"]` via `GET/POST /settings/report-options`,
+    passed as `generate_spreadsheet(include_insights=)` →
+    `build_themed_workbook(include_insights=)`. The LIBRARY default stays True so
+    direct callers (watch-mode/scheduler, tests) keep the Insights tab.
+- **Saved job pairs (name ⇄ number autofill).** Job names/numbers are always used
+  together: `server._save_job_pair` stores `cfg["saved_job_pairs"]`
+  (`[{name,number}]`, newest first, exact-dup moves to front, cap 50) on every
+  `POST /saved-fields` with both fields; `GET /saved-fields` returns `job_pairs`;
+  `POST /saved-fields/remove` accepts `list_key:"saved_job_pairs"` + `name`/`number`.
+  UI: `_jobAutofill` fills the counterpart field on an exact (case-insensitive)
+  match — wired on `#job-name`/`#job-number` AND the review modal's
+  `#mr-job-name`/`#mr-job-number`; the ✎ manage panels on the two job fields list
+  pairs ("name — number" rows with ×) + a "＋ Save current name + number" button
+  (`saveCurrentJobPair`/`removeSavedPair`); datalists merge pair values with the
+  legacy per-field lists.
 - `generate_spreadsheet(..., per_diem=, phone=)` → `build_themed_workbook(...)`:
   `spreadsheet_theme.normalize_per_diem` / `normalize_phone` validate (None unless
   enabled + finite rate>0 + days/months present), the shared `_write_allowance_row`
@@ -378,7 +399,13 @@ to the model — nothing hidden or clipped.
   receipt-analytics only.
 - Applied at both web build sites (`/generate-spreadsheet` + the Send-Report-Now
   fallback build); watch-mode/scheduler exports deliberately stay receipts-only.
-- Tests: `tests/test_per_diem.py` (+12), `tests/test_phone_service.py` (+12).
+- **Insights allowances band:** when per diem/phone is active,
+  `_build_insights_sheet(..., per_diem=, phone=)` adds a second KPI row (rows 7/8):
+  "Per Diem (N days)", "Phone (N months)", and **Total Reimbursement** (= receipts
+  + allowances, matching the Summary grand TOTAL); "Total Spend" stays
+  receipts-only (it feeds Avg/Receipt) and the section cursor shifts 8 → 10.
+- Tests: `tests/test_per_diem.py` (+12), `tests/test_phone_service.py` (+12),
+  allowance-band tests in `tests/test_report_extras.py`.
 
 ## Config / state / paths
 
@@ -391,7 +418,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **791 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **783 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -473,6 +500,68 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (auto-crop removed + verified compression + settings reshuffle):**
+  Suite **806 → 783** green (−31 auto-crop tests, +8 compression-safety/settings).
+  Same branch/PR. Driven by user reports of cropped/corrupted receipt images.
+  * **Auto-crop REMOVED outright** — `autocrop_analyze`/`autocrop_receipt`/
+    `autocrop_image_file`/`_autocrop_params`/both bbox detectors, the
+    `AUTOCROP_*` globals, the `/debug/autocrop-test` endpoint, the settings keys
+    (stale config keys are scrubbed on the next `/settings/processing` POST), the
+    UI toggle + aggressiveness slider, and `tests/test_autocrop*.py` (3 files).
+    Presets `scanned`/`photo` are now both just autorotate+grayscale.
+  * **Compression corruption-safe.** `compress_image_file` writes to a temp file,
+    **fully re-decodes it** (`_image_intact` — `load()`, not just `verify()`)
+    before `os.replace`-ing it in; a corrupt or same-suffix-but-bigger result is
+    discarded and the ORIGINAL kept byte-for-byte. `JPEG_QUALITY` (the user
+    slider) is gone — `_auto_jpeg_quality` picks 85/82/78 by frame size; pre-OCR
+    in-place saves (rotate/grayscale) now use `PREP_JPEG_QUALITY` (95) so OCR/LLM
+    read maximum detail. Compression stays at export time (already after all
+    OCR/LLM — confirmed, unchanged).
+  * **Settings reshuffle.** The RapidOCR toggle is gone (built-in OCR is always
+    the primary engine; `LOCAL_OCR_ENABLED` remains env-only); **Advanced tuning
+    moved from Image Processing into the AI Model card** (same `proc-*` ids/JS);
+    the failed-card Retry button is labelled **"Retry with AI OCR"** (it already
+    forced the LLM-OCR pass); new **"Clear log & errors"** button
+    (`#log-clear-btn`) empties the live Processing & Errors stream client-side.
+  * Tests: `tests/test_compress.py` rewritten (auto-quality, never-grow,
+    corrupt-output-keeps-original, truncation detection, autocrop-gone guard);
+    settings/preset/worker tests updated.
+
+- **2026-07-16 (Insights allowances band + board thumbnails + gallery):** Suite
+  **803 → 806** green. Same branch/PR.
+  * **Per diem + phone on Insights.** `_build_insights_sheet` gained
+    `per_diem=`/`phone=` (normalized dicts) → second KPI band at rows 7/8 with
+    "Per Diem (N days)" / "Phone (N months)" / **Total Reimbursement** (receipts +
+    allowances = Summary TOTAL); "Total Spend" deliberately stays receipts-only.
+  * **Board image toggle.** "Show images" checkbox in the board toolbar
+    (`#board-thumbs`, localStorage `boardThumbs`, default off) reveals a `.k-thumb`
+    thumbnail on every card — CSS-gated via `body.show-thumbs` + `loading="lazy"`
+    so nothing is fetched while off. `makeCard` stashes `dataset.imgurl`/`disp`.
+  * **Receipt gallery.** `#gallery-btn` in the board toolbar opens `#gallery-modal`
+    (`openGallery()`): a zoomable grid of every board card's image (reads the card
+    datasets; click → existing `openLightbox`).
+
+- **2026-07-16 (job pairs + Insights toggle + uncapped month picker):** Suite
+  **791 → 803** green. Same branch/PR. Four UX requests:
+  * **Job name ⇄ number pairing.** New `cfg["saved_job_pairs"]` (see the "Saved job
+    pairs" bullet above): auto-saved on `POST /saved-fields` when both present,
+    `job_pairs` in GET, pair-aware `/saved-fields/remove`. UI autofills the
+    counterpart field on exact match (batch form + review modal), and the job
+    fields' ✎ manage panels gained a pairs section with delete + "＋ Save current
+    name + number".
+  * **Insights sheet toggle, default off.** `build_themed_workbook`/
+    `generate_spreadsheet` gained `include_insights` (library default True —
+    `test_spreadsheet.py` + watch/scheduler unchanged); the web generate sites pass
+    `cfg["report_options"]["insights"]` (default False) via new `GET/POST
+    /settings/report-options` + an "Include Insights sheet" checkbox in the new
+    Report add-ons block.
+  * **Phone months uncapped + picker redesign.** `_valid_months` no longer slices
+    to 120; the UI's last-12-months chip row became a **year pager** (‹ 2026 › +
+    12 month buttons, cross-year `_phSel` Set, removable selected-month chips).
+  * **Export Report card flow.** Per diem / phone / insights now sit in one
+    "Report add-ons" group (`.gen-extras`) instead of three stacked bordered rows.
+    `tests/test_report_extras.py` (+12).
 
 - **2026-07-16 (phone-service reimbursement line):** Suite **779 → 791** green.
   Same branch/PR as the batch below. Export Report card gains **"Add phone service"**

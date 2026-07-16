@@ -307,16 +307,27 @@ def _save_field(cfg: dict, list_key: str, value: str) -> None:
     cfg[list_key] = lst[:20]
 
 
+def _save_job_pair(cfg: dict, name: str, number: str) -> None:
+    """Remember a job name + number pairing (both non-blank) — the fields are
+    always used together, so the UI autofills one from the other via this list.
+    Newest first; an identical pair moves to the front (lookups take the most
+    recent pairing when a name was later re-paired with a new number)."""
+    name, number = (name or "").strip(), (number or "").strip()
+    if not (name and number):
+        return
+    pairs = [p for p in cfg.get("saved_job_pairs", [])
+             if isinstance(p, dict)
+             and not (p.get("name") == name and p.get("number") == number)]
+    pairs.insert(0, {"name": name, "number": number})
+    cfg["saved_job_pairs"] = pairs[:50]
+
+
 def _processing_settings() -> dict:
     """Current image-processing settings as the UI sees them."""
     return {
         "autorotate":              _pr.AUTOROTATE_ENABLED,
         "grayscale":               _pr.GRAYSCALE_ENABLED,
-        "autocrop":                _pr.AUTOCROP_ENABLED,
-        "autocrop_aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
-        "local_ocr":               _pr.LOCAL_OCR_ENABLED,
         "compress":                _pr.COMPRESS_ENABLED,
-        "jpeg_quality":            _pr.JPEG_QUALITY,
         "max_parallel":            _pr.MAX_PARALLEL_REQUESTS,
         # Advanced tunables (previously env-only — now user-settable).
         "llm_timeout":             _pr.LLM_TIMEOUT,
@@ -340,28 +351,14 @@ def _apply_processing_config(cfg: dict | None = None) -> dict:
     proc = cfg.get("processing") or {}
     if "autorotate" in proc:
         _pr.AUTOROTATE_ENABLED = bool(proc["autorotate"])
-    if "autocrop" in proc:
-        _pr.AUTOCROP_ENABLED = bool(proc["autocrop"])
-    if proc.get("autocrop_aggressiveness") is not None:
-        try:
-            _pr.AUTOCROP_AGGRESSIVENESS = max(0, min(100, int(proc["autocrop_aggressiveness"])))
-        except (TypeError, ValueError):
-            pass
     if "grayscale" in proc:
         _pr.GRAYSCALE_ENABLED = bool(proc["grayscale"])
     if "compress" in proc:
         _pr.COMPRESS_ENABLED = bool(proc["compress"])
-    # "local_ocr" is the current key; "paddleocr" is read for backward compat with
-    # configs saved before the RapidOCR swap so a prior "disabled" choice sticks.
-    if "local_ocr" in proc:
-        _pr.LOCAL_OCR_ENABLED = bool(proc["local_ocr"])
-    elif "paddleocr" in proc:
-        _pr.LOCAL_OCR_ENABLED = bool(proc["paddleocr"])
-    if proc.get("jpeg_quality") is not None:
-        try:
-            _pr.JPEG_QUALITY = max(40, min(95, int(proc["jpeg_quality"])))
-        except (TypeError, ValueError):
-            pass
+    # NB: legacy config keys are deliberately ignored — "autocrop"/
+    # "autocrop_aggressiveness" (the feature was removed), "jpeg_quality" (export
+    # quality is chosen automatically now), and "local_ocr"/"paddleocr" (the
+    # built-in RapidOCR engine is always the primary OCR; no toggle).
     if proc.get("max_parallel") is not None:
         try:
             _pr.MAX_PARALLEL_REQUESTS = max(1, min(8, int(proc["max_parallel"])))
@@ -3353,6 +3350,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
 
     per_diem = _per_diem_config()
     phone = _phone_config()
+    include_insights = _report_options()["insights"]
 
     def _build():
         return generate_spreadsheet(
@@ -3361,6 +3359,7 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             employee_name=employee,
             per_diem=per_diem,
             phone=phone,
+            include_insights=include_insights,
         )
 
     try:
@@ -4881,12 +4880,8 @@ async def get_version():
 
 class ProcessingSettingsRequest(BaseModel):
     autorotate:              bool | None = None
-    autocrop:                bool | None = None
-    autocrop_aggressiveness: int | None = None
     grayscale:               bool | None = None
     compress:                bool | None = None
-    local_ocr:               bool | None = None
-    jpeg_quality:            int | None = None
     max_parallel:            int | None = None
     llm_timeout:             float | None = None
     llm_max_retries:         int | None = None
@@ -4910,14 +4905,13 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         cfg = _load_config()
         proc = cfg.get("processing") or {}
         if body.autorotate is not None: proc["autorotate"] = bool(body.autorotate)
-        if body.autocrop  is not None: proc["autocrop"]  = bool(body.autocrop)
-        if body.autocrop_aggressiveness is not None:
-            proc["autocrop_aggressiveness"] = max(0, min(100, int(body.autocrop_aggressiveness)))
         if body.grayscale is not None: proc["grayscale"] = bool(body.grayscale)
         if body.compress  is not None: proc["compress"]  = bool(body.compress)
-        if body.local_ocr is not None: proc["local_ocr"] = bool(body.local_ocr)
-        if body.jpeg_quality is not None:
-            proc["jpeg_quality"] = max(40, min(95, int(body.jpeg_quality)))
+        # Stale keys from older configs (autocrop*, jpeg_quality, local_ocr) are
+        # dropped so a pre-removal save can't keep resurrecting them.
+        for stale in ("autocrop", "autocrop_aggressiveness", "jpeg_quality",
+                      "local_ocr", "paddleocr"):
+            proc.pop(stale, None)
         if body.max_parallel is not None:
             proc["max_parallel"] = max(1, min(8, int(body.max_parallel)))
         if body.llm_timeout is not None:
@@ -4946,24 +4940,17 @@ async def save_processing_settings(body: ProcessingSettingsRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-# Recommended image-processing presets for common receipt sources. A scan app
-# (CamScanner, Adobe Scan, Genius Scan, …) already perspective-corrects, crops
-# tight to the document edge, and boosts contrast — so re-cropping in this app is
-# at best a no-op and at worst trims the receipt edge. The "scanned" preset
-# therefore turns auto-crop OFF and keeps auto-rotate + B&W (which only help, and
-# are near no-ops on an already-clean scan). "photo" is the opposite: raw phone
-# photos need the full auto-rotate → B&W → aggressive auto-crop chain.
+# Recommended image-processing presets for common receipt sources. With
+# auto-crop removed, both sources want the same safe pair — auto-rotate + B&W —
+# which are near no-ops on an already-clean scan and pure upside on raw photos.
 _PROCESSING_PRESETS: dict[str, dict] = {
     "scanned": {
         "autorotate": True,
-        "autocrop":   False,
         "grayscale":  True,
     },
     "photo": {
-        "autorotate":              True,
-        "autocrop":                True,
-        "autocrop_aggressiveness": 85,
-        "grayscale":               True,
+        "autorotate": True,
+        "grayscale":  True,
     },
 }
 # CamScanner is the headline scan-app source; alias it to the generic preset.
@@ -5113,7 +5100,7 @@ def _valid_months(months) -> list[str]:
             continue
         if m not in out:
             out.append(m)
-    return sorted(out)[:120]                  # a sane bound: ten years of months
+    return sorted(out)                        # no count limit — pick as many as needed
 
 
 def _phone_config() -> dict:
@@ -5148,6 +5135,36 @@ async def set_phone_service(body: PhoneServiceRequest):
         cfg["phone_service"] = block
         _save_config(cfg)
         return JSONResponse({"ok": True, **_phone_config()})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ── Report options ─────────────────────────────────────────────────────────────
+# Presentation choices for the generated workbook. `insights` gates the Insights
+# sheet (charts/analytics tab) — OFF by default for web generates; watch-mode/
+# scheduler exports keep the library default (on) unchanged.
+
+class ReportOptionsRequest(BaseModel):
+    insights: bool = False
+
+
+def _report_options() -> dict:
+    block = _load_config().get("report_options") or {}
+    return {"insights": bool(block.get("insights"))}
+
+
+@app.get("/settings/report-options")
+async def get_report_options():
+    return JSONResponse(_report_options())
+
+
+@app.post("/settings/report-options")
+async def set_report_options(body: ReportOptionsRequest):
+    try:
+        cfg = _load_config()
+        cfg["report_options"] = {"insights": bool(body.insights)}
+        _save_config(cfg)
+        return JSONResponse({"ok": True, **_report_options()})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -6298,6 +6315,8 @@ async def get_saved_fields():
         "employees":   cfg.get("saved_employees",   []),
         "job_names":   cfg.get("saved_job_names",   []),
         "job_numbers": cfg.get("saved_job_numbers", []),
+        "job_pairs":   [p for p in cfg.get("saved_job_pairs", [])
+                        if isinstance(p, dict) and p.get("name") and p.get("number")],
     })
 
 
@@ -6307,28 +6326,38 @@ async def save_fields(body: SaveFieldsRequest):
     _save_field(cfg, "saved_employees",   body.employee)
     _save_field(cfg, "saved_job_names",   body.job_name)
     _save_field(cfg, "saved_job_numbers", body.job_number)
+    _save_job_pair(cfg, body.job_name, body.job_number)
     _save_config(cfg)
     return JSONResponse({"ok": True})
 
 
 class RemoveFieldRequest(BaseModel):
     list_key: str
-    value:    str
+    value:    str = ""
+    name:     str = ""   # saved_job_pairs only
+    number:   str = ""   # saved_job_pairs only
 
 
 @app.post("/saved-fields/remove")
 async def remove_saved_field(body: RemoveFieldRequest):
-    """Remove a single value from a saved-fields list."""
-    allowed = {"saved_employees", "saved_job_names", "saved_job_numbers"}
+    """Remove a single value from a saved-fields list (or a saved job pair)."""
+    allowed = {"saved_employees", "saved_job_names", "saved_job_numbers",
+               "saved_job_pairs"}
     if body.list_key not in allowed:
         return JSONResponse({"ok": False, "error": "invalid key"}, status_code=400)
     cfg = _load_config()
-    lst = cfg.get(body.list_key, [])
-    try:
-        lst.remove(body.value)
-    except ValueError:
-        pass
-    cfg[body.list_key] = lst
+    if body.list_key == "saved_job_pairs":
+        cfg["saved_job_pairs"] = [
+            p for p in cfg.get("saved_job_pairs", [])
+            if not (isinstance(p, dict)
+                    and p.get("name") == body.name and p.get("number") == body.number)]
+    else:
+        lst = cfg.get(body.list_key, [])
+        try:
+            lst.remove(body.value)
+        except ValueError:
+            pass
+        cfg[body.list_key] = lst
     _save_config(cfg)
     return JSONResponse({"ok": True})
 
@@ -6398,56 +6427,12 @@ async def ocr_test(files: list[UploadFile] = File(...)):
         tmp.unlink(missing_ok=True)
 
 
-@app.post("/debug/autocrop-test")
-async def autocrop_test(files: list[UploadFile] = File(...)):
-    """Preview the auto-crop on an uploaded image — before/after dims, the
-    decision (and why), and a JPEG preview of the result. Lets a user confirm
-    auto-crop behaves on their receipts without running a whole batch."""
-    if not files:
-        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
-
-    content = await files[0].read()
-    if not content:
-        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
-
-    def _run() -> dict:
-        from PIL import Image as PILImage
-        with PILImage.open(io.BytesIO(content)) as raw:
-            if getattr(raw, "format", None) == "MPO":
-                raw.seek(0)
-            img = raw.convert("RGB")
-            ow, oh = img.size
-            info    = _pr.autocrop_analyze(img)        # what it would do + why
-            cropped = _pr.autocrop_receipt(img)         # what the pipeline does
-            cw, ch  = cropped.size
-            buf = io.BytesIO()
-            cropped.save(buf, format="JPEG", quality=85, optimize=True)
-        return {
-            "ok":         True,
-            "enabled":    _pr.AUTOCROP_ENABLED,
-            "cropped":    (cw, ch) != (ow, oh),
-            "would_crop": bool(info["would_crop"]),
-            "original":   [ow, oh],
-            "result":     [cw, ch],
-            "kept_ratio": round(float(info["kept_ratio"]), 4),
-            "reason":     info["reason"],
-            "preview":    "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
-        }
-
-    try:
-        result = await asyncio.get_event_loop().run_in_executor(None, _run)
-        return JSONResponse(result)
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-
-
 @app.post("/debug/process-test")
 async def process_test(files: list[UploadFile] = File(...)):
     """Run every enabled image-processing step on an uploaded image, in the exact
-    order the pipeline uses (auto-rotate → black&white → auto-crop → compress),
-    and return a per-step before/after report plus the final image. Confirms the
-    steps compose — e.g. a sideways photo comes out upright *and* cropped — and
-    lets a user dial in auto-crop aggressiveness against a real receipt."""
+    order the pipeline uses (auto-rotate → black&white → compress), and return a
+    per-step before/after report plus the final image. Confirms the steps compose
+    — e.g. a sideways photo comes out upright *and* optimized."""
     if not files:
         return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
     content = await files[0].read()
@@ -6474,7 +6459,6 @@ async def process_test(files: list[UploadFile] = File(...)):
             for label, enabled, fn in (
                 ("Auto-rotate to upright", _pr.AUTOROTATE_ENABLED, _pr.autorotate_image_file),
                 ("Black & white",          _pr.GRAYSCALE_ENABLED,  _pr.grayscale_image_file),
-                ("Auto-crop borders",      _pr.AUTOCROP_ENABLED,   _pr.autocrop_image_file),
             ):
                 before = _dims(cur)
                 applied = bool(fn(cur))
@@ -6500,7 +6484,6 @@ async def process_test(files: list[UploadFile] = File(...)):
                 fim.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
             return {
                 "ok": True,
-                "aggressiveness": _pr.AUTOCROP_AGGRESSIVENESS,
                 "steps": steps,
                 "original": start_dims, "original_bytes": start_bytes,
                 "result": _dims(cur), "result_bytes": cur.stat().st_size,
@@ -6861,11 +6844,13 @@ async def watch_send_email():
             _detect_duplicates(results_copy)
             per_diem = _per_diem_config()
             phone = _phone_config()
+            include_insights = _report_options()["insights"]
             built = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: generate_spreadsheet(
                     results=results_copy, output_dir=OUT_FOLDER,
                     employee_name=employee, per_diem=per_diem, phone=phone,
+                    include_insights=include_insights,
                 ),
             )
         except Exception as exc:
