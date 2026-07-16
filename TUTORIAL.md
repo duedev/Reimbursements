@@ -105,10 +105,10 @@ You have three options:
 
 After adding files, click **Add to Queue**.
 
-**Optional: pull receipts in from email or Google Drive (advanced, off by default)**
+**Optional: pull receipts in from email, Google Drive, or OneDrive (advanced, off by default)**
 
-If you'd rather *forward* receipts than drop them in, two opt-in sources can feed the
-app automatically (both under **Settings**, both off until you set them up):
+If you'd rather *forward* receipts than drop them in, three opt-in sources can feed the
+app automatically (all under **Settings**, all off until you set them up):
 
 - **Email Intake:** forward receipts to a dedicated Gmail, generate a 16-character
   **App Password**, and paste it in **Settings → Email Intake**. The app polls the
@@ -118,12 +118,18 @@ app automatically (both under **Settings**, both off until you set them up):
   receipt attachments into it automatically (the `gmail_to_drive.gs` Apps Script — see
   `GMAIL_TO_DRIVE_SETUP.md`). In **Settings → Google Drive Intake**, paste the folder
   ID, do the one-time **Connect Google** consent, and turn it on.
+- **OneDrive Intake:** same idea for Microsoft — make one OneDrive folder the inbox
+  and fill it from the OneDrive app's **Scan** button, the share-sheet, or a synced PC
+  folder. In **Settings → OneDrive Intake**, paste the Azure app client ID, click
+  **Connect Microsoft** (enter the code it shows at microsoft.com/devicelogin), and
+  turn it on. Full walkthrough incl. the free Azure app registration:
+  `ONEDRIVE_IMPORT.md` (also on the app's **Guides** tab).
 
 > **A note on privacy:** these are **opt-in cloud sources**, off by default. They don't
 > change where your receipts are *read* — OCR and the offline parser stay on your
 > machine, and the receipt image only reaches a cloud AI model if you separately turned
-> that on. What's new is that the app stores a Google sign-in token (kept in the local
-> secrets file, read-only Drive access, with a one-click **Disconnect & revoke**). The
+> that on. What's new is that the app stores a Google/Microsoft sign-in token (kept in
+> the local secrets file, read-only access, with a one-click **Disconnect**). The
 > receipts these pull in were already sitting in your Gmail/Drive.
 
 **Importing from CamScanner (and other scan apps)**

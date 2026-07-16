@@ -34,6 +34,7 @@ import email_intake
 import gdrive_intake
 import gmail_filter
 import multiuser
+import onedrive_intake
 import process_receipts as _pr
 import scheduler
 import users
@@ -2393,6 +2394,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_run_stall_checker, daemon=True).start()
     threading.Thread(target=_run_email_poller,  daemon=True).start()  # IMAP receipt intake
     threading.Thread(target=_run_gdrive_poller, daemon=True).start()  # Google Drive intake
+    threading.Thread(target=_run_onedrive_poller, daemon=True).start()  # OneDrive intake
     sched_task = asyncio.create_task(scheduler.run_scheduler(
         _get_schedule_config, _schedule_results_snapshot,
         _on_schedule_result, _schedule_wakeup,
@@ -3349,11 +3351,14 @@ async def make_spreadsheet(body: GenerateRequest = GenerateRequest()):
             if job_number and not str(r.get("job_number") or "").strip():
                 r["job_number"] = job_number
 
+    per_diem = _per_diem_config()
+
     def _build():
         return generate_spreadsheet(
             results=results_copy,
             output_dir=OUT_FOLDER,
             employee_name=employee,
+            per_diem=per_diem,
         )
 
     try:
@@ -5021,6 +5026,65 @@ async def save_audit_settings(body: AuditSettingsRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+# ── Per diem ───────────────────────────────────────────────────────────────────
+# An opt-in daily allowance added to the report: rate ($/day) × duration (days)
+# becomes a "Per Diem" line on the Summary sheet, included in the grand TOTAL.
+# Persisted in config; read at generate time (web Generate + Send Report Now —
+# the watch-mode/scheduler export paths deliberately stay receipts-only).
+
+class PerDiemRequest(BaseModel):
+    enabled: bool = False
+    rate:    float | str | None = None
+    days:    int | str | None = None
+
+
+def _per_diem_config() -> dict:
+    """The sanitized per-diem block: {"enabled", "rate", "days"} with finite,
+    non-negative values (bad/inf/nan stored values read back as 0 → inert)."""
+    block = _load_config().get("per_diem") or {}
+    try:
+        rate = float(block.get("rate") or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    try:
+        days = int(block.get("days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    if not math.isfinite(rate) or rate < 0:
+        rate = 0.0
+    return {"enabled": bool(block.get("enabled")), "rate": round(rate, 2),
+            "days": max(0, min(days, 3650))}
+
+
+@app.get("/settings/per-diem")
+async def get_per_diem():
+    pd = _per_diem_config()
+    pd["total"] = round(pd["rate"] * pd["days"], 2) if pd["enabled"] else 0.0
+    return JSONResponse(pd)
+
+
+@app.post("/settings/per-diem")
+async def set_per_diem(body: PerDiemRequest):
+    try:
+        rate = _coerce_pos_num(body.rate) or 0.0
+        if not math.isfinite(rate):           # inf/nan would poison the config + total
+            rate = 0.0
+        try:
+            days = int(float(body.days)) if body.days not in (None, "") else 0
+        except (TypeError, ValueError, OverflowError):
+            days = 0
+        cfg = _load_config()
+        cfg["per_diem"] = {
+            "enabled": bool(body.enabled),
+            "rate":    round(rate, 2),
+            "days":    max(0, min(days, 3650)),
+        }
+        _save_config(cfg)
+        return JSONResponse({"ok": True, **_per_diem_config()})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/benchmarks")
 async def get_benchmarks():
     """Per-batch processing-time history, newest first — for comparing LLMs."""
@@ -5826,6 +5890,256 @@ async def poll_gdrive_now(request: Request):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+# ── Microsoft OneDrive intake ──────────────────────────────────────────────────
+# See onedrive_intake.py + ONEDRIVE_IMPORT.md. Instance-level (admin-only in MU
+# mode), mirroring the Google Drive card. NB: Microsoft ROTATES refresh tokens —
+# every Graph client build persists the replacement token it hands back.
+
+def _onedrive_config() -> onedrive_intake.OneDriveConfig:
+    return onedrive_intake.OneDriveConfig.from_dict(_load_config().get("onedrive"))
+
+
+def _onedrive_client_secret() -> str:
+    # Usually blank: the recommended Azure registration is a PUBLIC client (device
+    # flow, "Allow public client flows" on) which needs no secret at all.
+    return app_secrets.get_secret("onedrive_client_secret", env="ONEDRIVE_CLIENT_SECRET")
+
+
+def _onedrive_token() -> str:
+    return app_secrets.get_secret("onedrive_token", env="ONEDRIVE_REFRESH_TOKEN")
+
+
+def _onedrive_seen_path() -> Path:
+    return multiuser.default_workspace().out_folder / ".onedrive_seen.json"
+
+
+def _load_onedrive_seen() -> set[str]:
+    try:
+        p = _onedrive_seen_path()
+        if p.exists():
+            data = json.loads(p.read_text())
+            if isinstance(data, list):
+                return set(str(x) for x in data)
+    except Exception:
+        pass
+    return set()
+
+
+def _save_onedrive_seen(seen: set[str]) -> None:
+    try:
+        p = _onedrive_seen_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Keep the newest 5000 ids so the guard file can't grow without bound.
+        p.write_text(json.dumps(list(seen)[-5000:]))
+    except Exception as exc:
+        print(f"[onedrive] could not persist seen ids: {exc}")
+
+
+def _build_onedrive_graph():
+    """Build the Graph client from the saved config + secrets (or None), persisting
+    the rotated refresh token Microsoft returns on every redeem."""
+    cfg = _onedrive_config()
+    try:
+        graph, rotated = onedrive_intake.build_graph(
+            cfg, _onedrive_token(), _onedrive_client_secret())
+        if graph is not None and rotated:
+            app_secrets.save_secret("onedrive_token", rotated)
+        return graph
+    except Exception as exc:
+        _emit_log(f"[onedrive] could not build Graph client: {exc}", level="error")
+        return None
+
+
+def _onedrive_poll(cfg: onedrive_intake.OneDriveConfig, seen: set[str]) -> dict:
+    """One OneDrive poll: download new files into the default intake folder."""
+    graph = _build_onedrive_graph()
+    if graph is None:
+        return {"files": 0, "downloaded": 0, "skipped": 0, "seen_ids": [],
+                "error": "not connected"}
+    intake_dir = multiuser.default_workspace().intake_folder
+    summary = onedrive_intake.poll_once(graph, cfg, intake_dir, already_seen=seen)
+    for fid in summary.get("seen_ids", []):
+        seen.add(fid)
+    if summary.get("seen_ids"):
+        _save_onedrive_seen(seen)
+    if summary.get("downloaded"):
+        _emit_log(f"[onedrive] {summary['downloaded']} new receipt(s) downloaded "
+                  f"from OneDrive (folder {cfg.folder_path[:24]}…)")
+    return summary
+
+
+def _run_onedrive_poller() -> None:
+    """Background loop: poll the configured OneDrive folder for new receipts."""
+    seen = _load_onedrive_seen()
+    while not _worker_cancel.is_set():
+        cfg = _onedrive_config()
+        interval = cfg.poll_interval if cfg.poll_interval else 300
+        if cfg.enabled and cfg.folder_path and _onedrive_token():
+            try:
+                _onedrive_poll(cfg, seen)
+            except Exception as exc:
+                _emit_log(f"[onedrive] poll error: {exc}", level="error")
+        _worker_cancel.wait(timeout=max(30, interval))
+
+
+class OneDriveSettingsRequest(BaseModel):
+    enabled:       bool = False
+    folder_path:   str = "Receipts"
+    poll_interval: int = 300
+    scope:         str = "files.read"
+    client_id:     str = ""
+    tenant:        str = "consumers"
+    client_secret: str = ""   # optional (public clients need none); blank keeps saved
+
+
+class OneDriveConnectRequest(BaseModel):
+    device_code:   str = ""   # from POST /settings/onedrive/device-code
+    refresh_token: str = ""   # or paste a refresh token directly (advanced)
+
+
+@app.get("/settings/onedrive")
+async def get_onedrive(request: Request):
+    guard = _gdrive_admin_or_403(request)   # same policy: OAuth token ⇒ admin-only in MU
+    if guard is not None:
+        return guard
+    cfg = _onedrive_config()
+    out = cfg.to_public_dict()
+    out["client_secret_set"] = bool(_onedrive_client_secret())
+    out["connected"] = bool(_onedrive_token())
+    out["configured"] = bool(cfg.folder_path and cfg.client_id and _onedrive_token())
+    out["multiuser"] = multiuser.ENABLED
+    out["consent_manage_url"] = onedrive_intake.CONSENT_MANAGE_URL
+    return JSONResponse(out)
+
+
+@app.post("/settings/onedrive")
+async def set_onedrive(body: OneDriveSettingsRequest, request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    try:
+        cfg = _load_config()
+        block = cfg.get("onedrive") or {}
+        scope = body.scope.strip().lower()
+        if scope not in ("files.read", "files.readwrite"):
+            scope = "files.read"
+        block.update({
+            "enabled":       bool(body.enabled),
+            "folder_path":   body.folder_path.strip().strip("/"),
+            "poll_interval": max(30, int(body.poll_interval or 300)),
+            "scope":         scope,
+            "client_id":     body.client_id.strip(),
+            "tenant":        onedrive_intake._safe_tenant(body.tenant),
+        })
+        block.pop("client_secret", None)   # never keep the secret in the synced config
+        block.pop("token", None)
+        if body.client_secret:             # blank keeps the previously saved secret
+            app_secrets.save_secret("onedrive_client_secret", body.client_secret)
+        cfg["onedrive"] = block
+        _save_config(cfg)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/settings/onedrive/device-code")
+async def onedrive_device_code(request: Request):
+    """Start the device-code sign-in: returns the code + URL to show the user.
+    The UI then polls /settings/onedrive/connect with the device_code."""
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _onedrive_config()
+    if not cfg.client_id:
+        return JSONResponse({"ok": False, "error": "Save the Azure application (client) ID first."},
+                            status_code=400)
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: onedrive_intake.device_code_start(cfg))
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/settings/onedrive/connect")
+async def onedrive_connect(body: OneDriveConnectRequest, request: Request):
+    """Finish connecting: poll the device-code once (the UI retries while `pending`)
+    or accept a directly pasted refresh token (advanced)."""
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _onedrive_config()
+    try:
+        if body.refresh_token.strip():
+            token = body.refresh_token.strip()
+        elif body.device_code.strip():
+            result = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: onedrive_intake.device_code_poll(cfg, body.device_code.strip()))
+            if not result.get("ok"):
+                status = 200 if result.get("pending") else 400
+                return JSONResponse({"ok": False, "pending": bool(result.get("pending")),
+                                     "error": result.get("error", "")}, status_code=status)
+            token = result["refresh_token"]
+        else:
+            return JSONResponse({"ok": False, "error": "Provide a device code or a refresh token."},
+                                status_code=400)
+        app_secrets.save_secret("onedrive_token", token)
+        return JSONResponse({"ok": True, "connected": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/settings/onedrive/disconnect")
+async def onedrive_disconnect(request: Request):
+    """Clear the stored token. Microsoft has no programmatic revoke for consumer
+    refresh tokens — the response points at the account consent-manage page."""
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    app_secrets.save_secret("onedrive_token", "")
+    return JSONResponse({"ok": True, "connected": False,
+                         "revoke_url": onedrive_intake.CONSENT_MANAGE_URL})
+
+
+@app.post("/settings/onedrive/test")
+async def test_onedrive(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _onedrive_config()
+
+    def _run():
+        graph = _build_onedrive_graph()
+        return onedrive_intake.test_connection(graph, cfg)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/settings/onedrive/poll-now")
+async def poll_onedrive_now(request: Request):
+    guard = _gdrive_admin_or_403(request)
+    if guard is not None:
+        return guard
+    cfg = _onedrive_config()
+    if not (cfg.folder_path and _onedrive_token()):
+        return JSONResponse({"ok": False, "error": "Connect Microsoft and set the inbox folder path first."},
+                            status_code=400)
+    seen = _load_onedrive_seen()
+
+    def _run():
+        return _onedrive_poll(cfg, seen)
+    try:
+        summary = await asyncio.get_event_loop().run_in_executor(None, _run)
+        if summary.get("downloaded"):
+            _ensure_worker_alive()
+        return JSONResponse({"ok": True, **summary})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 # ── Scheduled export endpoints ─────────────────────────────────────────────────
 
 class ScheduleRequest(BaseModel):
@@ -6478,10 +6792,12 @@ async def watch_send_email():
         )
         try:
             _detect_duplicates(results_copy)
+            per_diem = _per_diem_config()
             built = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: generate_spreadsheet(
-                    results=results_copy, output_dir=OUT_FOLDER, employee_name=employee
+                    results=results_copy, output_dir=OUT_FOLDER,
+                    employee_name=employee, per_diem=per_diem,
                 ),
             )
         except Exception as exc:

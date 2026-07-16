@@ -369,7 +369,49 @@ def _write_subtotal(ws, row: int, first_data: int, last_data: int):
     ws.row_dimensions[row].height = 20
 
 
-def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
+def normalize_per_diem(per_diem) -> Optional[dict]:
+    """Validate a per-diem config dict into `{"rate", "days", "total"}` or None.
+
+    None unless enabled with a finite positive rate AND at least one day — the
+    same non-finite guard `_coerce_amount` applies to receipt amounts (an inf/nan
+    rate would otherwise poison the report total).
+    """
+    if not isinstance(per_diem, dict) or not per_diem.get("enabled"):
+        return None
+    try:
+        rate = float(per_diem.get("rate") or 0)
+        days = int(per_diem.get("days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rate) or rate <= 0 or days <= 0:
+        return None
+    return {"rate": round(rate, 2), "days": days, "total": round(rate * days, 2)}
+
+
+def _write_per_diem(ws, row: int, rate: float, days: int):
+    """The opt-in daily-allowance line between the category subtotals and the
+    grand TOTAL. Written as a literal amount (not a formula) so the TOTAL row can
+    simply add F{row}; the rate × days breakdown sits in the merged A:D area."""
+    pd_fill   = _fill(COLOR_SUBTOTAL_BG)
+    pd_font   = _font(bold=True, size=11, color=COLOR_SUBTOTAL_FG)
+    _flood(ws, row, pd_fill, pd_font, _border("D1D5DB"))
+
+    ws.merge_cells(f"A{row}:D{row}")
+    note = ws.cell(row=row, column=1,
+                   value=f"{days} day{'s' if days != 1 else ''} × ${rate:,.2f}/day")
+    note.alignment = _align(h="right", wrap=False)
+
+    lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value="Per Diem")
+    lbl.alignment = _align(h="right")
+
+    cell_f = ws.cell(row=row, column=COL_AMOUNT, value=round(rate * days, 2))
+    cell_f.number_format = ACCT_FORMAT
+    cell_f.alignment     = _align(h="right")
+    ws.row_dimensions[row].height = 20
+
+
+def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int,
+                 per_diem_row: int = None):
     tot_fill = _fill(COLOR_TOTAL_BG)
     tot_font = _font(bold=True, color=COLOR_TOTAL_FG, size=12)
 
@@ -383,8 +425,10 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int):
     lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value="TOTAL")
     lbl.alignment = _align(h="right")
 
-    cell_f = ws.cell(row=row, column=COL_AMOUNT,
-                     value=f"=F{fuel_sub}+F{mat_sub}+F{misc_sub}")
+    formula = f"=F{fuel_sub}+F{mat_sub}+F{misc_sub}"
+    if per_diem_row:
+        formula += f"+F{per_diem_row}"
+    cell_f = ws.cell(row=row, column=COL_AMOUNT, value=formula)
     cell_f.number_format = ACCT_FORMAT
     cell_f.alignment     = _align(h="right")
     ws.row_dimensions[row].height = 24
@@ -994,6 +1038,7 @@ def build_themed_workbook(
     expense_period: str = "",
     employee_name: str = "Duane Hamilton",
     build_tag: str = "",
+    per_diem: dict = None,
 ) -> Workbook:
     """
     Build a fresh themed workbook from receipt data.
@@ -1059,7 +1104,18 @@ def build_themed_workbook(
         subtotal_rows[category] = current_row
         current_row += 1
 
-    _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"], subtotal_rows["misc"])
+    # Opt-in per-diem allowance line — sits between the category subtotals and the
+    # grand TOTAL so the reader sees fuel + mats + misc + per diem = TOTAL. The
+    # Insights sheet stays receipt-analytics only (per diem is not a receipt).
+    pd = normalize_per_diem(per_diem)
+    per_diem_row = None
+    if pd:
+        _write_per_diem(ws, current_row, pd["rate"], pd["days"])
+        per_diem_row = current_row
+        current_row += 1
+
+    _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"],
+                 subtotal_rows["misc"], per_diem_row=per_diem_row)
     current_row += 1
 
     # Muted generated-by footer — placed in the Summary column so Column A stays narrow

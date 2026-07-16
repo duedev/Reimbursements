@@ -39,7 +39,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **Inline editing** — Click any field on a completed card (vendor, date, amount, category, summary) to fix it in place; duplicate flags recompute automatically
 - **Crash-safe persistence** — Completed and failed receipts are snapshotted to disk and restored on startup, so a server restart never loses a processed batch
 - **Optional email delivery & scheduling** — Watch-mode daemon and a built-in weekly scheduler can email the report over SMTP or drop it into a synced cloud folder
-- **Optional cloud capture sources (opt-in, off by default)** — Pull receipts in from a mailbox over **IMAP** (forward receipts to a dedicated Gmail), or from a **Google Drive** folder you fill from your phone or via a Gmail→Drive Apps Script. Both are off until you configure them. Like the optional OpenRouter LLM mode, these are disclosed cloud surfaces: Drive intake stores an OAuth refresh token (kept out of the synced config, `drive.readonly` scope, one-click disconnect/revoke) — the receipts it pulls were already in your Gmail/Drive. Local OCR + the offline parser are unaffected, and the receipt image still only reaches a cloud LLM if you separately enabled that. See `GOOGLE_DRIVE_IMPORT.md` and `GMAIL_TO_DRIVE_SETUP.md`
+- **Optional cloud capture sources (opt-in, off by default)** — Pull receipts in from a mailbox over **IMAP** (forward receipts to a dedicated Gmail), from a **Google Drive** folder you fill from your phone or via a Gmail→Drive Apps Script, or from a **Microsoft OneDrive** folder (the OneDrive app's Scan button / any synced folder). All are off until you configure them. Like the optional OpenRouter LLM mode, these are disclosed cloud surfaces: Drive/OneDrive intake stores an OAuth refresh token (kept out of the synced config, read-only scope, one-click disconnect) — the receipts it pulls were already in your Gmail/Drive/OneDrive. Local OCR + the offline parser are unaffected, and the receipt image still only reaches a cloud LLM if you separately enabled that. See `GOOGLE_DRIVE_IMPORT.md`, `GMAIL_TO_DRIVE_SETUP.md`, and `ONEDRIVE_IMPORT.md`
 - **Self-healing LLM connection** — The app auto-detects a working LLM endpoint at startup and whenever the configured one reads unreachable (LM Studio on `:1234`, the bundled Docker server on `:1234`, and the `host.docker.internal` variants), with a one-click **🔎 Auto-detect** in Settings
 - **On-image field markup** — The review modal and full-screen lightbox draw colour-coded boxes over the receipt showing exactly where the vendor, date, and amount were read, plus a zoomed callout of each so the extracted value can be checked against the print at a glance
 - **Opt-in spending & date warnings** — Off by default; set per-category dollar caps and a max receipt age in **Settings → Spending & Date Warnings** to have over-limit or stale receipts flagged
@@ -177,6 +177,7 @@ Open `http://localhost:8000`.
 | **Queue Intake Files** | Click the button to manually enqueue everything currently in the intake folder |
 | **Email intake** *(opt-in)* | Forward receipts to a dedicated mailbox; **Settings → Email Intake** polls it over IMAP (Gmail + App Password) and queues attachments + e-receipt bodies |
 | **Google Drive intake** *(opt-in cloud source)* | Point **Settings → Google Drive Intake** at a Drive folder you fill from your phone (Drive Scan / share-sheet) or via the Gmail→Drive Apps Script (`gmail_to_drive.gs`). The app polls the folder and downloads new image/PDF files. Needs a one-time Google OAuth consent; the refresh token is stored locally in the secrets file (never the synced config). See `GOOGLE_DRIVE_IMPORT.md` |
+| **OneDrive intake** *(opt-in cloud source)* | Point **Settings → OneDrive Intake** at a OneDrive folder you fill from your phone (the OneDrive app's **Scan** button / share-sheet) or any synced PC folder. The app polls the folder over Microsoft Graph (stdlib only — no extra packages) and downloads new image/PDF files. Needs a one-time free Azure app registration + device-code sign-in; the refresh token is stored locally in the secrets file. See `ONEDRIVE_IMPORT.md` |
 
 Click **Add to Queue** to start processing. You can keep adding files at any time — the queue drains continuously.
 
@@ -196,6 +197,8 @@ Every card has a **×** dismiss button. **Clear Board** (appears once any cards 
 Once receipts reach the Completed column, a **Generate Spreadsheet** card appears. Click it to build and download the Excel workbook. The file is named `Reimbursements_EmployeeName_YYYY-MM-DD.xlsx`.
 
 The card also has a **Require review & approval** checkbox. While it's on, generation is blocked (button disabled, and the server rejects the request) until every completed receipt has been approved via the **✎ Review & Approve** button on its card — the status line shows how many receipts still need review and updates live as you approve them. The Review & Approve dialog opens with a **large, zoomed view of the receipt right beside the editable fields and Approve button**, so you can verify and approve in one step (click the image to go full-screen).
+
+**Per diem (optional):** tick **Add per diem** on the same card to add a daily allowance to the report — enter the dollar amount reimbursed per day and the number of days. The workbook's Summary sheet gains a **Per Diem** line (showing the `days × $rate/day` breakdown) between the category subtotals and the grand TOTAL, and the TOTAL includes it. The setting persists between sessions; it applies to reports generated from the web UI (Generate / Send Report Now) — the watch-mode/scheduler exports stay receipts-only.
 
 ---
 
@@ -505,6 +508,8 @@ Numbers**.
 | `GET/POST` | `/settings/processing` | `autorotate`, `autocrop`, `autocrop_aggressiveness`, `grayscale`, `compress`, `local_ocr`, `jpeg_quality`, `max_parallel` |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
 | `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
+| `GET/POST` | `/settings/per-diem` | Opt-in daily allowance (`enabled`, `rate`, `days`) added as a Per Diem line + included in the report TOTAL |
+| `GET/POST` | `/settings/onedrive` | OneDrive intake config; plus `POST /settings/onedrive/device-code`, `/connect`, `/disconnect`, `/test`, `/poll-now` (see `ONEDRIVE_IMPORT.md`) |
 | `GET/POST` | `/settings/email` | SMTP host/port/user/pass/from, recipients, subject (GET never echoes the password) |
 | `POST` | `/settings/email/test` | Send a test email with the current settings |
 | `GET/POST` | `/saved-fields` | `employees`, `job_names`, `job_numbers` lists |
