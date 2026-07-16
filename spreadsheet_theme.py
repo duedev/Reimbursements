@@ -869,7 +869,8 @@ def _kpi_tile(ws, row: int, col: int, label: str, value, fmt: str = None,
 
 
 def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
-                          expense_period: str) -> None:
+                          expense_period: str, per_diem: dict = None,
+                          phone: dict = None) -> None:
     """Add an 'Insights' sheet mirroring the web dashboard: KPI tiles, a category
     breakdown, top vendors, and a detailed spend-over-time table — each backed by
     a native Excel chart that also renders in macOS Numbers."""
@@ -918,13 +919,37 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     ws.row_dimensions[5].height = 16   # label row
     ws.row_dimensions[6].height = 24   # value row
 
+    # ── Allowances band (only when per diem / phone service is on) ─────────────
+    # "Total Spend" above stays receipts-only (it feeds Avg/Receipt); this band
+    # shows each allowance and a Total Reimbursement figure that matches the
+    # Summary sheet's grand TOTAL (receipts + allowances).
+    row = 8
+    if per_diem or phone:
+        allowance_total = (per_diem or {}).get("total", 0.0) + (phone or {}).get("total", 0.0)
+        if per_diem:
+            _kpi_tile(ws, 7, 1, f"Per Diem ({per_diem['days']} day"
+                                f"{'s' if per_diem['days'] != 1 else ''})",
+                      per_diem["total"], ACCT_FORMAT)
+        else:
+            _kpi_tile(ws, 7, 1, "Per Diem", "—")
+        if phone:
+            n = len(phone["months"])
+            _kpi_tile(ws, 7, 2, f"Phone ({n} month{'s' if n != 1 else ''})",
+                      phone["total"], ACCT_FORMAT)
+        else:
+            _kpi_tile(ws, 7, 2, "Phone Service", "—")
+        _kpi_tile(ws, 7, 3, "Total Reimbursement",
+                  round(insights["total"] + allowance_total, 2),
+                  ACCT_FORMAT, COLOR_SECTION_BG)
+        ws.row_dimensions[7].height = 16
+        ws.row_dimensions[8].height = 24
+        row = 10
+
     # Charts sit to the right of their tables (anchored at column E). A chart of
     # H centimetres covers ~2·H grid rows; advance the cursor past whichever is
     # taller — table or chart — so sections never overlap.
     def _chart_rows(height_cm: float) -> int:
         return int(round(height_cm * 2)) + 1
-
-    row = 8
 
     # ── By Category (table + pie chart) ────────────────────────────────────────
     _write_section_banner(ws, row, "By Category")
@@ -1233,7 +1258,8 @@ def build_themed_workbook(
     # gates it; library default stays on so direct callers are unchanged. ──
     if include_insights:
         insights = _compute_insights(sections)
-        _build_insights_sheet(wb, insights, employee_name, expense_period)
+        _build_insights_sheet(wb, insights, employee_name, expense_period,
+                              per_diem=pd, phone=ph)
 
     # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
     IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]

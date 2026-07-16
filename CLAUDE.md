@@ -397,7 +397,13 @@ to the model — nothing hidden or clipped.
   receipt-analytics only.
 - Applied at both web build sites (`/generate-spreadsheet` + the Send-Report-Now
   fallback build); watch-mode/scheduler exports deliberately stay receipts-only.
-- Tests: `tests/test_per_diem.py` (+12), `tests/test_phone_service.py` (+12).
+- **Insights allowances band:** when per diem/phone is active,
+  `_build_insights_sheet(..., per_diem=, phone=)` adds a second KPI row (rows 7/8):
+  "Per Diem (N days)", "Phone (N months)", and **Total Reimbursement** (= receipts
+  + allowances, matching the Summary grand TOTAL); "Total Spend" stays
+  receipts-only (it feeds Avg/Receipt) and the section cursor shifts 8 → 10.
+- Tests: `tests/test_per_diem.py` (+12), `tests/test_phone_service.py` (+12),
+  allowance-band tests in `tests/test_report_extras.py`.
 
 ## Config / state / paths
 
@@ -410,7 +416,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **803 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **806 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -492,6 +498,20 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-16 (Insights allowances band + board thumbnails + gallery):** Suite
+  **803 → 806** green. Same branch/PR.
+  * **Per diem + phone on Insights.** `_build_insights_sheet` gained
+    `per_diem=`/`phone=` (normalized dicts) → second KPI band at rows 7/8 with
+    "Per Diem (N days)" / "Phone (N months)" / **Total Reimbursement** (receipts +
+    allowances = Summary TOTAL); "Total Spend" deliberately stays receipts-only.
+  * **Board image toggle.** "Show images" checkbox in the board toolbar
+    (`#board-thumbs`, localStorage `boardThumbs`, default off) reveals a `.k-thumb`
+    thumbnail on every card — CSS-gated via `body.show-thumbs` + `loading="lazy"`
+    so nothing is fetched while off. `makeCard` stashes `dataset.imgurl`/`disp`.
+  * **Receipt gallery.** `#gallery-btn` in the board toolbar opens `#gallery-modal`
+    (`openGallery()`): a zoomable grid of every board card's image (reads the card
+    datasets; click → existing `openLightbox`).
 
 - **2026-07-16 (job pairs + Insights toggle + uncapped month picker):** Suite
   **791 → 803** green. Same branch/PR. Four UX requests:

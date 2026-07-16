@@ -1181,6 +1181,13 @@
     }
 
     /* Board search */
+    /* Card thumbnails (off by default; toggled via the board's "Show images"
+       switch → body.show-thumbs). Hidden + loading=lazy means the browser
+       doesn't fetch them until the toggle is on. */
+    .k-thumb { display: none; width: 100%; max-height: 110px; object-fit: cover;
+               object-position: top; border-radius: 6px; margin: 4px 0 6px;
+               cursor: zoom-in; border: 1px solid var(--border); }
+    body.show-thumbs .k-thumb { display: block; }
     .board-search {
       display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
     }
@@ -1685,6 +1692,10 @@
       </div>
       <!-- Queue controls live with the board they act on -->
       <div class="board-toolbar">
+        <label class="check-label" style="font-size:12px;margin:0" title="Show a thumbnail of each receipt on its card">
+          <input type="checkbox" id="board-thumbs"> Show images
+        </label>
+        <button class="btn btn-neutral btn-md" id="gallery-btn" title="View every receipt on the board as an image grid">&#128444; Gallery</button>
         <span id="queue-badge" class="status-note" style="display:none">
           <span id="queue-pending-count">0</span> pending
         </span>
@@ -3000,6 +3011,18 @@
 </div>
 
 <!-- ── Finish-batch (tidy temp files) dialog — shown after a report downloads ── -->
+<!-- Receipt gallery — a grid of every receipt image currently on the board -->
+<div class="modal-overlay hidden" id="gallery-modal" role="dialog" aria-modal="true" aria-labelledby="gallery-title">
+  <div class="modal-box" style="width:min(920px,94vw)">
+    <h3 id="gallery-title">&#128444; Receipt Gallery</h3>
+    <p class="modal-sub" id="gallery-sub"></p>
+    <div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;max-height:62vh;overflow-y:auto;padding:2px"></div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn btn-cancel" id="gallery-close-btn">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-modal-title">
   <div class="modal-box" style="width:520px">
     <h3 id="finish-modal-title">&#129529; Clear temporary receipt files?</h3>
@@ -3561,6 +3584,10 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   // Image view button — prefer renamed output file, fall back to compressed or original
   const imgFile = (data && (data._new_filename || data._compressed_file || data._file)) || filename;
   const imgUrl  = withToken(`/receipt-image?filename=${encodeURIComponent(imgFile)}`);
+  div.dataset.imgurl = imgUrl;               // gallery reads these off the cards
+  div.dataset.disp   = (data && data._new_filename) || filename;
+  // Inline thumbnail — CSS-hidden unless the board's "Show images" toggle is on.
+  inner += `<img class="k-thumb" src="${imgUrl}" loading="lazy" alt="" onerror="this.remove()" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')">`;
   inner += `<button class="k-img-btn" onclick="event.stopPropagation();openLightbox('${imgUrl}','${escJs(filename)}')" title="View receipt image with extracted stats">&#128247; View</button>`;
 
   if (status === 'failed') {
@@ -3589,6 +3616,54 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   });
   return div;
 }
+
+// ── Board thumbnails toggle + receipt gallery ─────────────────────────────────
+// "Show images" reveals the per-card thumbnails (CSS-gated so nothing is fetched
+// while off); Gallery shows every receipt on the board as a zoomable grid.
+(function initBoardImages() {
+  const cb = document.getElementById('board-thumbs');
+  cb.checked = localStorage.getItem('boardThumbs') === '1';
+  document.body.classList.toggle('show-thumbs', cb.checked);
+  cb.addEventListener('change', () => {
+    localStorage.setItem('boardThumbs', cb.checked ? '1' : '0');
+    document.body.classList.toggle('show-thumbs', cb.checked);
+  });
+})();
+
+function openGallery() {
+  const grid = document.getElementById('gallery-grid');
+  grid.innerHTML = '';
+  const cards = Array.from(document.querySelectorAll('[data-kf]'))
+    .filter(el => el.dataset.imgurl);
+  document.getElementById('gallery-sub').textContent = cards.length
+    ? `${cards.length} receipt${cards.length !== 1 ? 's' : ''} on the board — click an image to zoom.`
+    : 'No receipts on the board yet — add some to see them here.';
+  cards.forEach(el => {
+    const fig = document.createElement('figure');
+    fig.style.cssText = 'margin:0;display:flex;flex-direction:column;gap:4px';
+    const img = document.createElement('img');
+    img.src = el.dataset.imgurl; img.loading = 'lazy'; img.alt = el.dataset.disp || '';
+    img.style.cssText = 'width:100%;height:150px;object-fit:cover;object-position:top;' +
+      'border-radius:8px;border:1px solid var(--border);cursor:zoom-in';
+    img.addEventListener('click', () => openLightbox(el.dataset.imgurl, el.dataset.kf));
+    img.addEventListener('error', () => fig.remove());
+    const cap = document.createElement('figcaption');
+    cap.textContent = el.dataset.disp || el.dataset.kf;
+    cap.title = cap.textContent;
+    cap.style.cssText = 'font-size:11px;color:var(--muted);overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap';
+    fig.appendChild(img); fig.appendChild(cap);
+    grid.appendChild(fig);
+  });
+  document.getElementById('gallery-modal').classList.remove('hidden');
+}
+
+document.getElementById('gallery-btn').addEventListener('click', openGallery);
+document.getElementById('gallery-close-btn').addEventListener('click', () =>
+  document.getElementById('gallery-modal').classList.add('hidden'));
+document.getElementById('gallery-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'gallery-modal') e.target.classList.add('hidden');
+});
 
 function insertCardSorted(col, card) {
   const isApproved = card.dataset.approved === '1';

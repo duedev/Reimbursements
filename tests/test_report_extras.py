@@ -115,6 +115,58 @@ def test_generate_includes_insights_when_enabled(client):
     assert "Insights" in load_workbook(server._last_report_path).sheetnames
 
 
+# ── Insights: allowances band ────────────────────────────────────────────────────
+
+def _cell_by_value(ws, needle):
+    for row in ws.iter_rows():
+        for c in row:
+            if c.value == needle:
+                return c
+    return None
+
+
+def test_insights_shows_per_diem_and_phone():
+    wb = build_themed_workbook(
+        {"fuel": [_receipt()], "mats": [], "misc": []},
+        per_diem={"enabled": True, "rate": 50, "days": 3},
+        phone={"enabled": True, "rate": 63, "months": ["2026-06", "2026-07"]},
+        include_insights=True,
+    )
+    ws = wb["Insights"]
+    pd_lbl = _cell_by_value(ws, "Per Diem (3 days)")
+    ph_lbl = _cell_by_value(ws, "Phone (2 months)")
+    tot_lbl = _cell_by_value(ws, "Total Reimbursement")
+    assert pd_lbl and ph_lbl and tot_lbl
+    assert ws.cell(row=pd_lbl.row + 1, column=pd_lbl.column).value == 150.0
+    assert ws.cell(row=ph_lbl.row + 1, column=ph_lbl.column).value == 126.0
+    # Receipts (10.0) + per diem (150) + phone (126) — matches the Summary TOTAL.
+    assert ws.cell(row=tot_lbl.row + 1, column=tot_lbl.column).value == 286.0
+    # "Total Spend" stays receipts-only (it feeds Avg/Receipt).
+    ts = _cell_by_value(ws, "Total Spend")
+    assert ws.cell(row=ts.row + 1, column=ts.column).value == 10.0
+
+
+def test_insights_single_allowance_shows_dash_for_other():
+    wb = build_themed_workbook(
+        {"fuel": [_receipt()], "mats": [], "misc": []},
+        per_diem={"enabled": True, "rate": 20, "days": 1},
+        include_insights=True,
+    )
+    ws = wb["Insights"]
+    assert _cell_by_value(ws, "Per Diem (1 day)") is not None
+    ph = _cell_by_value(ws, "Phone Service")
+    assert ph is not None and ws.cell(row=ph.row + 1, column=ph.column).value == "—"
+
+
+def test_insights_without_allowances_unchanged():
+    wb = build_themed_workbook({"fuel": [_receipt()], "mats": [], "misc": []},
+                               include_insights=True)
+    ws = wb["Insights"]
+    assert _cell_by_value(ws, "Total Reimbursement") is None
+    # The By Category section stays at its original position (row 8).
+    assert str(ws.cell(row=8, column=1).value).strip() == "By Category"
+
+
 # ── Phone months: no count limit ─────────────────────────────────────────────────
 
 def test_phone_months_uncapped():
