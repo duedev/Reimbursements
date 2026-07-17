@@ -438,7 +438,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **790 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **803 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -520,6 +520,38 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-17 (food/hotel categories + business summaries + PDF crop + UX batch):**
+  Suite **790 → 803** green. Same branch/PR. Six requests:
+  * **Categories food + hotel** (now: fuel, mats, food, hotel, misc — order via
+    `spreadsheet_theme.CATEGORY_ORDER`, misc last). `vendor_db` restaurant/lodging
+    brands moved to new `_FOOD_BRANDS`/`_HOTEL_BRANDS` (tagged food/hotel);
+    `process_receipts.CATEGORIES` + `_CATEGORY_SYNONYMS` (meals→food, lodging→hotel,
+    …) + `_FOOD_HINT_RX`/`_HOTEL_HINT_RX` venue words upgrade a *misc* classification
+    only (never fuel/mats); prompts list the five categories; offline parser hints;
+    workbook sections/subtotals/image sheets/Insights all iterate CATEGORY_ORDER
+    (`_write_total` now takes a `subtotal_rows` LIST — TOTAL sums 5 subtotals, so
+    formula-shape tests assert `count("F") == 5`); audit limits + UI inputs/chips
+    (`audit-food`/`audit-hotel`, `food_limit`/`hotel_limit`); review-modal select,
+    card chips (`.k-cat-food`/`.k-cat-hotel`), CAT_COLORS.
+  * **Business-tone summaries.** Both prompts now demand a brief professional
+    justification (management reads it) or `""`; `scrub_obvious_summary` (in
+    `_parse_llm_record`) drops vendor-echo/boilerplate summaries; the offline
+    parser no longer emits its vendor-as-summary.
+  * **Full-page PDFs cropped.** `_pdf_content_clip(page)` = union of the page's
+    text blocks/images/drawings + margin, rendered via `get_pixmap(clip=)` when
+    content < `PDF_CROP_MAX_RATIO` (0.85) of the page — GEOMETRY, not the removed
+    pixel autocrop. Real Chevron export pages now render ~445×915 instead of blank
+    1224×1584 letters; full-frame scans untouched.
+  * **Phone allowance on the dashboard timeline** — `/stats` injects each selected
+    month as a point on `YYYY-MM-01` (rate per month), remerging cumulative/peak.
+  * **Kanban columns hide when empty** (`setCounts` toggles `.kanban-col` display).
+  * **All workspace sections collapsible** — `_initCollapsibleWorkspace()` adds a
+    right-side chevron (`.section-toggle`, `margin-left:auto`) to every workspace
+    card that doesn't already manage one; sections start EXPANDED (unlike Settings).
+  * Tests: `tests/test_categories_summaries.py` (+10), PDF-crop + phone-timeline
+    tests in `test_pdf_text_layer.py` (+3); classification/vendor_db/local-fallback/
+    per-diem/phone tests updated for the 5-category taxonomy.
 
 - **2026-07-17 (live dashboard allowances + imgur-style gallery + Chevron export):**
   Suite **783 → 790** green. Same branch/PR. Three requests:

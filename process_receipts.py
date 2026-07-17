@@ -89,7 +89,8 @@ MAX_PARALLEL_REQUESTS = int(os.getenv("MAX_PARALLEL_REQUESTS", "1"))
 # warning). Set from Settings → "Spending & date warnings" and applied
 # deterministically in Python (audit_warning_flags), NOT by the LLM, so behaviour
 # is consistent and there are no warnings at all unless the user opts in.
-AMOUNT_LIMITS = {"fuel": None, "mats": None, "misc": None}   # per-category $ caps
+AMOUNT_LIMITS = {"fuel": None, "mats": None, "misc": None,
+                 "food": None, "hotel": None}   # per-category $ caps
 MAX_RECEIPT_AGE_DAYS = None                                  # flag receipts older than N days
 # Per-request timeout (seconds) for the LM Studio / OpenAI client. Without it a
 # hung model request blocks a worker thread forever; bounded retries cover
@@ -257,6 +258,66 @@ _FUEL_VENDOR_PATTERNS  = {kw: _kw_pattern(kw) for kw in FUEL_VENDORS}
 _FUEL_KEYWORD_PATTERNS = {kw: _kw_pattern(kw) for kw in FUEL_KEYWORDS}
 _MATS_VENDOR_PATTERNS  = {kw: _kw_pattern(kw) for kw in MATS_VENDORS}
 
+# The report's expense categories, in Summary-sheet order (misc last = catch-all).
+CATEGORIES = ("fuel", "mats", "food", "hotel", "misc")
+# Category names a model might return instead of ours.
+_CATEGORY_SYNONYMS = {
+    "materials": "mats", "material": "mats",
+    "meals": "food", "meal": "food", "restaurant": "food", "dining": "food",
+    "groceries": "food",
+    "lodging": "hotel", "accommodation": "hotel", "hotels": "hotel",
+    "hotel stay": "hotel", "motel": "hotel",
+}
+# Summaries the models tend to emit that say NOTHING a reviewer doesn't already
+# see in the vendor/category columns. The summary column is the expense
+# justification management reads — an obvious one is noise, so it's scrubbed
+# (kept only when it carries real information, in a business tone per the prompt).
+_OBVIOUS_SUMMARY_RX = re.compile(
+    r"^\s*(a\s+|one\s+)?("
+    r"purchase|transaction|payment|receipt|sale|expense|item(s)?( purchased)?"
+    r")\b"
+    r"(\s+(made|for goods( and services)?|of (items|goods)))?"
+    r"(\s+(at|from)\s+.{0,60})?[.\s]*$",
+    re.IGNORECASE)
+_TEMPLATE_SUMMARIES = {
+    # the (old) prompt's own example strings, echoed verbatim by weaker models
+    "lunch at a restaurant", "fuel at a gas station",
+    "fuel purchase at a gas station", "meal at a restaurant",
+    "purchase at a store", "retail purchase", "store purchase",
+}
+
+
+def scrub_obvious_summary(summary: str, vendor: str) -> str:
+    """Return "" when a summary only restates the vendor/category; else keep it.
+
+    Conservative on purpose: anything carrying real detail (items, purpose,
+    context) passes through untouched — only vendor echoes ("Shell", "Purchase
+    at Shell") and boilerplate ("Retail purchase") are dropped.
+    """
+    s = (summary or "").strip()
+    if not s:
+        return ""
+    low = re.sub(r"[.!\s]+$", "", s.lower()).strip()
+    v = (vendor or "").strip().lower()
+    if low in _TEMPLATE_SUMMARIES:
+        return ""
+    if v and low in (v, f"purchase at {v}", f"purchase from {v}",
+                     f"transaction at {v}", f"payment to {v}", f"receipt from {v}"):
+        return ""
+    if _OBVIOUS_SUMMARY_RX.match(s):
+        return ""
+    return s
+
+
+# Generic venue words that upgrade a "misc" classification (vendor/summary only).
+_FOOD_HINT_RX = re.compile(
+    r"(?<![a-z])(restaurant|cafe|café|coffee|diner|grill|pizzeria|bakery|"
+    r"deli|bistro|eatery|taqueria|steakhouse|bbq|barbecue|sushi|ramen|pho|"
+    r"cantina|brewery|taproom|lunch|dinner|breakfast)(?![a-z])")
+_HOTEL_HINT_RX = re.compile(
+    r"(?<![a-z])(hotel|motel|inn|suites|resort|lodge|lodging|hostel|"
+    r"extended stay)(?![a-z])")
+
 MONTH_MAP: dict[str, int] = {
     "january": 1,   "february": 2,  "march": 3,
     "april": 4,     "may": 5,       "june": 6,
@@ -285,16 +346,18 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     '  "date": "YYYY-MM-DD",\n'
     '  "vendor": "store or vendor name",\n'
     '  "amount": 0.00,\n'
-    '  "category": "fuel | mats | misc",\n'
+    '  "category": "fuel | mats | food | hotel | misc",\n'
     '  "expense_description": null,\n'
-    '  "summary": "one-sentence description WITHOUT the dollar amount, e.g. \'Lunch at a restaurant\' or \'Fuel at a gas station\'",\n'
+    '  "summary": "brief business justification, or \\"\\" when it would only restate the vendor/category",\n'
     '  "flags": []\n'
     "}}\n\n"
     "Category rules:\n"
     '- "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, Valero, etc.)\n'
     '  → set expense_description = null\n'
     '- "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies\n'
-    '- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)\n\n'
+    '- "food": restaurants, coffee, meals, groceries bought as meals\n'
+    '- "hotel": hotels, motels, inns, short-stay lodging\n'
+    '- "misc": everything else (phone bills, WiFi, parking, supplies, etc.)\n\n'
     "Field rules:\n"
     "- You may be given more than one OCR transcription of the SAME receipt "
     "(labelled transcription A and B) from different engines — cross-reference "
@@ -305,7 +368,12 @@ _UNIFIED_DISTILLATION_TEMPLATE = (
     "- Use TOTAL or GRAND TOTAL for amount\n"
     "- date must be YYYY-MM-DD; ALWAYS read ambiguous numeric dates as US "
     "month/day order (08/15/24 → 2024-08-15) — never day/month\n"
-    "- summary: one sentence, vendor and purpose only, do NOT include the dollar amount\n"
+    "- summary: this goes on an expense report that management reviews — write a "
+    "brief, professional business justification (e.g. 'Working lunch during "
+    "on-site job', 'Overnight lodging near the job site', 'Fasteners and lumber "
+    "for framing work'). NEVER include the dollar amount. If the receipt offers "
+    "nothing beyond the vendor/category (no line items, no purpose), return "
+    '"" — an obvious summary that restates the vendor is worse than none\n'
     "- Do NOT include job_name or job_number — user provides those manually\n"
     "- flags: JSON array of flag objects for OCR/extraction problems ONLY:\n"
     '  * amount=0, missing vendor, or garbled date → {{"flag": "OCR error: reason"}}\n'
@@ -324,9 +392,9 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
   "date": "YYYY-MM-DD",
   "vendor": "store or vendor name",
   "amount": 0.00,
-  "category": "fuel | mats | misc",
+  "category": "fuel | mats | food | hotel | misc",
   "expense_description": null,
-  "summary": "one-sentence description WITHOUT the dollar amount, e.g. 'Lunch at a restaurant' or 'Fuel at a gas station'",
+  "summary": "brief business justification, or \"\" when it would only restate the vendor/category",
   "flags": [],
   "boxes": {{
     "vendor": {{"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0, "confidence": 0}},
@@ -338,13 +406,15 @@ You are a receipt data extractor and expense auditor. Analyze this receipt image
 Category rules:
 - "fuel": gas stations (Shell, Chevron, Arco, Mobil, 76, etc.) → expense_description=null
 - "mats": Home Depot, Lowes, hardware stores, blueprint/plan prints, building supplies
-- "misc": everything else (restaurants, hotel, meals, phone bills, WiFi, coffee, etc.)
+- "food": restaurants, coffee, meals
+- "hotel": hotels, motels, inns, short-stay lodging
+- "misc": everything else (phone bills, WiFi, parking, supplies, etc.)
 
 Vendor: copy the store/business name exactly as printed. If no vendor name is legible, return an empty string "" — never guess, invent, or copy an example name.
 Amount: use TOTAL or GRAND TOTAL.
 boxes: for vendor, date and amount, give WHERE that text sits on the image as fractions of the image size — x,y = top-left corner, w,h = width/height, all between 0 and 1 (0,0 = top-left of the image) — plus a confidence 0–100 for that location. If you cannot locate a field, set its confidence to 0.
 Date: YYYY-MM-DD from transaction date; ALWAYS read ambiguous numeric dates as US month/day order (08/15/24 → 2024-08-15), never day/month.
-Summary: vendor and purpose only — do NOT include the dollar amount.
+Summary: this goes on an expense report management reviews — a brief, professional business justification (e.g. 'Working lunch during on-site job'); NEVER the dollar amount; return "" when it would only restate the vendor/category.
 Do NOT include job_name or job_number.
 
 flags (OCR/extraction problems ONLY):
@@ -1191,6 +1261,46 @@ def pdf_text_sidecar(image_path: Path) -> Path:
     return image_path.with_name(image_path.name + ".pdftext")
 
 
+# Render margin (points) re-added around the detected page content, and the
+# fraction of the page the content must be smaller than before cropping fires —
+# a receipt printed on a full US-Letter page is mostly blank below the text.
+_PDF_CROP_MARGIN_PT  = 14.0
+_PDF_CROP_MAX_RATIO  = float(os.getenv("PDF_CROP_MAX_RATIO", "0.85"))
+
+
+def _pdf_content_clip(page) -> "Optional[fitz.Rect]":
+    """The clip rect to render for a page, or None to render the whole page.
+
+    Unlike the removed pixel auto-crop, this is GEOMETRY, not guesswork: the
+    union of the page's own text blocks, images, and vector drawings. Only
+    fires when the content occupies well under the full page (e.g. a text
+    e-receipt exported onto a US-Letter page), so ordinary full-frame scans
+    render exactly as before."""
+    try:
+        rect = fitz.Rect()
+        for b in page.get_text("blocks") or []:
+            rect |= fitz.Rect(b[:4])
+        for info in page.get_images(full=True):
+            for r in page.get_image_rects(info[0]):
+                rect |= r
+        try:
+            for d in page.get_drawings():
+                rect |= d.get("rect", fitz.Rect())
+        except Exception:
+            pass                               # drawings scan can fail on odd PDFs
+        if rect.is_empty or rect.is_infinite:
+            return None
+        page_area = abs(page.rect)
+        if not page_area or abs(rect) / page_area > _PDF_CROP_MAX_RATIO:
+            return None                        # content ~fills the page — no crop
+        rect = fitz.Rect(rect.x0 - _PDF_CROP_MARGIN_PT, rect.y0 - _PDF_CROP_MARGIN_PT,
+                         rect.x1 + _PDF_CROP_MARGIN_PT, rect.y1 + _PDF_CROP_MARGIN_PT)
+        rect &= page.rect
+        return rect if not rect.is_empty else None
+    except Exception:
+        return None
+
+
 def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
     """Convert each PDF page to a JPEG in dest_dir. Returns list of image paths.
 
@@ -1217,7 +1327,11 @@ def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
                       f"{page_count - PDF_MAX_PAGES} page(s)")
                 break
             mat = fitz.Matrix(2.0, 2.0)
-            pix = page.get_pixmap(matrix=mat)
+            # Crop full-page PDFs to their actual content (text/images/drawings
+            # bbox + margin) so a receipt exported onto a US-Letter page doesn't
+            # embed as a mostly blank sheet. Geometric — no pixel guessing.
+            clip = _pdf_content_clip(page)
+            pix = page.get_pixmap(matrix=mat, clip=clip) if clip else page.get_pixmap(matrix=mat)
             suffix = f"_p{i + 1}" if multi else ""
             img_path = dest_dir / f"{pdf_path.stem}{suffix}.jpg"
             pix.save(str(img_path))
@@ -1455,6 +1569,12 @@ def _parse_llm_record(raw: str) -> Optional[dict]:
     # normalise "summary" field name to "ai_summary" used downstream
     if "summary" in result and "ai_summary" not in result:
         result["ai_summary"] = result.pop("summary")
+    # The summary column is read by management as the expense justification —
+    # scrub "obvious" summaries that only restate the vendor/category (the
+    # prompt asks the model to return "" for those, but models drift).
+    if result.get("ai_summary"):
+        result["ai_summary"] = scrub_obvious_summary(
+            str(result["ai_summary"]), str(result.get("vendor") or ""))
     # Canonicalise the date deterministically (US month/day, 2-digit years → 20xx)
     # rather than trusting the model to have picked the right format. Keep the raw
     # value if it isn't parseable so nothing is silently lost.
@@ -2048,6 +2168,10 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
             category = "fuel"
         elif any(rx.search(low) for rx in _MATS_VENDOR_PATTERNS.values()):
             category = "mats"
+        elif _HOTEL_HINT_RX.search((vendor or "").lower()):
+            category = "hotel"
+        elif _FOOD_HINT_RX.search((vendor or "").lower()):
+            category = "food"
         else:
             category = "misc"
 
@@ -2057,7 +2181,9 @@ def _local_distill_from_ocr(ocr_text: str) -> Optional[dict]:
         "amount":              amount,
         "category":            category,
         "expense_description": None,
-        "ai_summary":          vendor,
+        # No summary: the parser knows nothing beyond the vendor, and a summary
+        # that just repeats the vendor adds noise to the expense report.
+        "ai_summary":          "",
         "flags": [],
         "_local_parse": True,
     }
@@ -2973,13 +3099,12 @@ def classify_category(data: dict) -> str:
     # NOT short-circuit; it left _db_exact unset on purpose).
     if data.get("_db_exact"):
         db_cat = (data.get("_db_category") or "").lower().strip()
-        if db_cat in ("fuel", "mats", "misc"):
+        if db_cat in CATEGORIES:
             return db_cat
 
     model_cat = (data.get("category") or "misc").lower().strip()
-    if model_cat == "materials":
-        model_cat = "mats"
-    if model_cat not in ("fuel", "mats", "misc"):
+    model_cat = _CATEGORY_SYNONYMS.get(model_cat, model_cat)
+    if model_cat not in CATEGORIES:
         model_cat = "misc"
 
     vendor   = (data.get("vendor") or "").lower()
@@ -3007,6 +3132,16 @@ def classify_category(data: dict) -> str:
 
     if any(rx.search(vendor) for rx in _MATS_VENDOR_PATTERNS.values()):
         return "mats"
+
+    # Food / hotel hints — generic venue words in the vendor name or summary
+    # (never the raw OCR: receipts routinely mention "room" or "grill" in line
+    # items). A model classification of misc is upgraded; fuel/mats stand.
+    if model_cat == "misc":
+        venue = f"{vendor} {summary}"
+        if _HOTEL_HINT_RX.search(venue):
+            return "hotel"
+        if _FOOD_HINT_RX.search(venue):
+            return "food"
 
     return model_cat
 

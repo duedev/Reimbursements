@@ -20,7 +20,7 @@ For architecture notes, model selection guidance, and roadmap considerations, se
 - **PDF support** — PDFs are automatically expanded to per-page images before processing
 - **Zip support** — Drop (or drop into intake) a `.zip` of receipts and the app extracts the images/PDFs inside, queues them, and deletes the archive — handy for bulk uploads from a phone. Zip-slip / zip-bomb safe (caps on member count and decompressed size)
 - **Black & white for OCR** — Optional pre-pass converts each receipt to high-contrast grayscale *before* OCR/AI for crisper text recognition; toggle in **Settings → Image processing**
-- **Smart categorization** — Receipts classified as Fuel, Materials, or Miscellaneous based on vendor and content
+- **Smart categorization** — Receipts classified as Fuel, Materials, Food, Hotel, or Miscellaneous based on vendor and content (~330-brand vendor database + venue-word hints)
 - **Professional Excel output** — Themed, print-ready workbook with embedded receipt images, per-category subtotals, a grand total, and accounting-format amounts. Verified compatible with both **Microsoft Excel** and **macOS Numbers** (native charts, conditional formatting, internal hyperlinks, frozen headers)
 - **Insights *in the workbook*** — A dedicated **Insights** sheet mirrors the web dashboard: KPI figures, a spend-by-category pie, top-vendor bars, and a detailed spend-over-time chart (daily columns + a cumulative trend line), all as native charts that open in Excel and Numbers
 - **Review & approval gate** — Optional setting that blocks spreadsheet generation until every completed receipt has been reviewed and approved on the board (enforced client- and server-side)
@@ -380,7 +380,7 @@ Receipt image / PDF
          │
          ▼
   ┌─────────────┐
-  │  Classify   │  Vendor-name lookup → fuel / mats / misc
+  │  Classify   │  Vendor-name lookup → fuel / mats / food / hotel / misc
   │  & Validate │  Confidence score + amount verification; apply any opt-in
   │             │  spending/date warnings (off by default)
   └──────┬──────┘
@@ -513,7 +513,7 @@ Numbers**.
 | `GET/POST` | `/settings` | `host_intake_path`, `host_output_path`; GET also returns `version` |
 | `GET/POST` | `/settings/processing` | `autorotate`, `grayscale`, `compress`, `max_parallel`, plus the advanced LLM tunables (timeout/retries/rate-limit/429-wait, size caps) |
 | `GET/POST` | `/settings/review` | `require_approval` — block spreadsheet generation until every receipt is approved |
-| `GET/POST` | `/settings/audit` | Opt-in per-category $ caps + max receipt age (blank = off) for the spending/date warnings |
+| `GET/POST` | `/settings/audit` | Opt-in per-category $ caps (fuel/mats/food/hotel/misc) + max receipt age (blank = off) for the spending/date warnings |
 | `GET/POST` | `/settings/per-diem` | Opt-in daily allowance (`enabled`, `rate`, `days`) added as a Per Diem line + included in the report TOTAL |
 | `GET/POST` | `/settings/phone-service` | Opt-in fixed $63/month phone reimbursement (`enabled`, `months` as `YYYY-MM` list, no count limit) added as a Phone Service line + included in the report TOTAL |
 | `GET/POST` | `/settings/report-options` | Workbook presentation options: `insights` gates the Insights charts tab (web default off) |

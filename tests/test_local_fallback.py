@@ -77,7 +77,7 @@ def test_local_parse_picks_grand_total_not_tendered_cash():
            "AMOUNT TENDERED $60.00\nCHANGE $14.80")
     out = pr._local_distill_from_ocr(txt)
     assert out["amount"] == 45.20
-    assert out["category"] == "misc"
+    assert out["category"] == "food"           # "diner" vendor word → food
 
 
 # ── End-to-end fallback when LM Studio is unreachable ─────────────────────────

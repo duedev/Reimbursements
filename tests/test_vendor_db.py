@@ -57,8 +57,8 @@ def test_sampling_of_new_brands():
         "MAVERIK COUNTRY STORE": ("Maverik", "fuel"),
         "PUBLIX SUPER MARKET": ("Publix", "misc"),
         "ALDI":               ("Aldi", "misc"),
-        "CHICK-FIL-A":        ("Chick-fil-A", "misc"),
-        "HAMPTON INN & SUITES": ("Hampton Inn", "misc"),
+        "CHICK-FIL-A":        ("Chick-fil-A", "food"),
+        "HAMPTON INN & SUITES": ("Hampton Inn", "hotel"),
         "FERGUSON PLUMBING":  ("Ferguson", "mats"),
         "SHERWIN WILLIAMS":   ("Sherwin-Williams", "mats"),
     }
@@ -119,7 +119,7 @@ def test_known_vendors_shape_preserved():
     for name, value in vendor_db.KNOWN_VENDORS.items():
         assert isinstance(name, str)
         cat, aliases = value
-        assert cat in ("fuel", "mats", "misc")
+        assert cat in ("fuel", "mats", "food", "hotel", "misc")
         assert isinstance(aliases, set) and aliases
     # The expansion landed (~300 canonical brands).
     assert len(vendor_db.KNOWN_VENDORS) >= 250

@@ -92,7 +92,7 @@ def test_workbook_no_row_when_disabled_or_empty():
         ws = wb["Summary"]
         assert _find_row(ws, "Phone Service") is None
         tot = ws.cell(row=_find_row(ws, "TOTAL"), column=6).value
-        assert tot.count("F") == 3            # exactly the three category subtotals
+        assert tot.count("F") == 5            # exactly the five category subtotals
 
 
 # ── Settings endpoints ───────────────────────────────────────────────────────────

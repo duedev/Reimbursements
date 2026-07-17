@@ -38,10 +38,12 @@ def test_missing_fields_default_to_misc():
     assert classify_category({}) == "misc"
 
 
-def test_restaurant_stays_misc():
+def test_restaurant_stays_out_of_fuel_mats():
+    # "Lunch" in the summary now upgrades a misc classification to food —
+    # the guard being tested is that it never lands in fuel/mats.
     data = {"vendor": "Butch's Grinders", "category": "misc",
             "ai_summary": "Lunch sandwiches"}
-    assert classify_category(data) == "misc"
+    assert classify_category(data) == "food"
 
 
 def test_fuel_keyword_in_summary_promotes_gas_station():
@@ -60,15 +62,19 @@ def test_restaurant_with_raw_ocr_stays_misc():
             "_raw_ocr": ("BUTCH'S GRINDERS\n1376 MAIN ST\n"
                          "REGULAR SUB 8.99\nPREMIUM SUB 10.99\n"
                          "SUBTOTAL 19.98\nTAX 1.62\nTOTAL 21.60")}
-    assert classify_category(data) == "misc"
+    # Raw-OCR noise ("REGULAR", "1376") must not flip it to fuel; the lunch
+    # summary upgrades it to food instead.
+    assert classify_category(data) == "food"
 
 
-def test_hotel_with_raw_ocr_stays_misc():
+def test_hotel_with_raw_ocr_is_hotel_not_fuel():
     data = {"vendor": "Hampton Inn", "category": "misc",
             "ai_summary": "One night hotel stay",
             "_raw_ocr": ("HAMPTON INN\n762 AIRPORT RD\nLAS VEGAS NV\n"
                          "ROOM 204 REGULAR RATE 129.00\nTOTAL 154.37")}
-    assert classify_category(data) == "misc"
+    # Raw-OCR noise ("REGULAR", "LAS VEGAS") must not flip it to fuel; the
+    # vendor name itself classifies it as hotel.
+    assert classify_category(data) == "hotel"
 
 
 def test_price_ending_in_76_is_not_a_fuel_vendor():
@@ -116,7 +122,7 @@ def test_correct_unknown_vendor_is_not_clobbered():
     canonicalize_vendor(data)
     assert data["vendor"] == "Joe's Corner Cafe"
     assert "_db_exact" not in data
-    assert classify_category(data) == "misc"
+    assert classify_category(data) == "food"   # "cafe" venue word → food
 
 
 def test_real_gas_receipt_with_raw_ocr_is_fuel():

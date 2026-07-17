@@ -951,7 +951,7 @@ def _apply_audit_config(cfg: dict | None = None) -> dict:
     cfg = cfg if cfg is not None else _load_config()
     audit = cfg.get("audit") or {}
     limits = audit.get("amount_limits") or {}
-    for cat in ("fuel", "mats", "misc"):
+    for cat in ("fuel", "mats", "misc", "food", "hotel"):
         if cat in limits:
             _pr.AMOUNT_LIMITS[cat] = _coerce_pos_num(limits[cat])
     if "max_age_days" in audit:
@@ -3526,6 +3526,25 @@ async def get_stats():
     stats["phone_months"] = len(ph["months"]) if ph["enabled"] else 0
     stats["per_diem_days"] = pd["days"] if pd["enabled"] else 0
     stats["total_reimbursement"] = round(stats.get("total", 0.0) + pd_total + ph_total, 2)
+    # Each selected phone month lands on the spend-over-time chart as a point on
+    # the 1st of that month, so the allowance is visible on the dashboard
+    # timeline (not just the tiles). Cumulative/peak are recomputed after merge.
+    if ph_total and ph["months"]:
+        by_date = {t["date"]: t for t in stats.get("timeline", [])}
+        for m in ph["months"]:
+            day = f"{m}-01"
+            e = by_date.setdefault(day, {"date": day, "total": 0.0, "count": 0})
+            e["total"] = round(e["total"] + ph["rate"], 2)
+        merged = sorted(by_date.values(), key=lambda t: t["date"])
+        running = 0.0
+        for t in merged:
+            running = round(running + t["total"], 2)
+            t["cumulative"] = running
+        stats["timeline"] = merged
+        stats["timeline_total"] = running
+        stats["timeline_days"] = len(merged)
+        if merged:
+            stats["timeline_peak"] = max(merged, key=lambda t: t["total"])
     return JSONResponse(stats)
 
 
@@ -3678,7 +3697,7 @@ async def update_result(body: UpdateResultRequest):
             return JSONResponse({"ok": False, "error": "Amount must be a finite number"},
                                 status_code=400)
     elif field == "category":
-        if value not in ("fuel", "mats", "misc"):
+        if value not in ("fuel", "mats", "misc", "food", "hotel"):
             return JSONResponse({"ok": False, "error": "Invalid category"},
                                 status_code=400)
     elif field == "notes":
@@ -4999,6 +5018,8 @@ class AuditSettingsRequest(BaseModel):
     fuel_limit:   float | str | None = None
     mats_limit:   float | str | None = None
     misc_limit:   float | str | None = None
+    food_limit:   float | str | None = None
+    hotel_limit:  float | str | None = None
     max_age_days: float | str | None = None
 
 
@@ -5016,7 +5037,8 @@ async def save_audit_settings(body: AuditSettingsRequest):
         audit = cfg.get("audit") or {}
         limits = audit.get("amount_limits") or {}
         for cat, val in (("fuel", body.fuel_limit), ("mats", body.mats_limit),
-                         ("misc", body.misc_limit)):
+                         ("misc", body.misc_limit), ("food", body.food_limit),
+                         ("hotel", body.hotel_limit)):
             limits[cat] = _coerce_pos_num(val)
         audit["amount_limits"] = limits
         n = _coerce_pos_num(body.max_age_days)

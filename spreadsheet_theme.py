@@ -100,18 +100,29 @@ TAB_COLORS = {
     "Insights":      "0EA5A4",
     "Fuel":          "F5A623",
     "Materials":     "2DD482",
+    "Food":          "EF6C6C",
+    "Hotel":         "38BDF8",
     "Miscellaneous": "8B5CF6",
 }
 # Category accent colors for the Insights charts/legend (match the web UI palette)
-CAT_CHART_COLORS = {"Fuel": "F5A623", "Materials": "2DD482", "Miscellaneous": "8B5CF6"}
+CAT_CHART_COLORS = {"Fuel": "F5A623", "Materials": "2DD482", "Food": "EF6C6C",
+                    "Hotel": "38BDF8", "Miscellaneous": "8B5CF6"}
 # Light background color used for per-receipt header rows in image sheets
 RECEIPT_HEADER_COLORS = {
     "Fuel":          "FFF3CC",   # light amber
     "Materials":     "D4FAE8",   # light green
+    "Food":          "FDE4E4",   # light red
+    "Hotel":         "DFF3FC",   # light sky
     "Miscellaneous": "EDE9FF",   # light purple
 }
 # Amount thresholds mirrored from the model's flagging rules (process_receipts)
-CATEGORY_THRESHOLDS = {"fuel": 200, "mats": 500, "misc": 300}
+CATEGORY_THRESHOLDS = {"fuel": 200, "mats": 500, "misc": 300, "food": 150, "hotel": 500}
+
+# The report's category sections, in Summary-sheet order (misc last = catch-all).
+CATEGORY_ORDER: list[tuple[str, str]] = [
+    ("fuel", "Fuel"), ("mats", "Materials"), ("food", "Food"),
+    ("hotel", "Hotel"), ("misc", "Miscellaneous"),
+]
 
 # ── Column positions (1-indexed) ───────────────────────────────────────────────
 COL_RECEIPT_NO = 1   # A
@@ -456,8 +467,8 @@ def _write_allowance_row(ws, row: int, label: str, note: str, amount: float,
     ws.row_dimensions[row].height = height
 
 
-def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int,
-                 extra_rows: list = None):
+def _write_total(ws, row: int, subtotal_rows: list, extra_rows: list = None):
+    """The grand-TOTAL row: sums every category subtotal plus any allowance rows."""
     tot_fill = _fill(COLOR_TOTAL_BG)
     tot_font = _font(bold=True, color=COLOR_TOTAL_FG, size=12)
 
@@ -471,7 +482,7 @@ def _write_total(ws, row: int, fuel_sub: int, mat_sub: int, misc_sub: int,
     lbl = ws.cell(row=row, column=COL_JOB_NUMBER, value="TOTAL")
     lbl.alignment = _align(h="right")
 
-    formula = f"=F{fuel_sub}+F{mat_sub}+F{misc_sub}"
+    formula = "=" + "+".join(f"F{r}" for r in subtotal_rows)
     for r in (extra_rows or []):
         formula += f"+F{r}"
     cell_f = ws.cell(row=row, column=COL_AMOUNT, value=formula)
@@ -569,7 +580,7 @@ def _calc_section_data_rows(sections: dict, start_row: int = 5) -> dict[str, lis
     Pure arithmetic — does not touch any worksheet."""
     row    = start_row
     result: dict[str, list[int]] = {}
-    for cat in ("fuel", "mats", "misc"):
+    for cat, _label in CATEGORY_ORDER:
         row += 1  # section banner
         row += 1  # column headers
         rows: list[int] = []
@@ -779,7 +790,7 @@ def _build_image_sheet(wb: Workbook, sheet_name: str, receipts: list[dict],
 
 # ── Insights sheet ───────────────────────────────────────────────────────────
 
-_CAT_LABELS = {"fuel": "Fuel", "mats": "Materials", "misc": "Miscellaneous"}
+_CAT_LABELS = dict(CATEGORY_ORDER)
 
 
 def _compute_insights(sections: dict) -> dict:
@@ -964,7 +975,7 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     row += 1
     cat_first = row
     cats = insights["by_category"]
-    for label in ("Fuel", "Materials", "Miscellaneous"):
+    for _cat, label in CATEGORY_ORDER:
         data = cats.get(label, {"count": 0, "total": 0.0})
         ws.cell(row=row, column=1, value=label).alignment = _align(h="left", wrap=False)
         ws.cell(row=row, column=2, value=data["count"]).alignment = _align(h="center")
@@ -985,7 +996,7 @@ def _build_insights_sheet(wb: Workbook, insights: dict, employee_name: str,
     # Color each slice to match the web dashboard's category palette (continuity).
     # Slices are written in this fixed order above, so idx 0/1/2 line up 1:1.
     if pie.series:
-        for idx, cat in enumerate(("Fuel", "Materials", "Miscellaneous")):
+        for idx, cat in enumerate(lbl for _c, lbl in CATEGORY_ORDER):
             pt = DataPoint(idx=idx)
             pt.graphicalProperties.solidFill = CAT_CHART_COLORS[cat]
             pie.series[0].data_points.append(pt)
@@ -1151,11 +1162,8 @@ def build_themed_workbook(
     # Store cell_a for each receipt so we can add hyperlinks after image sheets are built
     summary_link_cells: dict[tuple, object] = {}
 
-    SECTION_DEFS = [
-        ("fuel", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Fuel"),
-        ("mats", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Materials"),
-        ("misc", ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"], "Miscellaneous"),
-    ]
+    _COLS = ["#", "Date", "Store", "Job Name", "Job Number", "Amount", "Summary", "Notes"]
+    SECTION_DEFS = [(cat, _COLS, label) for cat, label in CATEGORY_ORDER]
 
     data_row_ranges: dict[str, tuple[int, int]] = {}
 
@@ -1201,8 +1209,9 @@ def build_themed_workbook(
         extra_rows.append(current_row)
         current_row += 1
 
-    _write_total(ws, current_row, subtotal_rows["fuel"], subtotal_rows["mats"],
-                 subtotal_rows["misc"], extra_rows=extra_rows or None)
+    _write_total(ws, current_row,
+                 [subtotal_rows[cat] for cat, _lbl in CATEGORY_ORDER],
+                 extra_rows=extra_rows or None)
     current_row += 1
 
     # Muted generated-by footer — placed in the Summary column so Column A stays narrow
@@ -1262,7 +1271,7 @@ def build_themed_workbook(
                               per_diem=pd, phone=ph)
 
     # ── Pass 3: Build image sheets (formulas reference Summary) ───────────────
-    IMAGE_SHEET_DEFS = [("fuel", "Fuel"), ("mats", "Materials"), ("misc", "Miscellaneous")]
+    IMAGE_SHEET_DEFS = list(CATEGORY_ORDER)
     for cat, sheet_name in IMAGE_SHEET_DEFS:
         receipts        = sections.get(cat, [])
         cat_sr          = summary_row_map.get(cat, [])

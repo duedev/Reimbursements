@@ -37,7 +37,7 @@ def _image_pdf(path):
     page = doc.new_page()
     buf = io.BytesIO()
     Image.new("RGB", (400, 600), (200, 200, 200)).save(buf, format="JPEG")
-    page.insert_image(fitz.Rect(36, 36, 400, 700), stream=buf.getvalue())
+    page.insert_image(page.rect, stream=buf.getvalue())   # spans the whole sheet
     doc.save(str(path))
     doc.close()
 
@@ -138,6 +138,59 @@ def test_no_sidecar_is_untouched_path(tmp_path, monkeypatch):
     data = pr._extract_receipt_with_status(MagicMock(), img, None, steps)
     assert data is not None
     assert "pdf_text" not in {s["step"] for s in steps}
+
+
+# ── Full-page PDF content cropping ───────────────────────────────────────────────
+
+def test_full_page_text_pdf_is_cropped_to_content(tmp_path):
+    """A short text receipt on a US-Letter page renders cropped to its content
+    (plus margin), not as a mostly blank full page."""
+    pdf = tmp_path / "letter.pdf"
+    _text_pdf(pdf, pages=1)                    # text only in the top ~15% of the page
+    pages = pr.pdf_to_images(pdf, tmp_path / "out")
+    from PIL import Image
+    with Image.open(pages[0]) as im:
+        w, h = im.size
+    # Full US-Letter at 2x would be 1224×1584 — the crop must be far shorter.
+    assert h < 1584 * 0.5
+    assert w > 100 and h > 50                  # still a real image with margin
+
+
+def test_full_frame_scan_pdf_is_not_cropped(tmp_path):
+    """A scanned page (image covering the sheet) renders at full page size."""
+    pdf = tmp_path / "scan.pdf"
+    _image_pdf(pdf)                            # image spans most of the page
+    pages = pr.pdf_to_images(pdf, tmp_path / "out")
+    from PIL import Image
+    with Image.open(pages[0]) as im:
+        w, h = im.size
+    assert h > 1584 * 0.9                      # essentially the whole page
+
+
+# ── Dashboard stats: phone months on the timeline (1st of each month) ────────────
+
+def test_stats_timeline_gets_phone_months(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "OUT_FOLDER", tmp_path)
+    monkeypatch.setattr(server, "STATE_FILE", tmp_path / ".app_state.json")
+    server._results.clear()
+    server._results.append({"vendor": "Shell", "date": "2026-06-15", "amount": 10.0,
+                            "category": "fuel", "_category": "fuel", "_file": "a.jpg"})
+    try:
+        c = TestClient(server.app)
+        c.post("/settings/phone-service",
+               json={"enabled": True, "months": ["2026-06", "2026-07"]})
+        s = c.get("/stats").json()
+        by_date = {t["date"]: t for t in s["timeline"]}
+        # Each selected month lands on the 1st, at the monthly rate.
+        assert by_date["2026-06-01"]["total"] == 63.0
+        assert by_date["2026-07-01"]["total"] == 63.0
+        assert by_date["2026-06-15"]["total"] == 10.0    # the receipt is untouched
+        # Chronological with a consistent running cumulative.
+        dates = [t["date"] for t in s["timeline"]]
+        assert dates == sorted(dates)
+        assert s["timeline"][-1]["cumulative"] == 136.0  # 63 + 10 + 63
+    finally:
+        server._results.clear()
 
 
 # ── Dashboard stats: live allowances ─────────────────────────────────────────────

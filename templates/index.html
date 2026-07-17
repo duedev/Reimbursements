@@ -611,6 +611,8 @@
     }
     .k-cat-fuel { background: rgba(245,158,11,0.2); color: #fbbf24; }
     .k-cat-mats { background: rgba(16,185,129,0.2); color: #34d399; }
+    .k-cat-food { background: rgba(239,108,108,0.2); color: #f28a8a; }
+    .k-cat-hotel { background: rgba(56,189,248,0.2); color: #7dd3fc; }
     .k-cat-misc { background: rgba(59,130,246,0.2); color: #93b4f7; }
 
     .k-retry-btn {
@@ -1733,6 +1735,8 @@
           <span style="font-size:11px;color:var(--muted);margin-right:2px">Active:</span>
           <span id="wt-fuel-chip" class="wt-chip hidden"></span>
           <span id="wt-mats-chip" class="wt-chip hidden"></span>
+          <span id="wt-food-chip" class="wt-chip hidden"></span>
+          <span id="wt-hotel-chip" class="wt-chip hidden"></span>
           <span id="wt-misc-chip" class="wt-chip hidden"></span>
           <span id="wt-age-chip" class="wt-chip hidden"></span>
         </span>
@@ -1762,6 +1766,22 @@
             <div style="display:flex;align-items:center;gap:6px">
               <span style="color:var(--muted);font-size:13px">$</span>
               <input type="number" id="audit-mats" min="0" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">max</span>
+            </div>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Food</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--muted);font-size:13px">$</span>
+              <input type="number" id="audit-food" min="0" step="1" placeholder="no limit" style="flex:1">
+              <span style="color:var(--muted);font-size:12px">max</span>
+            </div>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:5px;font-weight:400">
+            <span style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Hotel</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--muted);font-size:13px">$</span>
+              <input type="number" id="audit-hotel" min="0" step="1" placeholder="no limit" style="flex:1">
               <span style="color:var(--muted);font-size:12px">max</span>
             </div>
           </label>
@@ -2969,6 +2989,8 @@
           <select id="mr-category">
             <option value="fuel">Fuel</option>
             <option value="mats">Materials</option>
+            <option value="food">Food</option>
+            <option value="hotel">Hotel</option>
             <option value="misc" selected>Miscellaneous</option>
           </select>
         </label>
@@ -3257,6 +3279,41 @@ function _initCollapsibleSettings() {
   });
 }
 
+// Give every workspace card a collapse chevron on the right of its title —
+// cards that already manage their own toggle (Insights, Receipt Progress,
+// Processing & Errors) are left alone. Unlike Settings, workspace sections
+// start EXPANDED: the toggle is for tidying, not hiding the workflow.
+function _initCollapsibleWorkspace() {
+  const tab = document.getElementById('tab-workspace');
+  if (!tab || tab.dataset.collapsibleInit) return;
+  tab.dataset.collapsibleInit = '1';
+  tab.querySelectorAll('.card').forEach(card => {
+    const title = card.querySelector(':scope > .card-title');
+    if (!title || card.querySelector('.section-toggle')) return;
+    title.style.display = 'flex';
+    title.style.alignItems = 'center';
+    title.style.cursor = 'pointer';
+    const body = document.createElement('div');
+    body.className = 'wk-card-body';
+    let node = title.nextSibling;
+    while (node) { const next = node.nextSibling; body.appendChild(node); node = next; }
+    card.appendChild(body);
+    const btn = document.createElement('button');
+    btn.className = 'section-toggle';
+    btn.tabIndex = -1;
+    btn.setAttribute('aria-label', 'Collapse section');
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>';
+    title.appendChild(btn);
+    title.addEventListener('click', (e) => {
+      // Don't collapse when a real control inside the title was the target.
+      if (e.target.closest('input,select,a,button') &&
+          !e.target.closest('.section-toggle')) return;
+      const collapsed = btn.classList.toggle('collapsed');
+      body.style.display = collapsed ? 'none' : '';
+    });
+  });
+}
+
 // Expand a specific settings card (used by the "set up email first" guide).
 function _expandSettingsCard(card) {
   if (!card) return;
@@ -3468,10 +3525,15 @@ function getCardEl(filename) {
 }
 
 function setCounts() {
-  document.getElementById('cnt-queued').textContent     = document.getElementById('col-queued').children.length;
-  document.getElementById('cnt-processing').textContent = document.getElementById('col-processing').children.length;
-  document.getElementById('cnt-completed').textContent  = document.getElementById('col-completed').children.length;
-  document.getElementById('cnt-failed').textContent     = document.getElementById('col-failed').children.length;
+  // Update each column's counter AND hide columns that hold nothing — the
+  // board shows only the stages that currently have receipts in them.
+  ['queued', 'processing', 'completed', 'failed'].forEach(name => {
+    const col = document.getElementById(`col-${name}`);
+    const n = col.children.length;
+    document.getElementById(`cnt-${name}`).textContent = n;
+    const colWrap = col.closest('.kanban-col');
+    if (colWrap) colWrap.style.display = n ? '' : 'none';
+  });
   // Show the Nudge Queue button whenever items are waiting or in-flight
   const queuedCount     = document.getElementById('col-queued').children.length;
   const processingCount = document.getElementById('col-processing').children.length;
@@ -4352,7 +4414,7 @@ window.startInlineEdit = function(ev, el, filename, field) {
   let input;
   if (field === 'category') {
     input = document.createElement('select');
-    [['fuel','FUEL'],['mats','MATS'],['misc','MISC']].forEach(([v,lbl]) => {
+    [['fuel','FUEL'],['mats','MATS'],['food','FOOD'],['hotel','HOTEL'],['misc','MISC']].forEach(([v,lbl]) => {
       const o = document.createElement('option');
       o.value = v; o.textContent = lbl;
       if (v === cur) o.selected = true;
@@ -5801,10 +5863,12 @@ async function loadAuditSettings() {
   try {
     const d = await (await fetch('/settings/audit')).json();
     const lim = d.amount_limits || {};
-    document.getElementById('audit-fuel').value = lim.fuel ?? '';
-    document.getElementById('audit-mats').value = lim.mats ?? '';
-    document.getElementById('audit-misc').value = lim.misc ?? '';
-    document.getElementById('audit-age').value  = d.max_age_days ?? '';
+    document.getElementById('audit-fuel').value  = lim.fuel ?? '';
+    document.getElementById('audit-mats').value  = lim.mats ?? '';
+    document.getElementById('audit-food').value  = lim.food ?? '';
+    document.getElementById('audit-hotel').value = lim.hotel ?? '';
+    document.getElementById('audit-misc').value  = lim.misc ?? '';
+    document.getElementById('audit-age').value   = d.max_age_days ?? '';
     _renderWarningChips(lim, d.max_age_days);
   } catch (_) {}
 }
@@ -5822,15 +5886,17 @@ function _renderWarningChips(lim, maxAge) {
       el.classList.add('hidden');
     }
   };
-  const fuel = lim && lim.fuel != null ? lim.fuel : null;
-  const mats = lim && lim.mats != null ? lim.mats : null;
-  const misc = lim && lim.misc != null ? lim.misc : null;
-  setChip('wt-fuel-chip', fuel != null ? `Fuel >$${fuel}` : '', fuel);
-  setChip('wt-mats-chip', mats != null ? `Mats >$${mats}` : '', mats);
-  setChip('wt-misc-chip', misc != null ? `Misc >$${misc}` : '', misc);
+  const chipDefs = [
+    ['wt-fuel-chip',  'Fuel',  lim && lim.fuel  != null ? lim.fuel  : null],
+    ['wt-mats-chip',  'Mats',  lim && lim.mats  != null ? lim.mats  : null],
+    ['wt-food-chip',  'Food',  lim && lim.food  != null ? lim.food  : null],
+    ['wt-hotel-chip', 'Hotel', lim && lim.hotel != null ? lim.hotel : null],
+    ['wt-misc-chip',  'Misc',  lim && lim.misc  != null ? lim.misc  : null],
+  ];
+  chipDefs.forEach(([id, lbl, val]) => setChip(id, val != null ? `${lbl} >$${val}` : '', val));
   setChip('wt-age-chip', maxAge != null && maxAge !== '' ? `Age >${maxAge}d` : '', maxAge);
   // Show the row only if at least one chip is visible
-  const anyVisible = ['wt-fuel-chip','wt-mats-chip','wt-misc-chip','wt-age-chip']
+  const anyVisible = chipDefs.map(([id]) => id).concat('wt-age-chip')
     .some(id => { const el = document.getElementById(id); return el && !el.classList.contains('hidden'); });
   row.style.display = anyVisible ? 'flex' : 'none';
 }
@@ -5847,6 +5913,8 @@ async function saveAuditSettings() {
       body: JSON.stringify({
         fuel_limit:   numOrNull('audit-fuel'),
         mats_limit:   numOrNull('audit-mats'),
+        food_limit:   numOrNull('audit-food'),
+        hotel_limit:  numOrNull('audit-hotel'),
         misc_limit:   numOrNull('audit-misc'),
         max_age_days: numOrNull('audit-age'),
       }),
@@ -5858,9 +5926,11 @@ async function saveAuditSettings() {
       setTimeout(() => { msg.style.opacity = '0'; }, 1800);
       // Refresh the workspace warning chips
       const lim = {
-        fuel: numOrNull('audit-fuel'),
-        mats: numOrNull('audit-mats'),
-        misc: numOrNull('audit-misc'),
+        fuel:  numOrNull('audit-fuel'),
+        mats:  numOrNull('audit-mats'),
+        food:  numOrNull('audit-food'),
+        hotel: numOrNull('audit-hotel'),
+        misc:  numOrNull('audit-misc'),
       };
       _renderWarningChips(lim, numOrNull('audit-age'));
     } else {
@@ -5868,7 +5938,7 @@ async function saveAuditSettings() {
     }
   } catch (err) { showToast(`Error: ${err.message}`, false); }
 }
-['audit-fuel', 'audit-mats', 'audit-misc', 'audit-age'].forEach(id => {
+['audit-fuel', 'audit-mats', 'audit-food', 'audit-hotel', 'audit-misc', 'audit-age'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
     clearTimeout(_auditSaveTimer);
     _auditSaveTimer = setTimeout(saveAuditSettings, 200);
@@ -7636,7 +7706,7 @@ window.removeSavedItem = async function(listKey, value, panelId) {
 };
 
 // ── Insights dashboard ────────────────────────────────────────────────────────
-const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', misc: '#3b82f6' };
+const CAT_COLORS = { fuel: '#f5a623', mats: '#2dd482', food: '#ef6c6c', hotel: '#38bdf8', misc: '#3b82f6' };
 const fmtMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let _statsTimer = null;
@@ -8199,6 +8269,7 @@ function _bootApp() {
   if (_muBooted) return;
   _muBooted = true;
   _initCollapsibleSettings();   // collapse Settings sections (closed by default)
+  _initCollapsibleWorkspace();  // chevron toggles on every workspace section (open)
   connectSSE();
   loadWatchStatus();
   loadIntakeCount();
