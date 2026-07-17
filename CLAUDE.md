@@ -249,6 +249,26 @@ to the model — nothing hidden or clipped.
   ingestion into the existing pipeline (now built — see below), optional Shell/WEX
   fleet connector for business-card holders.
 
+## Chevron/Texaco Rewards export + PDF text-layer fast path
+
+- **`chevron_receipt_downloader.user.js`** (repo root) + **`CHEVRON_RECEIPTS.md`** —
+  a Tampermonkey/console userscript (originated in a Claude-in-Chrome session) that
+  exports the Rewards Wallet's **Purchase** receipts (discount duplicates skipped)
+  as ONE PDF, one text receipt per page, named by the actual first/last receipt
+  dates. Runs in the user's own signed-in browser; transmits nothing. Guides-tab
+  card walks the setup.
+- **PDF text-layer fast path** (`process_receipts`): `pdf_to_images` writes a
+  `<page>.jpg.pdftext` **sidecar** (`pdf_text_sidecar()`) for digital pages —
+  `page.get_text()` ≥ `PDF_TEXT_MIN_CHARS` (80, env) AND no raster images (so
+  scanned/searchable-scan PDFs keep the normal image/OCR path).
+  `_extract_receipt_with_status` consumes the sidecar BEFORE OCR: reads + unlinks
+  it (one-shot), logs a `pdf_text` step, and distills the exact text
+  (`engine="pdf-text"`) — no OCR, no LLM-OCR; the page JPEG remains the receipt
+  image in the report. Falls through to normal OCR only if `_distill_text`
+  returns None (rare — the offline parser usually handles it).
+  Verified against the real 37-page Chevron export: 37/37 sidecars, offline
+  parser alone extracts vendor/date/amount. Tests: `tests/test_pdf_text_layer.py`.
+
 ## Email intake (inbound IMAP receipts)
 
 - **`email_intake.py`** — the recommended gas-receipt-import path, generalised to
@@ -418,7 +438,7 @@ to the model — nothing hidden or clipped.
 
 ## Testing
 
-- Run: `python -m pytest -q` (from repo root). Currently **783 tests, all green**.
+- Run: `python -m pytest -q` (from repo root). Currently **790 tests, all green**.
 - Install deps once: `pip install -r requirements-test.txt` (lightweight — the
   RapidOCR/onnxruntime stack is **mocked** in tests, not installed).
 - `tests/conftest.py` autouse fixture redirects config/state/secrets to a temp dir
@@ -500,6 +520,27 @@ to the model — nothing hidden or clipped.
 ---
 
 ## Recent changes (append newest at top)
+
+- **2026-07-17 (live dashboard allowances + imgur-style gallery + Chevron export):**
+  Suite **783 → 790** green. Same branch/PR. Three requests:
+  * **Allowances live on the dashboard.** `GET /stats` now merges the configured
+    per-diem/phone allowances (`per_diem_total`/`per_diem_days`/`phone_total`/
+    `phone_months`) + `total_reimbursement` (= receipts total + allowances = the
+    report's grand TOTAL; `total` itself stays receipts-only). Insights-card tiles
+    `#st-perdiem-tile`/`#st-phone-tile`/`#st-grand-tile` appear when active;
+    `_pdSave`/`_phSave` call `scheduleStats()` so they update the moment the
+    Export-Report inputs change.
+  * **Gallery redesigned imgur-style.** `#gallery-modal` is now a main viewer
+    (`#gal-main-img` + `#gal-box-overlay` — the same `drawFieldBoxes` markups as
+    the review modal, caption with vendor/date/amount, click → full-screen
+    lightbox) + a thumbnail rail (`#gallery-grid`) + ‹/› buttons + **←/→ arrow-key
+    navigation** (`_galItems`/`_galShow`; data via `receiptCards[file].data`).
+  * **Chevron/Texaco export + PDF text-layer fast path** (see the dedicated
+    section above): bundled userscript + `CHEVRON_RECEIPTS.md` + Guides card;
+    `pdf_to_images` writes `.pdftext` sidecars for digital-text pages and
+    `_extract_receipt_with_status` distills them directly (engine `pdf-text`,
+    no OCR). Verified on the real 37-page export.
+    `tests/test_pdf_text_layer.py` (+7).
 
 - **2026-07-16 (auto-crop removed + verified compression + settings reshuffle):**
   Suite **806 → 783** green (−31 auto-crop tests, +8 compression-safety/settings).
