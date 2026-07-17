@@ -1457,6 +1457,10 @@
         <div class="stat-tile tile-total"><div class="stat-value" id="st-total">$0.00</div><div class="stat-label">Total Spend</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-count">0</div><div class="stat-label">Receipts</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-avg">$0.00</div><div class="stat-label">Avg / Receipt</div></div>
+        <!-- Report add-ons, live from the Export Report card settings (hidden until active) -->
+        <div class="stat-tile" id="st-perdiem-tile" style="display:none" title="The per-diem allowance configured on the Export Report card"><div class="stat-value" id="st-perdiem">$0.00</div><div class="stat-label" id="st-perdiem-label">Per Diem</div></div>
+        <div class="stat-tile" id="st-phone-tile" style="display:none" title="The phone-service allowance configured on the Export Report card"><div class="stat-value" id="st-phone">$0.00</div><div class="stat-label" id="st-phone-label">Phone Service</div></div>
+        <div class="stat-tile tile-total" id="st-grand-tile" style="display:none" title="Receipts + allowances — matches the report's grand TOTAL"><div class="stat-value" id="st-grand">$0.00</div><div class="stat-label">Total Reimbursement</div></div>
         <div class="stat-tile tile-flag"><div class="stat-value" id="st-flagged">0</div><div class="stat-label">Flagged</div></div>
         <div class="stat-tile"><div class="stat-value" id="st-proc">&mdash;</div><div class="stat-label">Avg Processing</div></div>
         <div class="stat-tile dev-only" title="Receipts whose amount was cross-checked against the OCR text"><div class="stat-value" id="st-verified">0</div><div class="stat-label">Verified</div></div>
@@ -2712,6 +2716,18 @@
   </div>
 
   <div class="card">
+    <div class="card-title">Chevron / Texaco Rewards Receipt Export</div>
+    <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
+      <li>Install the bundled userscript <code class="inline-code">chevron_receipt_downloader.user.js</code> (repo root) in <strong>Tampermonkey</strong> — or paste it into the DevTools console on the Wallet page.</li>
+      <li>Sign in at <strong>chevrontexacorewards.com</strong> and open the <strong>Wallet</strong> (transaction history) page. A floating <strong>Download receipts</strong> button appears.</li>
+      <li>Click it and enter your date range. The script auto-scrolls the history, keeps <strong>Purchase</strong> receipts only (discount duplicates skipped), and saves <strong>one PDF, one receipt per page</strong>, named by the actual first/last receipt dates.</li>
+      <li>Drop that PDF onto the <strong>Add Receipts</strong> card. Each page becomes one receipt — and because the pages are digital text, the app reads the <strong>PDF text layer directly</strong> (no OCR errors, no AI-OCR cost; look for the "PDF text layer" step on the card).</li>
+      <li>Long export? The per-PDF page cap (<code class="inline-code">PDF_MAX_PAGES</code>, default 50) lives in Settings → AI Model → Advanced tuning.</li>
+    </ol>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;line-height:1.6">The script runs entirely in your browser on your own signed-in session — it transmits nothing, never touches credentials, and only reads receipt text your account already shows. Details: <code>CHEVRON_RECEIPTS.md</code>.</p>
+  </div>
+
+  <div class="card">
     <div class="card-title">Gmail Receipt Filter</div>
     <ol style="font-size:14px;line-height:1.9;color:var(--text);padding-left:20px">
       <li>Go to <strong>Settings → Email Intake</strong> and click <strong>Download Gmail filter</strong> to download the filter XML file.</li>
@@ -2999,13 +3015,34 @@
 </div>
 
 <!-- ── Finish-batch (tidy temp files) dialog — shown after a report downloads ── -->
-<!-- Receipt gallery — a grid of every receipt image currently on the board -->
+<!-- Receipt gallery — imgur-style viewer: one big receipt in the middle (with the
+     field-marker overlays), a thumbnail rail on the side, ←/→ keyboard navigation. -->
 <div class="modal-overlay hidden" id="gallery-modal" role="dialog" aria-modal="true" aria-labelledby="gallery-title">
-  <div class="modal-box" style="width:min(920px,94vw)">
-    <h3 id="gallery-title">&#128444; Receipt Gallery</h3>
-    <p class="modal-sub" id="gallery-sub"></p>
-    <div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;max-height:62vh;overflow-y:auto;padding:2px"></div>
-    <div class="btn-row" style="margin-top:14px">
+  <div class="modal-box" style="width:min(1100px,96vw);max-height:92vh;display:flex;flex-direction:column">
+    <h3 id="gallery-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <span>&#128444; Receipt Gallery</span>
+      <span id="gallery-counter" style="font-size:12px;font-weight:400;color:var(--muted)"></span>
+    </h3>
+    <p class="modal-sub" id="gallery-sub" style="margin-bottom:10px"></p>
+    <div style="display:flex;gap:12px;flex:1;min-height:0">
+      <!-- Main viewer -->
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+        <div id="gal-stage" style="position:relative;flex:1;min-height:300px;display:flex;align-items:center;justify-content:center;background:var(--surface2);border:1px solid var(--border);border-radius:10px;overflow:hidden;padding:8px">
+          <button type="button" id="gal-prev" title="Previous (←)" aria-label="Previous receipt"
+                  style="position:absolute;left:8px;top:50%;transform:translateY(-50%);z-index:5;font-size:22px;line-height:1;padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;opacity:.85">&#8249;</button>
+          <div style="position:relative;display:inline-block;max-width:100%;max-height:100%">
+            <img id="gal-main-img" alt="" style="max-width:100%;max-height:64vh;object-fit:contain;display:block;cursor:zoom-in" title="Click to open full-screen">
+            <div id="gal-box-overlay" style="position:absolute;inset:0;pointer-events:none"></div>
+          </div>
+          <button type="button" id="gal-next" title="Next (→)" aria-label="Next receipt"
+                  style="position:absolute;right:8px;top:50%;transform:translateY(-50%);z-index:5;font-size:22px;line-height:1;padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;opacity:.85">&#8250;</button>
+        </div>
+        <div id="gal-caption" style="font-size:12.5px;margin-top:8px;min-height:18px"></div>
+      </div>
+      <!-- Thumbnail rail -->
+      <div id="gallery-grid" style="width:152px;flex-shrink:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:2px"></div>
+    </div>
+    <div class="btn-row" style="margin-top:12px">
       <button class="btn btn-cancel" id="gallery-close-btn">Close</button>
     </div>
   </div>
@@ -3618,39 +3655,94 @@ function makeCard(filename, status, data, model, errorMsg, steps, stepLogOpen) {
   });
 })();
 
+// Imgur-style gallery: the selected receipt is shown big in the middle with its
+// field-marker overlays (same drawFieldBoxes as the review modal / lightbox); a
+// thumbnail rail on the right navigates by click or with the arrow keys.
+let _galItems = [];
+let _galIdx = 0;
+
 function openGallery() {
+  _galItems = Array.from(document.querySelectorAll('[data-kf]'))
+    .filter(el => el.dataset.imgurl)
+    .map(el => ({ file: el.dataset.kf, disp: el.dataset.disp || el.dataset.kf,
+                  url: el.dataset.imgurl }));
   const grid = document.getElementById('gallery-grid');
   grid.innerHTML = '';
-  const cards = Array.from(document.querySelectorAll('[data-kf]'))
-    .filter(el => el.dataset.imgurl);
-  document.getElementById('gallery-sub').textContent = cards.length
-    ? `${cards.length} receipt${cards.length !== 1 ? 's' : ''} on the board — click an image to zoom.`
+  document.getElementById('gallery-sub').textContent = _galItems.length
+    ? 'Use the ← → arrow keys or click a thumbnail. Field markers show on the main image; click it to go full-screen.'
     : 'No receipts on the board yet — add some to see them here.';
-  cards.forEach(el => {
-    const fig = document.createElement('figure');
-    fig.style.cssText = 'margin:0;display:flex;flex-direction:column;gap:4px';
+  _galItems.forEach((it, i) => {
     const img = document.createElement('img');
-    img.src = el.dataset.imgurl; img.loading = 'lazy'; img.alt = el.dataset.disp || '';
-    img.style.cssText = 'width:100%;height:150px;object-fit:cover;object-position:top;' +
-      'border-radius:8px;border:1px solid var(--border);cursor:zoom-in';
-    img.addEventListener('click', () => openLightbox(el.dataset.imgurl, el.dataset.kf));
-    img.addEventListener('error', () => fig.remove());
-    const cap = document.createElement('figcaption');
-    cap.textContent = el.dataset.disp || el.dataset.kf;
-    cap.title = cap.textContent;
-    cap.style.cssText = 'font-size:11px;color:var(--muted);overflow:hidden;' +
-      'text-overflow:ellipsis;white-space:nowrap';
-    fig.appendChild(img); fig.appendChild(cap);
-    grid.appendChild(fig);
+    img.src = it.url; img.loading = 'lazy'; img.alt = it.disp; img.title = it.disp;
+    img.dataset.gi = i;
+    img.style.cssText = 'width:100%;height:96px;object-fit:cover;object-position:top;' +
+      'border-radius:8px;border:2px solid var(--border);cursor:pointer;flex-shrink:0';
+    img.addEventListener('click', () => _galShow(i));
+    img.addEventListener('error', () => img.remove());
+    grid.appendChild(img);
   });
   document.getElementById('gallery-modal').classList.remove('hidden');
+  if (_galItems.length) {
+    _galShow(0);
+  } else {
+    document.getElementById('gal-main-img').removeAttribute('src');
+    document.getElementById('gal-box-overlay').innerHTML = '';
+    document.getElementById('gal-caption').textContent = '';
+    document.getElementById('gallery-counter').textContent = '';
+  }
+}
+
+function _galShow(i) {
+  if (!_galItems.length) return;
+  _galIdx = ((i % _galItems.length) + _galItems.length) % _galItems.length;
+  const it = _galItems[_galIdx];
+  const img = document.getElementById('gal-main-img');
+  const overlay = document.getElementById('gal-box-overlay');
+  overlay.innerHTML = '';
+  const data = (receiptCards[it.file] && receiptCards[it.file].data) || null;
+  const boxes = (data && typeof data._field_boxes === 'object') ? data._field_boxes : null;
+  const llm   = (data && typeof data._llm_field_boxes === 'object') ? data._llm_field_boxes : null;
+  img.onload = () => drawFieldBoxes(boxes, img, overlay, llm);
+  img.src = it.url;
+  if (img.complete && img.naturalWidth) drawFieldBoxes(boxes, img, overlay, llm);
+
+  const bits = [];
+  if (data && data.vendor) bits.push(`<strong>${esc(String(data.vendor))}</strong>`);
+  if (data && data.date) bits.push(esc(String(data.date)));
+  if (data && data.amount != null && data.amount !== '') bits.push(esc(fmtMoney(data.amount)));
+  document.getElementById('gal-caption').innerHTML =
+    bits.join(' &nbsp;·&nbsp; ') + (bits.length ? ' &nbsp;—&nbsp; ' : '') +
+    `<span style="color:var(--muted)">${esc(it.disp)}</span>`;
+  document.getElementById('gallery-counter').textContent = `${_galIdx + 1} / ${_galItems.length}`;
+
+  document.querySelectorAll('#gallery-grid img').forEach(t => {
+    const on = Number(t.dataset.gi) === _galIdx;
+    t.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+    if (on) t.scrollIntoView({ block: 'nearest' });
+  });
 }
 
 document.getElementById('gallery-btn').addEventListener('click', openGallery);
+document.getElementById('gal-prev').addEventListener('click', () => _galShow(_galIdx - 1));
+document.getElementById('gal-next').addEventListener('click', () => _galShow(_galIdx + 1));
+document.getElementById('gal-main-img').addEventListener('click', () => {
+  const it = _galItems[_galIdx];
+  if (it) openLightbox(it.url, it.file);      // full-screen zoom, markers included
+});
 document.getElementById('gallery-close-btn').addEventListener('click', () =>
   document.getElementById('gallery-modal').classList.add('hidden'));
 document.getElementById('gallery-modal').addEventListener('click', (e) => {
   if (e.target.id === 'gallery-modal') e.target.classList.add('hidden');
+});
+// Arrow-key navigation while the gallery is open (and the full-screen lightbox
+// isn't sitting on top of it).
+document.addEventListener('keydown', (e) => {
+  if (document.getElementById('gallery-modal').classList.contains('hidden')) return;
+  const lb = document.getElementById('img-lightbox');
+  if (lb && lb.style.display === 'flex') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); _galShow(_galIdx + 1); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); _galShow(_galIdx - 1); }
+  else if (e.key === 'Escape') document.getElementById('gallery-modal').classList.add('hidden');
 });
 
 function insertCardSorted(col, card) {
@@ -7018,6 +7110,7 @@ async function _pdSave() {
         days:    parseInt(document.getElementById('pd-days').value, 10) || 0,
       }),
     });
+    scheduleStats();                          // dashboard tiles update live
   } catch (_) {}
 }
 
@@ -7114,6 +7207,7 @@ async function _phSave() {
         months:  Array.from(_phSel).sort(),
       }),
     });
+    scheduleStats();                          // dashboard tiles update live
   } catch (_) {}
 }
 
@@ -7566,6 +7660,27 @@ async function loadStats() {
     document.getElementById('st-flagged').textContent = s.flagged;
     document.getElementById('st-proc').textContent =
       s.proc_avg_seconds ? s.proc_avg_seconds + 's' : '—';
+
+    // Report add-ons, live: per diem / phone tiles appear as soon as they're
+    // enabled on the Export Report card, plus a Total Reimbursement tile
+    // (receipts + allowances = the report's grand TOTAL).
+    const pdOn = (s.per_diem_total || 0) > 0, phOn = (s.phone_total || 0) > 0;
+    document.getElementById('st-perdiem-tile').style.display = pdOn ? '' : 'none';
+    document.getElementById('st-phone-tile').style.display   = phOn ? '' : 'none';
+    document.getElementById('st-grand-tile').style.display   = (pdOn || phOn) ? '' : 'none';
+    if (pdOn) {
+      document.getElementById('st-perdiem').textContent = fmtMoney(s.per_diem_total);
+      document.getElementById('st-perdiem-label').textContent =
+        `Per Diem (${s.per_diem_days} day${s.per_diem_days === 1 ? '' : 's'})`;
+    }
+    if (phOn) {
+      document.getElementById('st-phone').textContent = fmtMoney(s.phone_total);
+      document.getElementById('st-phone-label').textContent =
+        `Phone (${s.phone_months} mo)`;
+    }
+    if (pdOn || phOn) {
+      document.getElementById('st-grand').textContent = fmtMoney(s.total_reimbursement);
+    }
 
     // Developer-mode enhanced stats (hidden unless Developer mode is on)
     const vEl = document.getElementById('st-verified');

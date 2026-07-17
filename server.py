@@ -3512,7 +3512,21 @@ def _compute_stats(results: list[dict]) -> dict:
 async def get_stats():
     with _results_lock:
         results_copy = list(_results)
-    return JSONResponse(_compute_stats(results_copy))
+    stats = _compute_stats(results_copy)
+    # Live report add-ons for the dashboard: the configured per-diem / phone
+    # allowances and the grand total they produce (receipts + allowances —
+    # matching the report's Summary TOTAL). "total" itself stays receipts-only
+    # (it feeds Avg/Receipt).
+    pd = _per_diem_config()
+    ph = _phone_config()
+    pd_total = round(pd["rate"] * pd["days"], 2) if pd["enabled"] else 0.0
+    ph_total = round(ph["rate"] * len(ph["months"]), 2) if ph["enabled"] else 0.0
+    stats["per_diem_total"] = pd_total
+    stats["phone_total"] = ph_total
+    stats["phone_months"] = len(ph["months"]) if ph["enabled"] else 0
+    stats["per_diem_days"] = pd["days"] if pd["enabled"] else 0
+    stats["total_reimbursement"] = round(stats.get("total", 0.0) + pd_total + ph_total, 2)
+    return JSONResponse(stats)
 
 
 # ── CSV export ─────────────────────────────────────────────────────────────────

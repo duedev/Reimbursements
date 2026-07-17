@@ -1179,8 +1179,25 @@ def encode_image(path: Path) -> tuple[str, str]:
     return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
 
+# A digitally generated PDF page (e.g. an exported e-receipt: the Chevron/Texaco
+# Rewards downloader emits pure-text pages) carries a perfect text layer — reading
+# it beats OCR-ing a render of it. Pages need at least this much text (and no
+# raster images, so scanned pages keep their normal image/OCR path) to qualify.
+PDF_TEXT_MIN_CHARS = int(os.getenv("PDF_TEXT_MIN_CHARS", "80"))
+
+
+def pdf_text_sidecar(image_path: Path) -> Path:
+    """The path of the PDF text-layer sidecar for a rendered page image."""
+    return image_path.with_name(image_path.name + ".pdftext")
+
+
 def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
-    """Convert each PDF page to a JPEG in dest_dir. Returns list of image paths."""
+    """Convert each PDF page to a JPEG in dest_dir. Returns list of image paths.
+
+    Digital-text pages (a real text layer, no raster images) also get a
+    ``<page>.jpg.pdftext`` sidecar holding the extracted text — the pipeline
+    reads it instead of OCR-ing the render (perfect fidelity, zero OCR cost)
+    while the JPEG remains the receipt image embedded in the report."""
     if not HAS_PYMUPDF:
         print(f"[pdf] PyMuPDF not installed — skipping {pdf_path.name}")
         return []
@@ -1205,6 +1222,16 @@ def pdf_to_images(pdf_path: Path, dest_dir: Path) -> list[Path]:
             img_path = dest_dir / f"{pdf_path.stem}{suffix}.jpg"
             pix.save(str(img_path))
             out.append(img_path)
+            # Text-layer fast path: a digital page (enough text, no raster
+            # images) gets its exact text as a sidecar so extraction can skip
+            # OCR entirely. Scanned pages (raster image + maybe an OCR layer)
+            # deliberately don't qualify — their pixels are the ground truth.
+            try:
+                page_text = (page.get_text() or "").strip()
+                if len(page_text) >= PDF_TEXT_MIN_CHARS and not page.get_images(full=True):
+                    pdf_text_sidecar(img_path).write_text(page_text, encoding="utf-8")
+            except Exception:
+                pass                           # best-effort — OCR covers the page
         doc.close()
     except Exception as exc:
         print(f"[pdf] Failed to convert {pdf_path.name}: {exc}")
@@ -2452,6 +2479,29 @@ def _extract_receipt_with_status(
         if rendered is None:
             return None
         image_path = rendered   # fall through to the normal OCR path on the render
+
+    # PDF TEXT LAYER: a digitally generated PDF page (e.g. the Chevron/Texaco
+    # Rewards export — one text receipt per page) arrives with a .pdftext sidecar
+    # written by pdf_to_images. Its text is exact, so skip OCR (and the optional
+    # LLM-OCR cross-check) and distill it directly; the rendered page JPEG stays
+    # the receipt image for the report/preview. Falls through to normal OCR if
+    # distillation can't make anything of the text.
+    _sidecar = pdf_text_sidecar(Path(image_path))
+    if _sidecar.exists():
+        try:
+            pdf_text = _sidecar.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            pdf_text = ""
+        _sidecar.unlink(missing_ok=True)       # one-shot: never re-read or orphaned
+        if pdf_text:
+            _set_llm_error(None)
+            _cb("ocr", model="pdf-text")
+            _append_step(step_log, "pdf_text", "PDF text layer",
+                         f"read {len(pdf_text)} chars of digital text — no OCR needed",
+                         ok=True)
+            data = _distill_text(pdf_text, 0.0, engine="pdf-text")
+            if data is not None:
+                return data
 
     try:
         # Clear any LLM failure reason left on this (reused) worker thread by a
